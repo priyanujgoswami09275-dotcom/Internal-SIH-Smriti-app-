@@ -13,6 +13,7 @@ import 'package:flutter/material.dart';
 import '../config/app_config.dart';
 import '../services/api_service.dart';
 import '../services/voice_audio_service.dart';
+import '../services/voice_languages.dart';
 import '../theme/monad_theme.dart';
 import '../widgets/monad/monad_pill_button.dart';
 
@@ -49,36 +50,9 @@ class _VoiceCompanionScreenState extends State<VoiceCompanionScreen> {
 
   /// Languages the active backend provider actually covers (from
   /// /language/status). Null while loading or when the call fails —
-  /// all ten picker entries stay enabled as before.
+  /// all covered picker entries stay enabled as before (Garo excepted:
+  /// no provider covers it — see VoiceLanguages.hardUnsupported).
   Set<String>? _providerLanguages;
-
-  static const Map<String, String> _languages = {
-    'assamese': 'অসমীয়া',
-    'bengali': 'বাংলা',
-    'hindi': 'हिन्दी',
-    'english': 'English',
-    'mizo': 'Mizo',
-    'meitei': 'Meitei (Manipuri)',
-    'khasi': 'Khasi',
-    'bodo': 'Bodo',
-    'garo': 'Garo',
-    'nepali': 'Nepali',
-  };
-
-  // Per-language input hint. Falls back to English if a language is added
-  // without a hint here.
-  static const Map<String, String> _hints = {
-    'assamese': 'বার্তা লিখক…',
-    'bengali': 'একটি বার্তা লিখুন…',
-    'hindi': 'एक संदेश लिखें…',
-    'english': 'Type a message…',
-    'mizo': 'Message emai…',
-    'meitei': 'Message ei chaba…',
-    'khasi': 'Nongsain ka jingiew…',
-    'bodo': 'Message jawabo…',
-    'garo': 'Message gnaty e…',
-    'nepali': 'Sandaitha…',
-  };
 
   static const _greeting = 'নমস্কাৰ! মই আপোনাৰ লগত আছোঁ। আজি কেনে আছে?';
 
@@ -111,10 +85,8 @@ class _VoiceCompanionScreenState extends State<VoiceCompanionScreen> {
     }
   }
 
-  bool _languageAvailable(String code) {
-    final supported = _providerLanguages;
-    return supported == null || supported.contains(code);
-  }
+  bool _languageAvailable(String code) =>
+      VoiceLanguages.available(code, _providerLanguages);
 
   @override
   void dispose() {
@@ -346,13 +318,14 @@ class _VoiceCompanionScreenState extends State<VoiceCompanionScreen> {
                 const Icon(Icons.language, color: Monad.offBlack, size: 20),
                 const SizedBox(width: 4),
                 Text(
-                  _languages[_selectedLanguage] ?? _selectedLanguage,
+                  VoiceLanguages.displayNames[_selectedLanguage] ??
+                      _selectedLanguage,
                   style: Monad.monoCaption.copyWith(color: Monad.offBlack),
                 ),
               ],
             ),
             onSelected: (v) => setState(() => _selectedLanguage = v),
-            itemBuilder: (context) => _languages.entries
+            itemBuilder: (context) => VoiceLanguages.displayNames.entries
                 .map((e) {
                   final available = _languageAvailable(e.key);
                   return PopupMenuItem(
@@ -603,7 +576,8 @@ class _VoiceCompanionScreenState extends State<VoiceCompanionScreen> {
                 // Patient-facing input floor: 20px.
                 style: Monad.patientBody,
                 decoration: InputDecoration(
-                  hintText: _hints[_selectedLanguage] ?? 'Type a message…',
+                  hintText: VoiceLanguages.inputHints[_selectedLanguage] ??
+                      'Type a message…',
                   hintStyle: Monad.monoBody.copyWith(color: Monad.smoke),
                   filled: true,
                   fillColor: Monad.parchment,

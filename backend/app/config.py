@@ -38,7 +38,7 @@ class Settings(BaseSettings):
     # Multilingual
     LANGUAGE_SET: List[str] = [
         "assamese", "bengali", "hindi", "english",
-        "mizo", "meitei", "khasi", "bodo", "garo", "nepali",
+        "mizo", "manipuri", "khasi", "bodo", "garo", "nepali",
     ]
     DEFAULT_LANGUAGE: str = "english"
 

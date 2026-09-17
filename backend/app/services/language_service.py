@@ -37,13 +37,18 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-# Bhashini pipeline language codes
+# Bhashini pipeline language codes.
+# "meitei" is the mobile display name for Manipuri — accepted everywhere as
+# an alias of "manipuri" (canonical). Garo has no provider code on any
+# backend and is hard-gated in the mobile picker; do not add it here until
+# a provider actually covers it.
 LANG_CODES: Dict[str, str] = {
     "assamese": "as",
     "bengali": "bn",
     "hindi": "hi",
     "english": "en",
     "manipuri": "mni",
+    "meitei": "mni",
     "bodo": "brx",
     "nepali": "ne",
     "mizo": "lus",
@@ -63,6 +68,7 @@ SARVAM_LANG_CODES: Dict[str, str] = {
     "hindi": "hi-IN",
     "english": "en-IN",
     "manipuri": "mni-IN",
+    "meitei": "mni-IN",  # alias of manipuri (mobile display name)
     "bodo": "brx-IN",
     "nepali": "ne-IN",
     "dogri": "doi-IN",
@@ -91,6 +97,7 @@ AI4BHARAT_LANG_CODES: Dict[str, str] = {
     "bengali": "ben_Beng",
     "bodo": "brx_Deva",
     "manipuri": "mni_Mtei",
+    "meitei": "mni_Mtei",  # alias of manipuri (mobile display name)
     "nepali": "npi_Deva",
     "hindi": "hin_Deng",
     "english": "eng_Latn",
@@ -175,8 +182,9 @@ class BhashiniLanguageService(LanguageServiceProvider):
     def _lang_code(self, language: str) -> str:
         code = LANG_CODES.get((language or "").lower())
         if not code:
-            raise LanguageServiceError(
-                f"Unsupported language '{language}'. Supported: {sorted(LANG_CODES)}"
+            raise UnsupportedLanguageError(
+                f"Unsupported language '{language}'. Supported: {sorted(LANG_CODES)}",
+                language=language or "",
             )
         return code
 
