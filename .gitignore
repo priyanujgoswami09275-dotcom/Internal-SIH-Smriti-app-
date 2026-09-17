@@ -60,6 +60,8 @@ backend/.pgdata/
 
 # Unrelated nested repo (student copy) — never tracked here
 SIH_Team_Maverick_Project/
+# Unrelated nested checkout (own .git) — never tracked here
+freellmapi/
 # Project-specific scratch (untracked)
 CLAUDE.md.zip
 /*.html
