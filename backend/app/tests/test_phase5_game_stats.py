@@ -13,19 +13,17 @@ COMPLIANCE = "/api/v1/compliance"
 
 
 async def _clinician_patient(client, db_session):
-    r = await client.post(f"{AUTH}/register", json={
-        "phone": f"+91{uuid.uuid4().int % 10**10}",
-        "email": f"{uuid.uuid4().hex[:8]}@test.in",
-        "password": "Passw0rd123", "role": "clinician", "preferred_language": "english"})
-    assert r.status_code == 201, r.text
+    from app.tests.conftest import provision_staff_user
+
+    user = await provision_staff_user()
     login = await client.post(f"{AUTH}/login",
-        json={"phone": r.json()["phone"], "password": "Passw0rd123"})
+        json={"phone": user["phone"], "password": "Passw0rd123"})
+    assert login.status_code == 200, login.text
     h = {"Authorization": f"Bearer {login.json()['access_token']}"}
-    prof = await client.post(PATIENTS, json={"name": "Stats Patient", "region": "assam"}, headers=h)
-    pid = prof.json()["id"]
-    await client.post(f"{COMPLIANCE}/consent", headers=h,
-        json={"patient_id": pid, "consent_type": "guardian", "scope": "game_data"})
-    return h, pid
+    from app.tests.conftest import create_consented_patient
+
+    prof = await create_consented_patient(client, "Stats Patient", scope="game_data")
+    return h, prof["id"]
 
 
 @pytest.mark.asyncio

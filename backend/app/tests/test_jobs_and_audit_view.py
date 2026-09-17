@@ -126,7 +126,13 @@ async def test_admin_audit_log_listing(client, db_session):
     resp = await client.get(f"{COMPLIANCE}/audit-logs", headers=pat)
     assert resp.status_code == 403
 
-    admin = await _register_and_login(client, f"+91{uuid.uuid4().int % 10**10}", role="admin")
+    from app.tests.conftest import provision_staff_user
+
+    user = await provision_staff_user(role="admin")
+    login = await client.post(f"{AUTH}/login", json={
+        "phone": user["phone"], "password": "Passw0rd123"})
+    assert login.status_code == 200, login.text
+    admin = {"Authorization": f"Bearer {login.json()['access_token']}"}
     resp = await client.get(f"{COMPLIANCE}/audit-logs?limit=50", headers=admin)
     assert resp.status_code == 200, resp.text
     rows = resp.json()

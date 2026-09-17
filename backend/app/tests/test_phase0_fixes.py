@@ -79,7 +79,9 @@ def test_encryption_uses_configured_key_not_hardcoded_default(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_weekly_report_decrypts_symptom_notes(client, db_session):
-    clin = await _register(client, f"+91{uuid.uuid4().int % 10**10}", role="clinician")
+    from app.tests.conftest import provision_staff_user
+
+    clin = await provision_staff_user()
     hh = await _login(client, clin["phone"])
     profile = await _patient(client, hh, "Biren")
     clin_id = await _uid(client, hh)

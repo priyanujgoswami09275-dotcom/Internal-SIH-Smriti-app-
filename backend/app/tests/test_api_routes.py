@@ -7,10 +7,64 @@ import uuid
 
 import pytest
 
+from app.models.user import RoleEnum
+
 AUTH = "/api/v1/auth"
 PATIENTS = "/api/v1/patients"
 GAMES = "/api/v1/games"
 SYNC = "/api/v1/sync"
+
+
+@pytest.mark.parametrize("role, allowed", [
+    ("patient", True),
+    ("family_caregiver", True),
+    ("asha_worker", False),
+    ("clinician", False),
+    ("admin", False),
+    ("unknown", False),
+    ("", False),
+    (None, False),
+    ("PATIENT", False),
+])
+def test_public_registration_policy(role, allowed):
+    from app.routes import auth
+
+    assert auth.is_public_registration_role(role) is allowed
+
+
+@pytest.mark.parametrize("role", ["patient", "family_caregiver"])
+async def test_public_signup(client, role):
+    phone = f"+91{uuid.uuid4().int % 10**10}"
+    user = await _register(client, phone, role)
+    assert user["role"] == role
+    headers, _ = await _login(client, phone)
+    me = await client.get(f"{AUTH}/me", headers=headers)
+    assert me.status_code == 200
+    assert me.json()["id"] == user["id"]
+    assert me.json()["role"] == role
+
+
+@pytest.mark.parametrize("role", list(RoleEnum))
+async def test_trusted_staff_provisioning_and_login(client, role):
+    from app.tests.conftest import provision_staff_user
+
+    if role in (RoleEnum.PATIENT, RoleEnum.FAMILY_CAREGIVER):
+        with pytest.raises(ValueError):
+            await provision_staff_user(role=role)
+        return
+    user = await provision_staff_user(role=role)
+    headers, _ = await _login(client, user["phone"], password="Passw0rd123")
+    me = await client.get(f"{AUTH}/me", headers=headers)
+    assert me.status_code == 200
+    assert me.json()["id"] == user["id"]
+    assert me.json()["role"] == role.value
+
+
+async def test_staff_provisioning_requires_isolated_fixture():
+    from app.tests.conftest import provision_staff_user
+
+    with pytest.raises(RuntimeError, match="isolated client fixture"):
+        await provision_staff_user()
 
 
 async def _register(client, phone, role="patient"):
@@ -110,8 +164,7 @@ async def test_patient_profile_and_caregiver_link(client):
     patient_user = await _register(client, patient_phone)
     patient_headers, _ = await _login(client, patient_phone)
 
-    # Caregiver creates a profile bound to the patient's account
-    profile = await _create_patient(client, caregiver_headers, "Rupali Devi", user_id=patient_user["id"])
+    profile = await _create_patient(client, patient_headers, "Rupali Devi", user_id=patient_user["id"])
     patient_id = profile["id"]
 
     # Patient self-service lookup
@@ -119,14 +172,13 @@ async def test_patient_profile_and_caregiver_link(client):
     assert resp.status_code == 200, resp.text
     assert resp.json()["id"] == patient_id
 
-    # Caregiver grants themselves an active link
     resp = await client.get(f"{AUTH}/me", headers=caregiver_headers)
     caregiver_id = resp.json()["id"]
 
     resp = await client.post(
         f"{PATIENTS}/{patient_id}/caregivers",
         json={"caregiver_id": caregiver_id, "relationship_type": "family", "permission_tier": "basic"},
-        headers=caregiver_headers,
+        headers=patient_headers,
     )
     assert resp.status_code == 201, resp.text
 

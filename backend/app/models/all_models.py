@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Date, JSON, DateTime, func, ForeignKey, Enum as SQLEnum, Boolean, Integer, Float, UniqueConstraint
+from sqlalchemy import Column, String, Date, JSON, DateTime, func, ForeignKey, Enum as SQLEnum, Boolean, Integer, Float, UniqueConstraint, CheckConstraint
 from sqlalchemy.dialects.postgresql import UUID
 import uuid
 from enum import Enum
@@ -285,6 +285,22 @@ class NotificationDelivery(Base):
     address = Column(String(500), nullable=True)
     status = Column(SQLEnum(NotificationDeliveryStatusEnum, values_callable=enum_values), nullable=False, default=NotificationDeliveryStatusEnum.SENT)
     created_at = Column(DateTime, default=func.now(), nullable=False)
+
+class RiskScreening(Base):
+    __tablename__ = "risk_screenings"
+
+    patient_id = Column(UUID(as_uuid=True), ForeignKey("patients.id", ondelete="CASCADE"), primary_key=True)
+    consent_id = Column(UUID(as_uuid=True), ForeignKey("consent_records.id", ondelete="CASCADE"), nullable=False)
+    probability = Column(Float, nullable=False)
+    risk_score = Column(Float, nullable=False)
+    model_version = Column(String(71), nullable=False)
+    screened_at = Column(DateTime, default=func.now(), nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("probability >= 0 AND probability <= 1", name="ck_risk_probability"),
+        CheckConstraint("risk_score >= 0 AND risk_score <= 100", name="ck_risk_score"),
+    )
+
 
 class VoiceCompanionConfig(Base):
     __tablename__ = "voice_companion_configs"

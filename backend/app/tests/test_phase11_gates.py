@@ -80,7 +80,7 @@ async def test_linked_caregiver_can_access_and_reads_are_audited(client, db_sess
     cg_id_str = await _uid(client, ch)          # /auth/me returns a string id
     cg_id = uuid.UUID(cg_id_str)
 
-    r = await client.post(f"{PATIENTS}/{profile['id']}/caregivers", headers=ch, json={
+    r = await client.post(f"{PATIENTS}/{profile['id']}/caregivers", headers=ph, json={
         "caregiver_id": cg_id_str, "relationship_type": "family"})
     assert r.status_code == 201, r.text
 
@@ -110,16 +110,13 @@ async def test_linked_caregiver_can_access_and_reads_are_audited(client, db_sess
 @pytest.mark.asyncio
 async def test_document_ingest_stores_encrypted_source(client, db_session):
     """extracted_text is AES-256 encrypted at rest; retrieval uses plaintext chunks."""
-    clinician = await _register(client, f"+91{uuid.uuid4().int % 10**10}", role="clinician")
-    hh = await _login(client, clinician["phone"])
-    profile = await _patient(client, hh, "Biren")
+    from app.tests.conftest import provision_staff_user
 
-    granted = await client.post(
-        "/api/v1/compliance/consent",
-        headers=hh,
-        json={"patient_id": profile["id"], "consent_type": "guardian", "scope": "all"},
-    )
-    assert granted.status_code == 200, granted.text
+    clinician = await provision_staff_user()
+    hh = await _login(client, clinician["phone"])
+    from app.tests.conftest import create_consented_patient
+
+    profile = await create_consented_patient(client, "Biren")
 
     text = "Take one Amlodipine 5 mg tablet every morning with food."
     r = await client.post(f"{REPORTS}/documents/ingest", headers=hh, json={

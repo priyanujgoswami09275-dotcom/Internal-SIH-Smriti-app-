@@ -22,6 +22,28 @@ os.environ["EMBEDDING_PROVIDER"] = "heuristic"
 os.environ["LANGUAGE_SERVICE_PROVIDER"] = "mock"
 
 import asyncio
+import uuid
+
+
+async def create_consented_patient(client, name, scope="all"):
+    registered = await client.post("/api/v1/auth/register", json={
+        "phone": f"+91{uuid.uuid4().int % 10**10}", "password": "Passw0rd123",
+        "role": "patient", "preferred_language": "english",
+    })
+    assert registered.status_code == 201, registered.text
+    login = await client.post("/api/v1/auth/login", json={
+        "phone": registered.json()["phone"], "password": "Passw0rd123",
+    })
+    assert login.status_code == 200, login.text
+    headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+    profile = await client.post("/api/v1/patients", headers=headers, json={"name": name, "region": "assam"})
+    assert profile.status_code == 201, profile.text
+    consent = await client.post("/api/v1/compliance/consent", headers=headers, json={
+        "patient_id": profile.json()["id"], "consent_type": "patient_self", "scope": scope,
+    })
+    assert consent.status_code == 200, consent.text
+    return profile.json()
+
 import pytest
 import pytest_asyncio
 from typing import AsyncGenerator
@@ -31,6 +53,35 @@ from sqlalchemy.pool import StaticPool
 
 from app.database import Base, get_db
 from app.main import app
+
+
+async def provision_staff_user(phone=None, role="clinician", password="Passw0rd123"):
+    from app.models.user import RoleEnum, User
+    from app.schemas import UserOut
+    from app.services.auth_service import AuthService
+
+    role = RoleEnum(role)
+    if role not in (RoleEnum.CLINICIAN, RoleEnum.ADMIN, RoleEnum.ASHA_WORKER):
+        raise ValueError("Trusted staff provisioning requires a staff role")
+    override = app.dependency_overrides.get(get_db)
+    if override is None:
+        raise RuntimeError("Staff provisioning requires the isolated client fixture")
+    async for session in override():
+        url = session.bind.url
+        if url.get_backend_name() != "sqlite" or url.database != ":memory:":
+            raise RuntimeError("Staff provisioning requires in-memory SQLite")
+        user = User(
+            phone=phone or f"+91{uuid.uuid4().int % 10**10}",
+            password_hash=AuthService.hash_password(password),
+            role=role,
+            preferred_language="english",
+        )
+        session.add(user)
+        await session.commit()
+        await session.refresh(user)
+        return UserOut.model_validate(user).model_dump(mode="json")
+    raise RuntimeError("Isolated database fixture did not yield a session")
+
 
 TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
 

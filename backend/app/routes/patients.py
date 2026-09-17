@@ -7,9 +7,9 @@ Endpoints:
   GET    /patients/{id}/caregivers — list active caregiver links
   POST   /patients/{id}/caregivers — link a caregiver to a patient
 """
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import List, Optional
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict
@@ -18,10 +18,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import require_role
 from app.database import get_db
-from app.deps import ensure_patient_access
+from app.deps import ensure_patient_access, ensure_clinical_access, ensure_patient_owner, _role
 from app.services.compliance_service import ComplianceService
 from app.models.all_models import (
     PatientProfile,
+    RiskScreening,
+    ConsentRecord,
     CaregiverPatientLink,
     CognitiveBaselineEnum,
     RelationshipTypeEnum,
@@ -109,6 +111,27 @@ async def _can_view_patient(db: AsyncSession, user: User, patient: PatientProfil
     return False
 
 
+def resolve_profile_binding(user: User, requested_id: Optional[UUID]) -> Optional[UUID]:
+    if not user.is_active or user.id is None:
+        raise HTTPException(status_code=403, detail="Active account required")
+    if _role(user) == "patient":
+        if requested_id not in (None, user.id):
+            raise HTTPException(status_code=403, detail="Patients may only self-register")
+        return user.id
+    if _role(user) not in {"admin", "clinician", "asha_worker"} or requested_id is not None:
+        raise HTTPException(status_code=403, detail="Only staff may create unbound profiles; account binding requires patient self-registration")
+    return None
+
+
+def validate_caregiver_target(owner: User, target: Optional[User], relationship: RelationshipTypeEnum) -> None:
+    roles = {"family": "family_caregiver", "asha": "asha_worker", "clinician": "clinician"}
+    if (
+        target is None or not target.is_active or target.id == owner.id
+        or _role(target) != roles.get(relationship)
+    ):
+        raise HTTPException(status_code=422, detail="Caregiver must be a different active account with the matching relationship role")
+
+
 def _baseline(value: str) -> CognitiveBaselineEnum:
     try:
         return CognitiveBaselineEnum(value)
@@ -119,18 +142,15 @@ def _baseline(value: str) -> CognitiveBaselineEnum:
         )
 
 
-from app.services.risk_screening_service import run_inference, FEATURE_NAMES, FEATURE_DTYPE_MAP
+from app.services import risk_screening_service
 
 
 # ============= Risk Screening Endpoint =============
 
 
 class RiskScreeningRequest(BaseModel):
-    """34 feature fields exactly as model_input_guide.json defines."""
+    """32 feature fields in the model input guide's canonical order."""
     model_config = ConfigDict(extra="forbid")
-
-    # Use the feature names directly; this avoids hard-coding 34 fields.
-    # Validation uses FEATURE_NAMES from feature_names.json.
 
     Age: Optional[float] = None
     Gender: Optional[int] = None
@@ -175,6 +195,7 @@ class RiskScreeningResponse(BaseModel):
     note: Optional[str] = None
     errors: Optional[List[str]] = None
     message: Optional[str] = None
+    model_version: Optional[str] = None
 
 
 @router.post("/{patient_id}/risk-screening", response_model=RiskScreeningResponse)
@@ -184,30 +205,46 @@ async def risk_screening(
     current_user: User = Depends(require_caregiver_or_staff),
     db: AsyncSession = Depends(get_db),
 ):
-    """POST /patients/{id}/risk-screening
-
-    Accepts the 34 features defined by the teammate's feature_names.json.
-    Applies scaler.pkl, runs .keras inference, returns probability (0-1) +
-    a 0-100 score. Degrades gracefully when TF is unavailable.
-    """
-    patient = await _get_patient(db, patient_id)
-    if patient is None:
-        raise HTTPException(status_code=404, detail="Patient not found")
-
-    # Build a clean dict from Pydantic model; skip None fields so validation
-    # can flag missing ones explicitly.
-    raw: Dict[str, Any] = {}
-    for f in FEATURE_NAMES:
-        value = getattr(body, f, None)
-        if value is not None:
-            raw[f] = value
-
-    result = run_inference(raw)
-    if result.get("status") == "validation_failed":
-        return RiskScreeningResponse(
-            status="validation_failed",
-            errors=result.get("errors", []),
+    """Run consented preliminary screening and atomically audit/persist success."""
+    await ensure_clinical_access(db, current_user, patient_id)
+    consent = (await db.execute(
+        select(ConsentRecord).where(
+            ConsentRecord.patient_id == patient_id,
+            ConsentRecord.revoked_at.is_(None),
+            ConsentRecord.scope.in_(["health_data", "all"]),
+        ).order_by(ConsentRecord.granted_at.desc(), ConsentRecord.id.desc()).limit(1).with_for_update()
+    )).scalar_one_or_none()
+    if consent is None:
+        raise HTTPException(status_code=403, detail="Active consent required for scope 'health_data'")
+    result = risk_screening_service.run_inference(body.model_dump(exclude_unset=True))
+    try:
+        if result["status"] == "ok":
+            dialect = db.get_bind().dialect.name
+            if dialect == "postgresql":
+                from sqlalchemy.dialects.postgresql import insert
+            elif dialect == "sqlite":
+                from sqlalchemy.dialects.sqlite import insert
+            else:
+                raise RuntimeError("Unsupported screening persistence dialect")
+            values = {
+                "patient_id": patient_id,
+                "consent_id": consent.id,
+                "probability": result["probability"],
+                "risk_score": result["risk_score"],
+                "model_version": result["model_version"],
+                "screened_at": datetime.now(timezone.utc).replace(tzinfo=None),
+            }
+            await db.execute(insert(RiskScreening).values(**values).on_conflict_do_update(
+                index_elements=["patient_id"],
+                set_={key: value for key, value in values.items() if key != "patient_id"},
+            ))
+        await ComplianceService.log_audit_access(
+            db, current_user.id, "write", "risk_screening", patient_id,
+            details={"status": result["status"], "model_version": risk_screening_service.MODEL_VERSION},
         )
+    except Exception:
+        await db.rollback()
+        raise HTTPException(status_code=503, detail="Screening persistence or audit unavailable")
     return RiskScreeningResponse(**result)
 
 
@@ -221,12 +258,20 @@ async def create_patient(
     db: AsyncSession = Depends(get_db),
 ):
     """Create a patient profile. A patient-role account can self-register (own user_id)."""
-    user_id = body.user_id
-    if current_user.role.value == "patient":
-        # Patients may only create a profile bound to their own account.
-        user_id = current_user.id
-        if body.user_id not in (None, current_user.id):
-            raise HTTPException(status_code=403, detail="Patients may only self-register")
+    user_id = resolve_profile_binding(current_user, body.user_id)
+    if user_id is not None:
+        locked_user = (await db.execute(
+            select(User).where(User.id == user_id).with_for_update()
+            .execution_options(populate_existing=True)
+        )).scalar_one_or_none()
+        if locked_user is None:
+            raise HTTPException(status_code=403, detail="Active patient account required")
+        user_id = resolve_profile_binding(locked_user, body.user_id)
+        existing = (await db.execute(
+            select(PatientProfile.id).where(PatientProfile.user_id == user_id).limit(1)
+        )).scalar_one_or_none()
+        if existing is not None:
+            raise HTTPException(status_code=409, detail="Patient profile already exists for this account")
 
     patient = PatientProfile(
         user_id=user_id,
@@ -273,13 +318,11 @@ async def get_patient(
 @router.get("/{patient_id}/caregivers", response_model=List[CaregiverLinkResponse])
 async def list_patient_caregivers(
     patient_id: UUID,
-    current_user: User = Depends(require_caregiver_or_staff),
+    current_user: User = Depends(require_role("patient", "family_caregiver", "asha_worker", "clinician")),
     db: AsyncSession = Depends(get_db),
 ):
     """List active caregivers linked to a patient."""
-    patient = await _get_patient(db, patient_id)
-    if patient is None:
-        raise HTTPException(status_code=404, detail="Patient not found")
+    await ensure_patient_access(db, current_user, patient_id)
     res = await db.execute(
         select(CaregiverPatientLink)
         .where(
@@ -295,13 +338,12 @@ async def list_patient_caregivers(
 async def link_caregiver(
     patient_id: UUID,
     body: CaregiverLinkRequest,
-    current_user: User = Depends(require_caregiver_or_staff),
+    current_user: User = Depends(require_role("patient")),
     db: AsyncSession = Depends(get_db),
 ):
-    """Grant a caregiver access to a patient (creates an audited CaregiverPatientLink)."""
-    patient = await _get_patient(db, patient_id)
-    if patient is None:
-        raise HTTPException(status_code=404, detail="Patient not found")
+    await ensure_patient_owner(db, current_user, patient_id)
+    target = (await db.execute(select(User).where(User.id == body.caregiver_id))).scalar_one_or_none()
+    validate_caregiver_target(current_user, target, body.relationship_type)
 
     existing = await db.execute(
         select(CaregiverPatientLink).where(
@@ -314,13 +356,23 @@ async def link_caregiver(
         raise HTTPException(status_code=409, detail="Caregiver already linked to this patient")
 
     link = CaregiverPatientLink(
+        id=uuid4(),
         caregiver_id=body.caregiver_id,
         patient_id=patient_id,
         relationship_type=body.relationship_type,
         permission_tier=body.permission_tier,
         is_active=True,
     )
-    db.add(link)
-    await db.commit()
-    await db.refresh(link)
+    try:
+        db.add(link)
+        audit = await ComplianceService.log_audit_access(
+            db, current_user.id, "write", "caregiver_link", link.id,
+            details={"patient_id": str(patient_id), "caregiver_id": str(body.caregiver_id),
+                     "relationship_type": body.relationship_type.value, "permission_tier": body.permission_tier.value},
+        )
+        if audit is None:
+            raise RuntimeError("Mutation audit unavailable")
+    except Exception:
+        await db.rollback()
+        raise HTTPException(status_code=503, detail="Caregiver link persistence or audit unavailable")
     return link

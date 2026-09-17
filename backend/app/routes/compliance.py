@@ -10,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy import select
 
 from app.database import get_db
-from app.deps import ensure_patient_access
+from app.deps import ensure_patient_access, get_permission_tier
 from app.models.all_models import (
     AuditActionEnum, AuditLog, User, ConsentRecord, ConsentTypeEnum, RoleEnum,
 )
@@ -43,12 +43,12 @@ async def grant_consent(
     current_user: User = Depends(get_current_user),
 ):
     """Explicitly grant DPDP consent before storing or accessing patient health data."""
-    await ensure_patient_access(db, current_user, req.patient_id)
     record = await ComplianceService.record_consent(
         db=db,
         patient_id=req.patient_id,
         consent_type=req.consent_type,
         scope=req.scope,
+        actor=current_user,
         guardian_id=req.guardian_id,
     )
     return ConsentResponse(
@@ -127,10 +127,19 @@ async def export_patient_data(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """DPDP right of access — JSON dump of the patient's stored records."""
-    await ensure_patient_access(db, current_user, patient_id)
-    await ComplianceService.log_read_access(db, current_user.id, "data_export", patient_id)
-    return await ComplianceService.export_patient_data(db, patient_id)
+    """DPDP right of access — JSON dump of stored records, clinical detail gated by tier."""
+    patient = await ensure_patient_access(db, current_user, patient_id)
+    tier = await get_permission_tier(db, current_user, patient)
+    audit = await ComplianceService.log_read_access(db, current_user.id, "data_export", patient_id)
+    if audit is None and tier == "clinical":
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Export audit unavailable; screening data withheld",
+        )
+    export = await ComplianceService.export_patient_data(db, patient_id)
+    if tier != "clinical":
+        export.pop("risk_screening", None)
+    return export
 
 
 @router.post("/consent/{consent_id}/revoke")
@@ -140,16 +149,8 @@ async def revoke_consent(
     current_user: User = Depends(get_current_user),
 ):
     """Revoke consent in accordance with DPDP right to withdraw consent."""
-    # Load first so we can enforce no-implicit-access on the OWNING patient:
-    # previously any authenticated user could revoke any consent by guessing its id.
-    res = await db.execute(select(ConsentRecord).where(ConsentRecord.id == consent_id))
-    existing = res.scalar_one_or_none()
-    if not existing:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Consent record not found")
-    await ensure_patient_access(db, current_user, existing.patient_id)
-
-    record = await ComplianceService.revoke_consent(db, consent_id)
+    record = await ComplianceService.revoke_consent(db, consent_id, actor=current_user)
     return {
-        "message": "Consent revoked. Data access under this scope is now denied.",
+        "message": "Consent record revoked.",
         "revoked_at": record.revoked_at.isoformat() if record and record.revoked_at else None,
     }

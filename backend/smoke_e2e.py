@@ -52,8 +52,13 @@ def check(name, resp, expect_status=None, expect_key=None):
 
 
 def main():
+    clinician_phone = os.getenv("SMOKE_CLINICIAN_PHONE", "").strip()
+    clinician_password = os.getenv("SMOKE_CLINICIAN_PASSWORD", "")
+    if not clinician_phone or not clinician_password:
+        print("SMOKE_CLINICIAN_PHONE and SMOKE_CLINICIAN_PASSWORD are required for an already-provisioned test clinician.", file=sys.stderr)
+        sys.exit(1)
     pid_os = os.getpid()
-    actors = [("patient", "patient"), ("caregiver", "family_caregiver"), ("clinician", "clinician")]
+    actors = [("patient", "patient"), ("caregiver", "family_caregiver")]
     phones = {key: f"91{pid_os}{i:03d}" for i, (key, _) in enumerate(actors, 1)}
     tokens = {}
     patient_id = None
@@ -62,7 +67,21 @@ def main():
     with httpx.Client(base_url=BASE, timeout=120) as c:
         check("GET /health", c.get("/health"), 200, "status")
 
-        # ---------- auth: register three actors ----------
+        r = c.post("/api/v1/auth/login", json={
+            "phone": clinician_phone, "password": clinician_password})
+        if r.status_code != 200:
+            print("Test clinician login failed; verify the already-provisioned account and smoke credentials.", file=sys.stderr)
+            sys.exit(1)
+        tok = r.json()
+        if not tok.get("access_token") or not tok.get("refresh_token"):
+            print("Test clinician login did not return the required tokens.", file=sys.stderr)
+            sys.exit(1)
+        tokens["clinician"] = {"Authorization": f"Bearer {tok['access_token']}"}
+        me = c.get("/api/v1/auth/me", headers=tokens["clinician"])
+        if me.status_code != 200 or me.json().get("role") != "clinician":
+            print("Smoke credentials must belong to an already-provisioned test clinician.", file=sys.stderr)
+            sys.exit(1)
+
         for i, (key, role) in enumerate(actors, 1):
             phone = phones[key]
             r = c.post("/api/v1/auth/register", json={
@@ -106,10 +125,10 @@ def main():
         check("POST /compliance/consent (before health data)", r, 200, "id")
 
         # caregiver-patient link (family, basic) so the dashboard roster sees this patient
-        r = c.post(f"/api/v1/patients/{patient_id}/caregivers", headers=tokens["caregiver"], json={
+        r = c.post(f"/api/v1/patients/{patient_id}/caregivers", headers=h, json={
             "caregiver_id": tokens["caregiver"]["uid"], "relationship_type": "family",
             "permission_tier": "basic"})
-        check("POST /patients/{id}/caregivers (caregiver links self)", r, 201, "id")
+        check("POST /patients/{id}/caregivers (patient owner delegates)", r, 201, "id")
 
         # ---------- games (patient plays) ----------
         r = c.get("/api/v1/games/content-packs", headers=h)

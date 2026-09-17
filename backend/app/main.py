@@ -21,6 +21,10 @@ from app.routes.sync import router as sync_router
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings.validate_for_environment()
+    from app.routes.patients import RiskScreeningRequest
+    from app.services.risk_screening_service import initialize_risk_screening
+
+    initialize_risk_screening(RiskScreeningRequest.model_fields)
     job_task = None
     if settings.background_jobs_enabled:
         from app.jobs import start_in_background

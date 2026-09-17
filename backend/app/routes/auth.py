@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from app.database import get_db
 from app.deps import _parse_sub
-from app.models.user import User
+from app.models.user import RoleEnum, User
 from app.schemas import RegisterRequest, LoginRequest, TokenResponse, UserOut
 from app.services.auth_service import AuthService
 from app.deps import get_current_user
@@ -17,8 +17,14 @@ class RefreshRequest(BaseModel):
     refresh_token: str
 
 
+def is_public_registration_role(role: str | None) -> bool:
+    return role in (RoleEnum.PATIENT, RoleEnum.FAMILY_CAREGIVER)
+
+
 @router.post("/register", response_model=UserOut, status_code=status.HTTP_201_CREATED)
 async def register(body: RegisterRequest, db: AsyncSession = Depends(get_db)):
+    if not is_public_registration_role(body.role):
+        raise HTTPException(status_code=403, detail="Role is not available for public registration")
     existing = await db.execute(select(User).where(User.phone == body.phone))
     if existing.scalar_one_or_none():
         raise HTTPException(status_code=400, detail="Phone already registered")

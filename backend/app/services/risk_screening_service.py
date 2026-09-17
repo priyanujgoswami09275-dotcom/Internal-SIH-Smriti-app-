@@ -1,162 +1,183 @@
-"""Alzheimer's Risk Screening — Stage 1 (teammate .keras + scaler).
-
-Uses the teammate-supplied model and scaler (loaded ONCE at module import),
-not per-request. Degrades gracefully when TensorFlow isn't installed by logging
-and returning a placeholder message rather than crashing the endpoint.
-
-Note: the model returns a probability (0-1); this service converts to a
-0-100 score for UI consumption, plus a tier label and the feature-level
-input received (no personal health disclosure in the JSON response).
-"""
-import os
+"""Worker-initialized preliminary screening; not a clinical diagnosis."""
+import hashlib
 import json
 import logging
-import pickle
-from typing import Dict, Any, Optional, List
+import math
+import os
+from pathlib import Path
+from threading import Lock
+from typing import Any, Dict, List
 
 logger = logging.getLogger(__name__)
 
-# Feature list (34) — exact order from teammate's feature_names.json
-FEATURE_PATH = os.path.join(
-    os.path.dirname(__file__), "..", "..", "ml_models", "alzheimers_risk", "feature_names.json"
-)
-SCALER_PATH = os.path.join(
-    os.path.dirname(__file__), "..", "..", "ml_models", "alzheimers_risk", "scaler.pkl"
-)
-MODEL_PATH = os.path.join(
-    os.path.dirname(__file__), "..", "..", "ml_models", "alzheimers_risk", "alzheimers_risk_model.keras"
-)
+ASSET_DIR = Path(__file__).resolve().parents[2] / "ml_models" / "alzheimers_risk"
+FEATURE_PATH = ASSET_DIR / "feature_names.json"
+GUIDE_PATH = ASSET_DIR / "model_input_guide.json"
+SCALER_PATH = ASSET_DIR / "scaler.pkl"
+MODEL_PATH = ASSET_DIR / "alzheimers_risk_model.keras"
 
-FEATURE_NAMES: List[str] = []
+
+def _load_schema(path, fallback):
+    try:
+        with open(path, encoding="utf-8") as source:
+            value = json.load(source)
+            return value if type(value) is type(fallback) else fallback
+    except (OSError, ValueError):
+        return fallback
+
+
+FEATURE_NAMES: List[str] = _load_schema(FEATURE_PATH, [])
+FEATURE_GUIDE = _load_schema(GUIDE_PATH, {})
+FEATURE_DTYPE_MAP = {
+    name: int if isinstance(rule, dict) and rule.get("dtype") == "int64" else float
+    for name, rule in FEATURE_GUIDE.items()
+}
 _model = None
 _scaler = None
 _model_loaded = False
+_initialized_pid = None
+_initialization_error = None
+_initialization_lock = Lock()
+MODEL_VERSION = None
 
 
-def _load_features() -> List[str]:
-    try:
-        with open(os.path.abspath(FEATURE_PATH), "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return []
+def _load_artifacts():
+    import joblib
+    import tensorflow as tf
+
+    model = tf.keras.models.load_model(os.path.abspath(MODEL_PATH), compile=False)
+    scaler = joblib.load(os.path.abspath(SCALER_PATH))
+    return model, scaler
 
 
-def _load_artifacts() -> bool:
-    global _model, _scaler, _model_loaded, FEATURE_NAMES
-    FEATURE_NAMES = _load_features()
-    try:
-        import tensorflow as tf
-        # Keras 3.13.2 format (.keras) — load once at import
-        _model = tf.keras.models.load_model(os.path.abspath(MODEL_PATH), compile=False)
-        with open(os.path.abspath(SCALER_PATH), "rb") as f:
-            import sklearn  # only import when needed
-            try:
-                import joblib
-                _scaler = joblib.load(f)
-            except Exception:
-                f.seek(0)
-                _scaler = pickle.load(f)
-        _model_loaded = True
-        logger.info("Risk-screening model loaded (%d features).", len(FEATURE_NAMES))
-    except Exception as exc:
-        logger.warning("Risk-screening artifacts unavailable (%s) — endpoint will return placeholder.", exc)
-        _model = None
-        _scaler = None
+def _validate_schema(request_names):
+    if (len(FEATURE_NAMES) != 32 or len(set(FEATURE_NAMES)) != 32
+            or list(FEATURE_GUIDE) != FEATURE_NAMES):
+        raise ValueError("Feature, guide and request schemas must agree on 32 ordered unique names")
+    for rule in FEATURE_GUIDE.values():
+        if not isinstance(rule, dict) or (
+                rule["dtype"] not in ("int64", "float64")
+                or not math.isfinite(rule["min"]) or not math.isfinite(rule["max"])
+                or rule["min"] > rule["max"]):
+            raise ValueError("Invalid feature guide")
+    if request_names is not None and list(request_names) != FEATURE_NAMES:
+        raise ValueError("Feature, guide and request schemas must agree on 32 ordered unique names")
+
+
+def _validate_artifacts(model, scaler):
+    import numpy as np
+
+    if scaler.n_features_in_ != 32:
+        raise ValueError("Scaler input must have 32 features")
+    if hasattr(scaler, "feature_names_in_") and list(scaler.feature_names_in_) != FEATURE_NAMES:
+        raise ValueError("Scaler feature order differs from schema")
+    for name in ("mean_", "var_", "scale_"):
+        values = np.asarray(getattr(scaler, name), dtype=np.float64)
+        if values.shape != (32,) or not np.isfinite(values).all():
+            raise ValueError("Invalid scaler parameters")
+        if name == "scale_" and (values <= 0).any():
+            raise ValueError("Scaler scale must be positive")
+        if name == "var_" and (values < 0).any():
+            raise ValueError("Scaler variance must be nonnegative")
+    if model.input_shape != (None, 32) or model.output_shape != (None, 1):
+        raise ValueError("Model must map 32 features to one probability")
+
+
+def initialize_risk_screening(request_names=None) -> bool:
+    global _model, _scaler, _model_loaded, _initialized_pid, _initialization_error, MODEL_VERSION
+
+    with _initialization_lock:
+        pid = os.getpid()
+        if _initialized_pid == pid:
+            return _model_loaded
+        _initialized_pid = pid
         _model_loaded = False
-    return _model_loaded
-
-
-# Load once at module import (lazy; doesn't block server start on missing tf)
-try:
-    _load_artifacts()
-except Exception as exc:
-    logger.info("Risk-screening deferred load: %s", exc)
-
-
-# Simple validation rules mapped from model_input_guide.json
-# Auto-derived dtype map from feature_names.json + model_input_guide.json.
-# Anything that looks like a flag (int min=0 max=1) is treated as int; otherwise float.
-# Kept as a fallback dict below for the features the guide doesn't explicitly tag.
-FEATURE_DTYPE_MAP = {
-    "Gender": int, "Ethnicity": int, "EducationLevel": int,
-    "Smoking": int, "AlcoholConsumption": float,
-    "PhysicalActivity": float, "DietQuality": float, "SleepQuality": float,
-    "FamilyHistoryAlzheimers": int, "CardiovascularDisease": int,
-    "Diabetes": int, "Depression": int, "HeadInjury": int,
-    "Hypertension": int, "MMSE": float, "FunctionalAssessment": float,
-    "MemoryComplaints": int, "BehavioralProblems": int,
-    "ADL": float, "Confusion": int, "Disorientation": int,
-    "PersonalityChanges": int, "DifficultyCompletingTasks": int,
-    "Forgetfulness": int,
-    "Age": int, "BMI": float, "SystolicBP": int, "DiastolicBP": int,
-    "CholesterolTotal": float, "CholesterolLDL": float, "CholesterolHDL": float,
-    "CholesterolTriglycerides": float,
-}
+        _model = _scaler = MODEL_VERSION = None
+        _initialization_error = None
+        try:
+            _validate_schema(request_names)
+            model, scaler = _load_artifacts()
+            _validate_artifacts(model, scaler)
+            digest = hashlib.sha256()
+            for path in (MODEL_PATH, SCALER_PATH, FEATURE_PATH, GUIDE_PATH):
+                with open(path, "rb") as source:
+                    digest.update(hashlib.file_digest(source, "sha256").digest())
+            MODEL_VERSION = "sha256:" + digest.hexdigest()
+            _model, _scaler = model, scaler
+            _model_loaded = True
+            logger.info("Risk screening initialized with 32 features (%s)", MODEL_VERSION)
+        except Exception as exc:
+            _initialization_error = f"{type(exc).__name__}: {exc}"
+            logger.warning("Risk screening unavailable: %s", _initialization_error)
+        return _model_loaded
 
 
 def validate_input(data: Dict[str, Any]) -> List[str]:
-    errors: List[str] = []
-    for feature in FEATURE_NAMES:
-        if feature not in data:
-            errors.append(f"missing_feature: {feature}")
-        else:
-            value = data[feature]
-            if value is None:
-                errors.append(f"null_feature: {feature}")
-            else:
-                try:
-                    # Coerce to expected type; float/continuous accept int; int flags must be whole
-                    expected = FEATURE_DTYPE_MAP.get(feature, float)
-                    if expected == int:
-                        float(value)  # must be numeric
-                        if float(value) % 1 != 0:
-                            errors.append(f"non_integer_feature: {feature}")
-                    else:
-                        float(value)
-                except (TypeError, ValueError):
-                    errors.append(f"bad_type: {feature} ({type(value).__name__})")
+    errors = [f"unexpected_feature: {name}" for name in data if name not in FEATURE_NAMES]
+    for name in FEATURE_NAMES:
+        if name not in data:
+            errors.append(f"missing_feature: {name}")
+            continue
+        value = data[name]
+        if value is None:
+            errors.append(f"null_feature: {name}")
+            continue
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError, OverflowError):
+            errors.append(f"bad_type: {name}")
+            continue
+        if not math.isfinite(numeric):
+            errors.append(f"non_finite_feature: {name}")
+            continue
+        rule = FEATURE_GUIDE[name]
+        if rule["dtype"] == "int64" and not numeric.is_integer():
+            errors.append(f"non_integer_feature: {name}")
+        if not rule["min"] <= numeric <= rule["max"]:
+            errors.append(f"out_of_range_feature: {name}")
     return errors
 
 
 def build_feature_array(data: Dict[str, Any]) -> Any:
     import numpy as np
-    arr = np.array([[float(data.get(f, 0)) for f in FEATURE_NAMES]], dtype=np.float64)
+
+    arr = np.array([[float(data[name]) for name in FEATURE_NAMES]], dtype=np.float64)
+    if arr.shape != (1, 32) or not np.isfinite(arr).all():
+        raise ValueError("Invalid raw feature array")
     return arr
 
 
 def run_inference(data: Dict[str, Any]) -> Dict[str, Any]:
     if not _model_loaded:
-        return {
-            "status": "model_unavailable",
-            "message": "Risk-screening model not loaded (TensorFlow / .keras missing). "
-                       "This endpoint requires a real backend environment with tensorflow installed.",
-            "feature_count_received": len([k for k in data if k in FEATURE_NAMES]),
-        }
-
+        return {"status": "model_unavailable", "message": "Risk-screening model unavailable in this worker."}
     errors = validate_input(data)
     if errors:
-        return {
-            "status": "validation_failed",
-            "errors": errors,
-        }
+        return {"status": "validation_failed", "errors": errors}
 
     import numpy as np
-    arr = build_feature_array(data)
-    scaled = _scaler.transform(arr)  # sklearn StandardScaler
-    prediction = float(_model.predict(scaled, verbose=0)[0][0])
-    # Clamp to [0, 1] (model output contract per integration guide)
-    prediction = max(0.0, min(1.0, prediction))
-    # Convert probability to 0-100 scale for UI; keep tier label simple
+
+    try:
+        arr = build_feature_array(data)
+        scaled = np.asarray(_scaler.transform(arr))
+        if scaled.shape != (1, 32) or not np.isfinite(scaled).all():
+            raise ValueError("Invalid scaled feature array")
+        output = np.asarray(_model(scaled, training=False))
+        if output.shape != (1, 1) or not np.isfinite(output).all():
+            raise ValueError("Invalid prediction shape or value")
+        prediction = float(output[0, 0])
+        if not 0 <= prediction <= 1:
+            raise ValueError("Prediction outside probability range")
+    except Exception:
+        logger.warning("Risk screening inference failed")
+        return {"status": "inference_failed", "message": "Risk-screening inference failed validation."}
     score = round(prediction * 100, 2)
-    tier = (
-        "low_risk" if score < 33 else
-        ("moderate_risk" if score < 67 else "high_risk")
-    )
+    tier = "low_risk" if score < 33 else "moderate_risk" if score < 67 else "high_risk"
     return {
         "status": "ok",
-        "risk_score": score,  # 0-100 per teammate's spec (probability * 100)
-        "probability": prediction,  # raw 0-1
+        "risk_score": score,
+        "probability": prediction,
         "tier": tier,
-        "feature_count": len(FEATURE_NAMES),
+        "feature_count": 32,
+        "model_version": MODEL_VERSION,
         "note": "Preliminary screening only; not a clinical diagnosis",
     }

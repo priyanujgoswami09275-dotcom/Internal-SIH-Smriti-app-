@@ -3,7 +3,6 @@
 Bad path covered: unsupported type -> 400; empty file -> 400; oversized -> 413.
 """
 import io
-import uuid
 
 import pytest
 
@@ -14,20 +13,17 @@ COMPLIANCE = "/api/v1/compliance"
 
 
 async def _clinician_with_patient(client):
-    r = await client.post(f"{AUTH}/register", json={
-        "phone": f"+91{uuid.uuid4().int % 10**10}",
-        "email": f"{uuid.uuid4().hex[:8]}@test.in",
-        "password": "Passw0rd123", "role": "clinician", "preferred_language": "english"})
-    assert r.status_code == 201, r.text
+    from app.tests.conftest import provision_staff_user
+
+    user = await provision_staff_user()
     login = await client.post(f"{AUTH}/login", json={
-        "phone": r.json()["phone"], "password": "Passw0rd123"})
+        "phone": user["phone"], "password": "Passw0rd123"})
+    assert login.status_code == 200, login.text
     h = {"Authorization": f"Bearer {login.json()['access_token']}"}
-    prof = await client.post(PATIENTS, json={"name": "Upload Patient", "region": "assam"}, headers=h)
-    assert prof.status_code == 201, prof.text
-    consent = await client.post(f"{COMPLIANCE}/consent", headers=h, json={
-        "patient_id": prof.json()["id"], "consent_type": "guardian", "scope": "all"})
-    assert consent.status_code == 200, consent.text
-    return h, prof.json()["id"]
+    from app.tests.conftest import create_consented_patient
+
+    prof = await create_consented_patient(client, "Upload Patient")
+    return h, prof["id"]
 
 
 @pytest.mark.asyncio

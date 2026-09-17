@@ -58,6 +58,29 @@ async def load_patient(db: AsyncSession, patient_id: UUID) -> Optional[PatientPr
     return res.scalar_one_or_none()
 
 
+def require_patient_owner(user: User, patient: PatientProfile) -> None:
+    if (
+        not user.is_active
+        or _role(user) != "patient"
+        or user.id is None
+        or patient.user_id != user.id
+    ):
+        raise HTTPException(status_code=403, detail="Active patient owner required")
+
+
+async def ensure_patient_owner(
+    db: AsyncSession, current_user: User, patient_id: UUID
+) -> PatientProfile:
+    patient = (await db.execute(
+        select(PatientProfile).where(PatientProfile.id == patient_id)
+        .with_for_update().execution_options(populate_existing=True)
+    )).scalar_one_or_none()
+    if patient is None:
+        raise HTTPException(status_code=404, detail="Patient not found")
+    require_patient_owner(current_user, patient)
+    return patient
+
+
 async def can_access_patient(
     db: AsyncSession, user: User, patient: Optional[PatientProfile]
 ) -> bool:

@@ -194,10 +194,16 @@ async def test_dpdp_compliance_and_encryption(db_session):
 
     # Consent lifecycle
     patient_id = uuid.uuid4()
+    owner = User(id=uuid.uuid4(), password_hash="unused", role=RoleEnum.PATIENT, is_active=True)
+    db_session.add(owner)
+    await db_session.flush()
+    db_session.add(PatientProfile(id=patient_id, user_id=owner.id, name="Consent owner"))
+    await db_session.commit()
     consent = await ComplianceService.record_consent(
         db=db_session,
         patient_id=patient_id,
-        consent_type=ConsentTypeEnum.GUARDIAN,
+        actor=owner,
+        consent_type=ConsentTypeEnum.PATIENT_SELF,
         scope="health_data",
     )
     assert consent.id is not None
@@ -206,7 +212,7 @@ async def test_dpdp_compliance_and_encryption(db_session):
     assert has_consent is True
 
     # Revoke consent
-    revoked = await ComplianceService.revoke_consent(db_session, consent.id)
+    revoked = await ComplianceService.revoke_consent(db_session, consent.id, actor=owner)
     assert revoked.revoked_at is not None
 
     has_consent_after = await ComplianceService.verify_consent(db_session, patient_id, "health_data")

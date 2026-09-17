@@ -15,6 +15,8 @@ import hashlib
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 from cryptography.fernet import Fernet
+from fastapi import HTTPException
+from app.models.user import User
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
@@ -57,24 +59,45 @@ class EncryptionService:
 
 class ComplianceService:
     @staticmethod
+    def validate_consent_policy(consent_type, scope, guardian_id=None) -> None:
+        if consent_type != ConsentTypeEnum.PATIENT_SELF or guardian_id is not None:
+            raise HTTPException(status_code=422, detail="Only patient_self consent without a guardian is supported; verified guardian identity is unavailable")
+        if scope not in {"game_data", "health_data", "voice_companion", "all"}:
+            raise HTTPException(status_code=422, detail="Unsupported processing scope")
+
+    @staticmethod
     async def record_consent(
         db: AsyncSession,
         patient_id: uuid.UUID,
         consent_type: ConsentTypeEnum,
         scope: str,
+        actor: User,
         guardian_id: Optional[uuid.UUID] = None,
     ) -> ConsentRecord:
-        """Explicitly capture DPDP consent record before storing any patient health data."""
+        from app.deps import ensure_patient_owner
+
+        await ensure_patient_owner(db, actor, patient_id)
+        ComplianceService.validate_consent_policy(consent_type, scope, guardian_id)
         record = ConsentRecord(
+            id=uuid.uuid4(),
             patient_id=patient_id,
-            consent_type=consent_type,
+            consent_type=ConsentTypeEnum.PATIENT_SELF,
             scope=scope,
             granted_at=datetime.now(timezone.utc),
-            guardian_id=guardian_id,
+            grantor_id=actor.id,
+            guardian_id=None,
         )
-        db.add(record)
-        await db.commit()
-        await db.refresh(record)
+        try:
+            db.add(record)
+            audit = await ComplianceService.log_audit_access(
+                db, actor.id, "write", "consent", record.id,
+                details={"operation": "grant", "patient_id": str(patient_id), "scope": scope},
+            )
+            if audit is None:
+                raise RuntimeError("Mutation audit unavailable")
+        except Exception:
+            await db.rollback()
+            raise HTTPException(status_code=503, detail="Consent persistence or audit unavailable")
         return record
 
     @staticmethod
@@ -100,16 +123,34 @@ class ComplianceService:
     async def revoke_consent(
         db: AsyncSession,
         consent_id: uuid.UUID,
-    ) -> Optional[ConsentRecord]:
-        """Revoke consent triggering DPDP data isolation and 30-day grace erasure queue."""
-        stmt = select(ConsentRecord).where(ConsentRecord.id == consent_id)
-        res = await db.execute(stmt)
-        record = res.scalar_one_or_none()
+        actor: User,
+    ) -> ConsentRecord:
+        from app.deps import ensure_patient_owner
 
-        if record:
-            record.revoked_at = datetime.now(timezone.utc)
-            await db.commit()
-            await db.refresh(record)
+        patient_id = (await db.execute(
+            select(ConsentRecord.patient_id).where(ConsentRecord.id == consent_id)
+        )).scalar_one_or_none()
+        if patient_id is None:
+            raise HTTPException(status_code=404, detail="Consent record not found")
+        await ensure_patient_owner(db, actor, patient_id)
+        record = (await db.execute(
+            select(ConsentRecord).where(ConsentRecord.id == consent_id)
+            .with_for_update().execution_options(populate_existing=True)
+        )).scalar_one_or_none()
+        if record is None:
+            raise HTTPException(status_code=404, detail="Consent record not found")
+        try:
+            if record.revoked_at is None:
+                record.revoked_at = datetime.now(timezone.utc)
+            audit = await ComplianceService.log_audit_access(
+                db, actor.id, "write", "consent", record.id,
+                details={"operation": "revoke", "patient_id": str(patient_id), "scope": record.scope},
+            )
+            if audit is None:
+                raise RuntimeError("Mutation audit unavailable")
+        except Exception:
+            await db.rollback()
+            raise HTTPException(status_code=503, detail="Consent persistence or audit unavailable")
         return record
 
     @staticmethod
@@ -177,7 +218,7 @@ class ComplianceService:
     async def export_patient_data(db: AsyncSession, patient_id: uuid.UUID) -> Dict[str, Any]:
         """DPDP data-portability dump: profile, consents, games, reminders."""
         from app.models.all_models import (
-            PatientProfile, GameSession, ReminderEvent, ReminderSchedule,
+            PatientProfile, GameSession, ReminderEvent, ReminderSchedule, RiskScreening,
         )
 
         patient = (
@@ -199,7 +240,22 @@ class ComplianceService:
             await db.execute(select(ReminderEvent).where(ReminderEvent.patient_id == patient_id))
         ).scalars().all()
 
+        screening = None
+        if await ComplianceService.verify_consent(db, patient_id, "health_data"):
+            screening = (await db.execute(
+                select(RiskScreening).join(ConsentRecord, RiskScreening.consent_id == ConsentRecord.id).where(
+                    RiskScreening.patient_id == patient_id, ConsentRecord.revoked_at.is_(None),
+                )
+            )).scalar_one_or_none()
+
         return {
+            "risk_screening": {
+                "probability": screening.probability,
+                "risk_score": screening.risk_score,
+                "model_version": screening.model_version,
+                "screened_at": screening.screened_at.isoformat(),
+                "note": "Preliminary screening only; not a clinical diagnosis",
+            } if screening else None,
             "exported_at": datetime.now(timezone.utc).isoformat(),
             "patient": {
                 "id": str(patient.id),

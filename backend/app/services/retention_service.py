@@ -27,6 +27,7 @@ from app.models.all_models import (
     GameSession,
     MedicalDocument,
     ReminderEvent,
+    RiskScreening,
     SymptomLog,
     SyncQueue,
 )
@@ -100,6 +101,11 @@ class RetentionService:
 
         # revoked consents past the 30-day grace period -> hard delete
         cutoff = now - RETENTION["consent_grace"]
+        expired_consents = select(ConsentRecord.id).where(
+            ConsentRecord.revoked_at.isnot(None), ConsentRecord.revoked_at < cutoff,
+        )
+        res = await db.execute(delete(RiskScreening).where(RiskScreening.consent_id.in_(expired_consents)))
+        counts["risk_screenings"] = res.rowcount or 0
         res = await db.execute(
             delete(ConsentRecord).where(
                 ConsentRecord.revoked_at.isnot(None),

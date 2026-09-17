@@ -80,11 +80,13 @@ async def test_family_basic_cannot_read_clinical_documents(client):
     ch = await _login(client, cg["phone"])
     profile = await _patient(client, ph, "Rupali")
     me = await client.get(f"{AUTH}/me", headers=ch)
-    await client.post(f"{PATIENTS}/{profile['id']}/caregivers", headers=ch, json={
+    linked = await client.post(f"{PATIENTS}/{profile['id']}/caregivers", headers=ph, json={
         "caregiver_id": me.json()["id"], "relationship_type": "family",
         "permission_tier": "basic"})
-    await client.post(f"{COMPLIANCE}/consent", headers=ph, json={
+    assert linked.status_code == 201, linked.text
+    granted = await client.post(f"{COMPLIANCE}/consent", headers=ph, json={
         "patient_id": profile["id"], "consent_type": "patient_self", "scope": "all"})
+    assert granted.status_code == 200, granted.text
 
     r = await client.post(f"{REPORTS}/documents/ingest", headers=ch, json={
         "patient_id": profile["id"], "file_ref": "rx.pdf", "doc_type": "prescription",
@@ -110,11 +112,13 @@ async def test_family_clinical_and_export(client):
     ch = await _login(client, cg["phone"])
     profile = await _patient(client, ph, "Biren")
     me = await client.get(f"{AUTH}/me", headers=ch)
-    await client.post(f"{PATIENTS}/{profile['id']}/caregivers", headers=ch, json={
+    linked = await client.post(f"{PATIENTS}/{profile['id']}/caregivers", headers=ph, json={
         "caregiver_id": me.json()["id"], "relationship_type": "family",
         "permission_tier": "clinical"})
-    await client.post(f"{COMPLIANCE}/consent", headers=ph, json={
+    assert linked.status_code == 201, linked.text
+    granted = await client.post(f"{COMPLIANCE}/consent", headers=ph, json={
         "patient_id": profile["id"], "consent_type": "patient_self", "scope": "all"})
+    assert granted.status_code == 200, granted.text
 
     r = await client.post(f"{REPORTS}/documents/ingest", headers=ch, json={
         "patient_id": profile["id"], "file_ref": "rx-clinical.pdf", "doc_type": "prescription",
