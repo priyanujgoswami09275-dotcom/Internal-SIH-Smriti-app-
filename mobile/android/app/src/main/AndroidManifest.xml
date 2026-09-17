@@ -2,6 +2,8 @@
     <!-- Network access for the API client (release builds do NOT get this by
          default; only debug/profile manifests inject it). -->
     <uses-permission android:name="android.permission.INTERNET"/>
+    <!-- Voice companion: microphone capture for server-side transcription. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO"/>
     <!-- Local reminder notifications (flutter_local_notifications). -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <uses-permission android:name="android.permission.VIBRATE"/>

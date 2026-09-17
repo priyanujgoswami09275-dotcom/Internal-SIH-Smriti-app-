@@ -6,6 +6,7 @@
 ///   - games:     sessions, complete, content packs, boards, routine board
 ///   - reminders: schedules, events acknowledge
 ///   - companion: chat/text (voice companion)
+///   - speech:    asr + tts via the server provider chain (Sarvam/Bhashini/mock)
 ///   - dashboard: caregiver roster, patient summary, alert acknowledge
 ///
 /// A low-level `get/post/put/delete` returning `http.Response` is also exposed
@@ -15,6 +16,7 @@ library;
 import 'dart:async';
 import 'dart:convert';
 import 'dart:developer' as developer;
+import 'dart:typed_data';
 
 import 'package:http/http.dart' as http;
 
@@ -288,26 +290,6 @@ class ApiService {
     );
   }
 
-  Future<String?> synthesizeSpeech({
-    required String text,
-    String language = 'assamese',
-  }) async {
-    try {
-      final data = await postJson(
-        '${AppConfig.apiV1}/language/tts',
-        body: {
-          'text': text,
-          'source_language': 'english',
-          'target_language': language,
-        },
-      );
-      final map = data as Map<String, dynamic>;
-      return map['audio_base64'] as String? ?? map['audio'] as String?;
-    } on Exception {
-      return null;
-    }
-  }
-
   // =====================================================================
   // Games
   // =====================================================================
@@ -443,6 +425,41 @@ class ApiService {
       },
     );
     return CompanionReply.fromJson(data as Map<String, dynamic>);
+  }
+
+  // =====================================================================
+  // Speech — server-side ASR/TTS (the device only records and plays;
+  // all speech intelligence lives in the backend provider chain).
+  // =====================================================================
+
+  /// Transcribe recorded audio via POST /language/asr.
+  /// [audioBase64] must be base64 wav (16kHz mono preferred).
+  /// Throws [ApiException] on 400 (unsupported language) or 502 (provider).
+  Future<String> transcribeAudio({
+    required String audioBase64,
+    required String language,
+  }) async {
+    final data = await postJson(
+      '${AppConfig.apiV1}/language/asr',
+      body: {'audio_base64': audioBase64, 'source_language': language},
+    );
+    return (data as Map<String, dynamic>)['recognized_text'] as String? ?? '';
+  }
+
+  /// Synthesize [text] via POST /language/tts; returns raw audio bytes
+  /// for playback. Throws [ApiException] on failure — callers fall back
+  /// to text display.
+  Future<Uint8List> synthesizeSpeech({
+    required String text,
+    required String language,
+  }) async {
+    final data = await postJson(
+      '${AppConfig.apiV1}/language/tts',
+      body: {'text': text, 'target_language': language},
+    );
+    final b64 =
+        (data as Map<String, dynamic>)['audio_base64'] as String? ?? '';
+    return base64Decode(b64);
   }
 
   // =====================================================================

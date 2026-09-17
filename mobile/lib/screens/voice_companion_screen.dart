@@ -1,10 +1,18 @@
 /// Voice Companion — warm, calm conversation with the elder in their language.
+///
+/// Text chat always works. When the mic is available, the elder can also
+/// talk: audio is recorded on-device, transcribed server-side
+/// (POST /language/asr), sent through the normal chat flow, and the reply
+/// is spoken back (POST /language/tts). Every voice step degrades to text.
 library;
+
+import 'dart:async';
 
 import 'package:flutter/material.dart';
 
 import '../config/app_config.dart';
 import '../services/api_service.dart';
+import '../services/voice_audio_service.dart';
 import '../theme/monad_theme.dart';
 import '../widgets/monad/monad_pill_button.dart';
 
@@ -27,6 +35,17 @@ class _VoiceCompanionScreenState extends State<VoiceCompanionScreen> {
   String _selectedLanguage = 'assamese';
   bool _sending = false;
   bool _wasFallback = false;
+
+  // Voice turn state. Recording/transcribing never block text chat —
+  // the text field stays usable and every failure shows a note, not a crash.
+  final VoiceAudioService _voice = VoiceAudioService();
+  StreamSubscription<double>? _ampSub;
+  Timer? _recordTimer;
+  bool _recording = false;
+  bool _transcribing = false;
+  bool _ttsEnabled = true;
+  double _voiceLevel = 0.0;
+  int _recordSeconds = 0;
 
   /// Languages the active backend provider actually covers (from
   /// /language/status). Null while loading or when the call fails —
@@ -99,8 +118,12 @@ class _VoiceCompanionScreenState extends State<VoiceCompanionScreen> {
 
   @override
   void dispose() {
+    _ampSub?.cancel();
+    _recordTimer?.cancel();
     _messageController.dispose();
     _scrollController.dispose();
+    _voice.stopPlayback();
+    _voice.dispose();
     super.dispose();
   }
 
@@ -118,7 +141,7 @@ class _VoiceCompanionScreenState extends State<VoiceCompanionScreen> {
 
   Future<void> _send(String rawMessage) async {
     final message = rawMessage.trim();
-    if (message.isEmpty || _sending) return;
+    if (message.isEmpty || _sending || _recording) return;
     _messageController.clear();
 
     final userMsg = _ChatMessage(content: message, isCompanion: false, timestamp: DateTime.now());
@@ -149,6 +172,7 @@ class _VoiceCompanionScreenState extends State<VoiceCompanionScreen> {
         _wasFallback = result.fallback;
         _sending = false;
       });
+      _speakReply(result.replyText);
     } on Exception catch (e) {
       if (!mounted) return;
       setState(() {
@@ -165,6 +189,137 @@ class _VoiceCompanionScreenState extends State<VoiceCompanionScreen> {
     _scrollToBottom();
   }
 
+  // =====================================================================
+  // Voice turn: mic → server ASR → normal chat → server TTS playback.
+  // =====================================================================
+
+  Future<void> _onMicTap() async {
+    if (_sending || _transcribing) return;
+    if (_recording) {
+      await _finishRecording();
+      return;
+    }
+    // First-use permission prompt; text chat stays available regardless.
+    final permission = await _voice.ensureMicPermission();
+    if (!mounted) return;
+    if (permission == MicPermission.permanentlyDenied) {
+      _showVoiceNote(
+        'Microphone is blocked. Enable it in Settings to talk.',
+        actionLabel: 'Settings',
+        action: _voice.openSettings,
+      );
+      return;
+    }
+    if (permission != MicPermission.granted) {
+      _showVoiceNote('Microphone unavailable — you can type instead.');
+      return;
+    }
+    await _voice.stopPlayback();
+    final started = await _voice.startRecording();
+    if (!mounted) return;
+    if (!started) {
+      _showVoiceNote('Could not start the microphone — you can type instead.');
+      return;
+    }
+    setState(() {
+      _recording = true;
+      _voiceLevel = 0.0;
+      _recordSeconds = 0;
+    });
+    _scrollToBottom();
+    _recordTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (mounted && _recording) setState(() => _recordSeconds++);
+    });
+    _ampSub = _voice.amplitudeStream.listen((db) {
+      if (!_recording || !mounted) return;
+      setState(() => _voiceLevel = ((db + 60.0) / 60.0).clamp(0.0, 1.0));
+      if (_voice.silenceDetector.feed(db)) {
+        // Auto-stop on sustained silence (or the 30s hard cap).
+        _finishRecording();
+      }
+    });
+  }
+
+  Future<void> _finishRecording() async {
+    if (!_recording) return;
+    await _ampSub?.cancel();
+    _ampSub = null;
+    _recordTimer?.cancel();
+    _recordTimer = null;
+    setState(() {
+      _recording = false;
+      _transcribing = true;
+      _voiceLevel = 0.0;
+    });
+    _scrollToBottom();
+    try {
+      final audioBase64 = await _voice.stopRecording();
+      if (audioBase64 == null || audioBase64.isEmpty) {
+        if (!mounted) return;
+        setState(() => _transcribing = false);
+        _showVoiceNote("Didn't catch that — try again or type instead.");
+        return;
+      }
+      final text = await _api.transcribeAudio(
+        audioBase64: audioBase64,
+        language: _selectedLanguage,
+      );
+      if (!mounted) return;
+      setState(() => _transcribing = false);
+      if (text.trim().isEmpty) {
+        _showVoiceNote("Didn't catch that — try again or type instead.");
+        return;
+      }
+      await _send(text);
+    } on Exception catch (e) {
+      debugPrint('Voice turn failed: $e');
+      if (!mounted) return;
+      setState(() => _transcribing = false);
+      _showVoiceNote('Voice is unavailable right now — you can type instead.');
+    }
+  }
+
+  /// Speak the companion reply aloud. Best-effort: any failure keeps the
+  /// text bubble as the fallback and never interrupts the chat.
+  Future<void> _speakReply(String text) async {
+    if (!_ttsEnabled || text.trim().isEmpty) return;
+    try {
+      final audio = await _api.synthesizeSpeech(
+        text: text,
+        language: _selectedLanguage,
+      );
+      if (audio.isEmpty) return;
+      await _voice.playReply(audio);
+    } catch (e) {
+      debugPrint('TTS playback skipped: $e');
+    }
+  }
+
+  void _showVoiceNote(
+    String message, {
+    String? actionLabel,
+    VoidCallback? action,
+  }) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          message,
+          style: Monad.patientBody.copyWith(color: Monad.parchment),
+        ),
+        backgroundColor: Monad.offBlack,
+        behavior: SnackBarBehavior.floating,
+        action: (actionLabel != null && action != null)
+            ? SnackBarAction(
+                label: actionLabel,
+                onPressed: action,
+                textColor: Monad.tintGold,
+              )
+            : null,
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -172,6 +327,18 @@ class _VoiceCompanionScreenState extends State<VoiceCompanionScreen> {
         title: const Text('Aai Companion'),
         centerTitle: false,
         actions: [
+          IconButton(
+            tooltip: _ttsEnabled ? 'Mute voice replies' : 'Unmute voice replies',
+            icon: Icon(
+              _ttsEnabled ? Icons.volume_up : Icons.volume_off,
+              color: Monad.offBlack,
+              size: 20,
+            ),
+            onPressed: () {
+              if (_ttsEnabled) _voice.stopPlayback();
+              setState(() => _ttsEnabled = !_ttsEnabled);
+            },
+          ),
           PopupMenuButton<String>(
             icon: Row(
               mainAxisSize: MainAxisSize.min,
@@ -228,10 +395,11 @@ class _VoiceCompanionScreenState extends State<VoiceCompanionScreen> {
               child: ListView.builder(
                 controller: _scrollController,
                 padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-                itemCount: _messages.length + (_sending ? 1 : 0),
+                itemCount: _messages.length +
+                    (_sending || _transcribing || _recording ? 1 : 0),
                 itemBuilder: (context, index) => index < _messages.length
                     ? _messageBubble(_messages[index])
-                    : _typingBubble(),
+                    : (_recording ? _listeningBubble() : _typingBubble()),
               ),
             ),
             _inputBar(),
@@ -305,6 +473,60 @@ class _VoiceCompanionScreenState extends State<VoiceCompanionScreen> {
     );
   }
 
+  /// Listening indicator: pulsing red dot driven by the live mic level,
+  /// elapsed time, and a tap-to-stop hint for low-literacy users.
+  Widget _listeningBubble() {
+    final mm = (_recordSeconds ~/ 60).toString();
+    final ss = (_recordSeconds % 60).toString().padLeft(2, '0');
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.start,
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          _companionAvatar(),
+          const SizedBox(width: 10),
+          Flexible(
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              decoration: BoxDecoration(
+                color: Monad.periwinkleMist,
+                borderRadius: const BorderRadius.only(
+                  topLeft: Radius.circular(16),
+                  topRight: Radius.circular(16),
+                  bottomLeft: Radius.circular(4),
+                  bottomRight: Radius.circular(16),
+                ),
+                border: Border.all(color: Monad.ash, width: 1),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  AnimatedContainer(
+                    duration: const Duration(milliseconds: 200),
+                    width: 12 + _voiceLevel * 10,
+                    height: 12 + _voiceLevel * 10,
+                    decoration: const BoxDecoration(
+                      color: Colors.red,
+                      shape: BoxShape.circle,
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Flexible(
+                    child: Text(
+                      'Listening… $mm:$ss — tap ■ to stop',
+                      style: Monad.patientBody,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _typingBubble() {
     return Padding(
       padding: const EdgeInsets.only(bottom: 12),
@@ -369,6 +591,8 @@ class _VoiceCompanionScreenState extends State<VoiceCompanionScreen> {
       ),
       child: Row(
         children: [
+          _micButton(),
+          const SizedBox(width: 10),
           Expanded(
             child: SizedBox(
               height: 50,
@@ -408,6 +632,33 @@ class _VoiceCompanionScreenState extends State<VoiceCompanionScreen> {
             onPressed: () => _send(_messageController.text),
           ),
         ],
+      ),
+    );
+  }
+  /// Mic button: idle mic → tap to talk; while recording it becomes a
+  /// stop square that grows with the live voice level. Disabled (greyed)
+  /// while a message is sending or transcribing. Never removes text input.
+  Widget _micButton() {
+    final busy = _sending || _transcribing;
+    final glow = _recording ? _voiceLevel * 8 : 0.0;
+    return GestureDetector(
+      onTap: busy ? null : _onMicTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 200),
+        width: 50 + glow,
+        height: 50 + glow,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          color: busy
+              ? Monad.ash
+              : (_recording ? Monad.offBlack : Monad.periwinkleMist),
+          border: Border.all(color: Monad.ash, width: 1),
+        ),
+        child: Icon(
+          _recording ? Icons.stop : Icons.mic,
+          color: _recording ? Monad.parchment : Monad.offBlack,
+          size: 24,
+        ),
       ),
     );
   }
