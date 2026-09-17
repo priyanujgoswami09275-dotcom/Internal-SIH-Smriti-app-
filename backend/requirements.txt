@@ -27,5 +27,8 @@ sentencepiece>=0.2.0
 protobuf>=4.25.0
 tiktoken>=0.7.0
 # ML — Stage 1 Alzheimer's risk screening (Keras 3.13.2; model saved 2026-09-06)
-tensorflow>=2.16.0
-scikit-learn>=1.5.0  # scaler.pkl load
+tensorflow==2.16.2
+scikit-learn==1.6.1  # scaler.pkl load
+numpy==1.26.4
+keras==3.13.2
+joblib==1.6.0
