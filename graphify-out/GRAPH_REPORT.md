@@ -1,16 +1,16 @@
-# Graph Report - Smriti-SIH-Internal-Hackathon  (2026-09-17)
+# Graph Report - Smriti-SIH-Internal-Hackathon  (2026-09-18)
 
 ## Corpus Check
-- 338 files · ~268,518 words
+- 349 files · ~274,806 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 4357 nodes · 7607 edges · 266 communities (222 shown, 17 thin omitted)
-- Extraction: 92% EXTRACTED · 8% INFERRED · 0% AMBIGUOUS · INFERRED: 618 edges (avg confidence: 0.94)
+- 4461 nodes · 7880 edges · 266 communities (223 shown, 26 thin omitted)
+- Extraction: 92% EXTRACTED · 8% INFERRED · 0% AMBIGUOUS · INFERRED: 647 edges (avg confidence: 0.94)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `366d7d22`
+- Built from commit: `45f9e4d6`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -35,8 +35,8 @@
 - timedelta
 - LanguageServiceError
 - risk_intake_form.dart
-- LanguageServiceProvider
-- test_sync_consumer.py
+- config.py
+- SyncQueue
 - game_analytics_engine.dart
 - routine_service.dart
 - Components
@@ -55,33 +55,33 @@
 - match_it_service.dart
 - voice_audio_service.dart
 - voice_companion.py
-- run_tests.py
+- test_phase2_services.py
 - pack_picker_screen.dart
 - recall_service.dart
 - patients.py
 - Architecture & Decisions — Elder-Care Cognitive Companion Platform
 - index.ts
-- PatientProfile
+- GameTypeEnum
 - test_ai4bharat_provider.py
 - dashboard/lib/widgets/monad/monad_pill_button.dart
 - test_sarvam_provider.py
 - User
-- _post
+- language.py
 - BaselineData
 - test_phase6_7_alerts_reports.py
 - offlineQueue.ts
 - App.tsx
 - compilerOptions
 - auth_session.dart
-- config.py
+- test_phase12_gates.py
 - ReminderService
-- main.py
+- deps.py
 - AdaptiveEngine
 - PatientDetail.tsx
-- get_level_params
+- extract_features
 - 2026-09-04-phase1-scaffold-data-models.md
 - Deployment Readiness Research — SIH26003 Elder-Care Cognitive Companion
-- recall_service_test.dart
+- package:flutter_test/flutter_test.dart
 - Smriti — AI-Powered Cognitive Gaming and Memory Assistance Platform
 - models.py
 - level_config.dart
@@ -90,7 +90,7 @@
 - compilerOptions
 - State
 - MockLanguageService
-- test_all_services.py
+- PatientProfile
 - reminders.py
 - GSD Roadmapper
 - Client-Side Game Analytics / Telemetry — Design Research
@@ -100,23 +100,23 @@
 - PerformanceTracker
 - dashboard/lib/widgets/monad/monad_game_card.dart
 - reminder_scheduler.dart
-- test_api_routes.py
+- ConversationStore
 - Notification System Research — 2026-09-07
-- package:flutter_test/flutter_test.dart
-- api_live_test.dart
+- SarvamLanguageService
+- generate_match_it_board
 - TestStartingDifficulty
 - rag_upload_screen.dart
 - Phase 1 Decisions
 - DataClass
-- package:shared_preferences/shared_preferences.dart
-- rag_upload_widget.dart
+- RateLimitMiddleware
+- local_content_packs.dart
 - TestAdaptiveDecisions
 - monad_widgets_test.dart
 - test_risk_screening.py
 - Verification Process
 - dashboard/web/manifest.json
 - mobile/web/manifest.json
-- clinical_notes_screen.dart
+- CompanionServiceError
 - Elder-Care Cognitive Companion Platform
 - UI Visual Redesign — Care Dashboard + Games + Reminders
 - AuthContext.tsx
@@ -126,10 +126,10 @@
 - GSD Plan Checker
 - TestPerformanceTracker
 - tts_cache.dart
-- reminder_voice_test.dart
-- Deployment — SIH26003 Elder-Care Companion (2026-09-06)
+- get_patient_summary
+- test_game_engine_and_adaptive_difficulty
 - plugins
-- test_risk_migration_postgres.py
+- B-REPORT — single time-boxed hackathon B (shadow-only)
 - OpenRouter Free-Tier Research — SIH26003
 - Global Constraints
 - @DataClassName
@@ -167,7 +167,7 @@
 - GSD Codebase Mapper
 - GSD Phase Researcher
 - test_phase11_gates.py
-- test_phase0_fixes.py
+- env.py
 - GSD Research Synthesizer
 - Process
 - provision_staff_user
@@ -187,7 +187,7 @@
 - GSD Debug
 - GSD Plan Phase
 - GSD Verify Work
-- EncryptionService
+- AppDatabase
 - Debug File Protocol
 - Hypothesis Testing
 - TDD Execution
@@ -250,19 +250,29 @@
 - Structured Returns
 - Authentication Gates
 - Execution Patterns
-- test_phase5_game_stats.py
 - Final Commit
+- A-02 — current next step: A report and one bounded B approval
+- B-01 — single time-boxed hackathon B
+- B-02-PLAN.md
+- B-03-PLAN.md
+- B-04-PLAN.md
+- B-05-PLAN.md
+- B-06-PLAN.md
+- C-01-PLAN.md
+- C-02-PLAN.md
+- C-03-PLAN.md
+- C-04-PLAN.md
 - game_analytics_engine_test.dart
 - Phase A — A-01 implementation summary (2026-09-17)
 
 ## God Nodes (most connected - your core abstractions)
-1. `User` - 112 edges
-2. `PatientProfile` - 63 edges
-3. `RoleEnum` - 54 edges
-4. `ComplianceService` - 50 edges
-5. `GameSession` - 47 edges
-6. `LanguageServiceError` - 44 edges
-7. `GameTypeEnum` - 42 edges
+1. `User` - 113 edges
+2. `PatientProfile` - 67 edges
+3. `GameSession` - 55 edges
+4. `RoleEnum` - 54 edges
+5. `ComplianceService` - 50 edges
+6. `GameTypeEnum` - 46 edges
+7. `LanguageServiceError` - 44 edges
 8. `ReminderService` - 40 edges
 9. `ReminderEvent` - 37 edges
 10. `VoiceCompanionService` - 37 edges
@@ -282,7 +292,7 @@
 ## Import Cycles
 - None detected.
 
-## Communities (266 total, 17 thin omitted)
+## Communities (266 total, 26 thin omitted)
 
 ### Community 0 - "app_database.dart"
 Cohesion: 0.01
@@ -302,31 +312,31 @@ Nodes (80): ash, blackPill, bluePill, buttonRadius, cardPadding, cardRadius, car
 
 ### Community 4 - "ComplianceService"
 Cohesion: 0.12
-Nodes (28): ConsentCreateRequest, ConsentResponse, export_patient_data(), grant_consent(), list_audit_logs(), list_patient_consents(), AsyncSession, BaseModel (+20 more)
+Nodes (27): ConsentCreateRequest, ConsentResponse, export_patient_data(), grant_consent(), list_audit_logs(), list_patient_consents(), AsyncSession, BaseModel (+19 more)
 
 ### Community 5 - "RAGService"
 Cohesion: 0.06
-Nodes (54): _build_provider(), EmbeddingProvider, EmbeddingUnavailableError, get_embedding_provider(), HeuristicEmbeddingProvider, LocalSentenceTransformerProvider, OpenAIEmbeddingProvider, ABC (+46 more)
+Nodes (52): _build_provider(), EmbeddingProvider, EmbeddingUnavailableError, get_embedding_provider(), HeuristicEmbeddingProvider, LocalSentenceTransformerProvider, OpenAIEmbeddingProvider, ABC (+44 more)
 
 ### Community 6 - "dashboard/lib/main.dart"
 Cohesion: 0.03
 Nodes (70): _ack, acknowledge, _addSchedule, _addScheduleRow, _Api, _auditLogs, _auditPanel, build (+62 more)
 
 ### Community 7 - "package:flutter/material.dart"
-Cohesion: 0.04
-Nodes (56): CaregiverDashboardApp, TrendChart, body, build, MonadElevatedCard, title, trailing, body (+48 more)
+Cohesion: 0.05
+Nodes (49): CaregiverDashboardApp, TrendChart, body, build, MonadElevatedCard, title, trailing, body (+41 more)
 
 ### Community 8 - "all_models.py"
 Cohesion: 0.11
-Nodes (43): Alembic environment configuration for Elder-Care platform., Run migrations in 'offline' mode — emits SQL to stdout., Run migrations against a live database., run_migrations_offline(), run_migrations_online(), AcknowledgmentMethodEnum, CognitiveBaselineEnum, DifficultyAdjustmentLog (+35 more)
+Nodes (49): AcknowledgmentMethodEnum, AlertSeverityEnum, AlertTriggerTypeEnum, CaregiverPatientLink, CognitiveBaselineEnum, DocumentTypeEnum, EmbeddingStatusEnum, NotificationDelivery (+41 more)
 
 ### Community 9 - "games.py"
 Cohesion: 0.06
 Nodes (62): complete_game(), ContentItemIn, ContentPackCreate, ContentPackSummary, create_content_pack(), DifficultyEvaluationResponse, _ensure_owned_session(), evaluate_difficulty() (+54 more)
 
 ### Community 10 - "AuthService"
-Cohesion: 0.10
-Nodes (31): verify_token(), login(), AsyncSession, BaseModel, Single-use rotation: only the current jti is accepted; a new pair revokes the…, refresh_token(), RefreshRequest, AuthService (+23 more)
+Cohesion: 0.05
+Nodes (68): verify_token(), _parse_sub(), JWT 'sub' is a stringified UUID; normalize for UUID column comparison., is_public_registration_role(), login(), logout(), me(), AsyncSession (+60 more)
 
 ### Community 11 - "shared_models.dart"
 Cohesion: 0.04
@@ -341,36 +351,36 @@ Cohesion: 0.04
 Nodes (47): axios, @dnd-kit/core, @fontsource/jetbrains-mono, dependencies, axios, @dnd-kit/core, @fontsource/jetbrains-mono, react (+39 more)
 
 ### Community 14 - "notification_service.py"
-Cohesion: 0.09
-Nodes (33): _build_provider(), ConsoleNotificationProvider, FCMNotificationProvider, get_notification_provider(), LogOnlyFallbackProvider, NotificationError, NotificationProvider, notify_escalation_results() (+25 more)
+Cohesion: 0.10
+Nodes (31): _build_provider(), ConsoleNotificationProvider, FCMNotificationProvider, get_notification_provider(), LogOnlyFallbackProvider, NotificationError, NotificationProvider, notify_escalation_results() (+23 more)
 
 ### Community 15 - "reports.py"
-Cohesion: 0.17
-Nodes (25): ensure_clinical_access(), ensure_consent(), Purpose-limitation gate: 403 unless an active ConsentRecord covers the scope., Family caregivers on the basic tier cannot read clinical detail., answer_medical_question(), DocumentAnswerRequest, DocumentQueryRequest, DocumentUploadRequest (+17 more)
+Cohesion: 0.16
+Nodes (26): ensure_clinical_access(), ensure_consent(), UUID, Purpose-limitation gate: 403 unless an active ConsentRecord covers the scope., Family caregivers on the basic tier cannot read clinical detail., answer_medical_question(), DocumentAnswerRequest, DocumentQueryRequest (+18 more)
 
 ### Community 16 - "voice_companion_screen.dart"
 Cohesion: 0.04
-Nodes (48): _ampSub, _api, build, _ChatMessage, _companionAvatar, content, createState, dispose (+40 more)
+Nodes (46): _ampSub, _api, build, _ChatMessage, _companionAvatar, content, createState, dispose (+38 more)
 
 ### Community 17 - "timedelta"
-Cohesion: 0.25
-Nodes (20): DocumentChunk, MedicalDocument, Base, RiskScreening, SymptomLog, SyncQueue, AsyncSession, datetime (+12 more)
+Cohesion: 0.22
+Nodes (20): DocumentChunk, MedicalDocument, Base, RiskScreening, RAG (Retrieval Augmented Generation) Service for Medical Documents. At-rest…, AsyncSession, datetime, Data-retention & deletion maintenance (DPDP Act 2023, Phase 11). Applies the… (+12 more)
 
 ### Community 18 - "LanguageServiceError"
-Cohesion: 0.08
-Nodes (29): Ai4BharatLanguageService, BhashiniLanguageService, LanguageServiceError, AsyncBaseTransport, Exception, Response, Bhashini Multi-lingual Speech & Translation Service. Phase 8 — real Bhashini…, Raised when a language provider cannot complete a request. (+21 more)
+Cohesion: 0.14
+Nodes (12): BhashiniLanguageService, LanguageServiceError, AsyncBaseTransport, Exception, Raised when a language provider cannot complete a request., Real Government of India Bhashini (ULCA) inference pipeline client., Walk nested ULCA response (dicts + list indexes); None if missing., POST to the Inference API; return the raw response for the caller to interpret. (+4 more)
 
 ### Community 19 - "risk_intake_form.dart"
-Cohesion: 0.05
-Nodes (43): _adl, _age, _alcoholConsumption, _behavioralProblems, _bmi, build, _buildPayload, _cardiovascularDisease (+35 more)
+Cohesion: 0.04
+Nodes (45): _adl, _age, _alcoholConsumption, _behavioralProblems, _bmi, build, _buildPayload, _cardiovascularDisease (+37 more)
 
-### Community 20 - "LanguageServiceProvider"
-Cohesion: 0.15
-Nodes (8): _get_provider(), Depends-safe wrapper: keep FastAPI from introspecting httpx transport args., LanguageServiceProvider, ABC, Abstract interface for speech and translation services., Convert patient voice audio to recognized text., Synthesize text into spoken audio (base64 audio format)., Translate text between NER languages and English for LLM reasoning.
+### Community 20 - "config.py"
+Cohesion: 0.33
+Nodes (4): # NOTE: the legacy api-inference.huggingface.co host was retired; the, ABC, Bhashini Multi-lingual Speech & Translation Service. Phase 8 — real Bhashini…, Voice Companion Service (Phase 9) — Claude API + Bhashini Speech Provider.…
 
-### Community 21 - "test_sync_consumer.py"
-Cohesion: 0.22
-Nodes (18): consume_sync_queue(), get_pending_sync(), mark_synced(), process_sync_batch(), AsyncSession, UUID, Sync service — offline outbox + consumer. POST /sync stores offline-created…, Explicitly acknowledge outbox rows (used by tests / admin tooling). (+10 more)
+### Community 21 - "SyncQueue"
+Cohesion: 0.23
+Nodes (20): SymptomLog, SyncQueue, consume_sync_queue(), get_pending_sync(), mark_synced(), process_sync_batch(), AsyncSession, UUID (+12 more)
 
 ### Community 22 - "game_analytics_engine.dart"
 Cohesion: 0.05
@@ -378,7 +388,7 @@ Nodes (43): level_config.dart, accuracyPct, accuracyScore, applyLevels, attentio
 
 ### Community 23 - "routine_service.dart"
 Cohesion: 0.07
-Nodes (28): double get, accuracyPct, board, canPlaceMore, copyWith, correctPlacements, errors, gameStartedAt (+20 more)
+Nodes (28): int get, accuracyPct, board, canPlaceMore, copyWith, correctPlacements, errors, gameStartedAt (+20 more)
 
 ### Community 24 - "Components"
 Cohesion: 0.05
@@ -389,12 +399,12 @@ Cohesion: 0.05
 Nodes (39): MatchItCard, _api, _armStuckTimer, _bufferAndSend, _bufferedActions, build, card, cardBack (+31 more)
 
 ### Community 26 - "VoiceCompanionService"
-Cohesion: 0.13
-Nodes (30): VoiceCompanionConfig, CompanionServiceError, load_persona_prompt(), Any, AsyncSession, Exception, Voice Companion Service (Phase 9) — Claude API + Bhashini Speech Provider.…, Return the active system prompt, seeding the default row when empty. (+22 more)
+Cohesion: 0.21
+Nodes (21): VoiceCompanionConfig, AsyncSession, Return the active system prompt, seeding the default row when empty., Fetch the active voice companion config, seeding defaults if none exist., Insert persona v1.2.0 as a NEW version row (never an in-place edit).…, VoiceCompanionService, asyncio, MockTransport (+13 more)
 
 ### Community 27 - "offline_sync_service.dart"
-Cohesion: 0.05
-Nodes (37): _, @DriftDatabase, api_service.dart, dart:async, ../database/app_database.dart, apiV1, AppConfig, _defined (+29 more)
+Cohesion: 0.06
+Nodes (34): api_service.dart, dart:async, ../database/app_database.dart, apiV1, AppConfig, _defined, ApiService, api (+26 more)
 
 ### Community 28 - "caregiver_dashboard_screen.dart"
 Cohesion: 0.06
@@ -422,39 +432,39 @@ Nodes (23): acknowledgeReminder(), acknowledgeReminderEvent(), checkCurrentUser(
 
 ### Community 34 - "mobile/lib/main.dart"
 Cohesion: 0.06
-Nodes (32): FormState, _api, _busy, _create, createState, dispose, _error, _formKey (+24 more)
+Nodes (34): FormState, _api, AuthScreen, _AuthScreenState, _busy, _create, createState, dispose (+26 more)
 
 ### Community 35 - "game_visuals.dart"
-Cohesion: 0.07
-Nodes (28): CustomPainter, _TrendPainter, _assetDir, availableImages, color, CulturalArtPainter, eriGold, face (+20 more)
+Cohesion: 0.06
+Nodes (31): _assetDir, availableImages, color, eriGold, face, GameVisuals, _iconFace, iconFor (+23 more)
 
 ### Community 36 - "GSD Planner"
 Cohesion: 0.04
 Nodes (44): Building the Dependency Graph, Context Budget Rules, Context Section Rules, Core Responsibilities, Critical Rules, Dependency Graph, Dependency Graph Construction, Depth Calibration (+36 more)
 
 ### Community 37 - "match_it_service.dart"
-Cohesion: 0.05
-Nodes (38): dart:math, ../games/level_config.dart, board, defaultRoutineBoard, LocalContentPacks, _rng, summaries, MatchItBoard (+30 more)
+Cohesion: 0.07
+Nodes (29): double get, MatchItBoard, accuracyPct, attempts, board, cards, copyWith, correctMatches (+21 more)
 
 ### Community 38 - "voice_audio_service.dart"
 Cohesion: 0.07
 Nodes (28): AudioPlayer, AudioRecorder, Duration, amplitudeStream, cancelRecording, dispose, ensureMicPermission, feed (+20 more)
 
 ### Community 39 - "voice_companion.py"
-Cohesion: 0.15
-Nodes (26): activate_voice_config(), chat_text(), chat_voice(), _companion_error(), ConfigCreateRequest, ConfigResponse, create_voice_config(), list_voice_configs() (+18 more)
+Cohesion: 0.14
+Nodes (29): load_patient(), Fetch a patient profile by id, or None., activate_voice_config(), chat_text(), chat_voice(), _companion_error(), ConfigCreateRequest, ConfigResponse (+21 more)
 
-### Community 40 - "run_tests.py"
-Cohesion: 0.07
-Nodes (30): list_content_packs(), Return summary metadata for all registered content packs., Rule-based difficulty adjustment using explicit thresholds., RuleBasedDifficultyStrategy, generate_routine_sequencing_board(), Generate a routine sequencing puzzle with shuffled steps according to…, Validate submitted sequence against target. Computes correctness,…, validate_routine_sequence() (+22 more)
+### Community 40 - "test_phase2_services.py"
+Cohesion: 0.08
+Nodes (21): DifficultyStrategy, ABC, Drop difficulty if 2+ consecutive sessions both have <50% accuracy., Abstract base for difficulty adjustment strategies., Rule-based difficulty adjustment using explicit thresholds., Bump difficulty if 3+ consecutive sessions all have >85% accuracy., RuleBasedDifficultyStrategy, Validate submitted sequence against target. Computes correctness,… (+13 more)
 
 ### Community 41 - "pack_picker_screen.dart"
-Cohesion: 0.12
-Nodes (17): ../data/local_content_packs.dart, match_it_screen.dart, MaterialPageRoute, build, build, _api, build, createState (+9 more)
+Cohesion: 0.07
+Nodes (30): ../data/local_content_packs.dart, match_it_screen.dart, MaterialPageRoute, build, build, build, ClinicalNotesScreen, _ClinicalNotesScreenState (+22 more)
 
 ### Community 42 - "recall_service.dart"
 Cohesion: 0.07
-Nodes (29): int get, RecallBoard, accuracyPct, attempts, avgResponseTimeMs, beginRecall, board, copyWith (+21 more)
+Nodes (28): RecallBoard, accuracyPct, attempts, avgResponseTimeMs, beginRecall, board, copyWith, correctCount (+20 more)
 
 ### Community 43 - "patients.py"
 Cohesion: 0.15
@@ -468,37 +478,37 @@ Nodes (27): 1. MVP Cognitive Baseline, 2. Caregiver Dashboard: Flutter Web (Shar
 Cohesion: 0.14
 Nodes (16): ElevatedCard(), ElevatedCardProps, FAQRow(), FAQRowProps, FeatureCard(), FeatureCardProps, PillButton(), PillButtonProps (+8 more)
 
-### Community 46 - "PatientProfile"
-Cohesion: 0.13
-Nodes (25): Security dependency helpers., Build a FastAPI dependency that enforces role-based access. Usage:…, require_role(), can_access_patient(), ensure_patient_owner(), get_current_user(), get_permission_tier(), load_patient() (+17 more)
+### Community 46 - "GameTypeEnum"
+Cohesion: 0.17
+Nodes (21): DifficultyAdjustmentLog, GameTypeEnum, evaluate_difficulty(), get_recent_sessions(), _log_adjustment(), Any, AsyncSession, UUID (+13 more)
 
 ### Community 47 - "test_ai4bharat_provider.py"
-Cohesion: 0.15
-Nodes (23): Raised when the active provider's models do not cover a language. Distinct from…, Map a NER language to its AI4Bharat script tag. Raises UnsupportedLanguageError…, UnsupportedLanguageError, _client(), asyncio, LIVE, AI4Bharat (Hugging Face Inference API) provider tests — Phase 8 alternate.…, Calls the real Hugging Face endpoint with a sample Assamese phrase and confirms… (+15 more)
+Cohesion: 0.13
+Nodes (26): Ai4BharatLanguageService, Raised when the active provider's models do not cover a language. Distinct from…, AI4Bharat speech & translation models via the Hugging Face Inference API.…, Map a NER language to its AI4Bharat script tag. Raises UnsupportedLanguageError…, Only the languages the AI4Bharat models actually cover — the frontend uses this…, UnsupportedLanguageError, _client(), asyncio (+18 more)
 
 ### Community 48 - "dashboard/lib/widgets/monad/monad_pill_button.dart"
-Cohesion: 0.08
-Nodes (22): build, busy, expanded, label, MonadPillButton, MonadPillVariant, onPressed, variant (+14 more)
+Cohesion: 0.11
+Nodes (17): build, busy, expanded, label, MonadPillButton, MonadPillVariant, onPressed, variant (+9 more)
 
 ### Community 49 - "test_sarvam_provider.py"
 Cohesion: 0.18
 Nodes (22): get_language_service(), Dependency injector for speech and language service. `provider` overrides…, _client(), asyncio, LIVE, Sarvam AI provider tests — Phase 8 alternate. Mock-transport tests verify…, Calls the real Sarvam API with an Assamese phrase for translate, text-to-…, test_asr_payload_and_parse() (+14 more)
 
 ### Community 50 - "User"
-Cohesion: 0.09
-Nodes (47): AsyncClient, Elder-Care Cognitive Companion Platform - Backend, Base, Enum, str, RoleEnum, User, is_public_registration_role() (+39 more)
+Cohesion: 0.22
+Nodes (18): Elder-Care Cognitive Companion Platform - Backend, Base, User, asyncio, parametrize, test_consent_policy(), test_duplicate_active_link_rejected(), test_grant_locks_patient_row_for_serialization() (+10 more)
 
-### Community 51 - "_post"
-Cohesion: 0.19
-Nodes (17): ASRRequest, _handle(), language_status(), BaseModel, HTTPException, User, Speech & Language Translation API Routes. Routes wrap the configured language…, Translate between NER regional languages and English. (+9 more)
+### Community 51 - "language.py"
+Cohesion: 0.11
+Nodes (23): ASRRequest, _get_provider(), _handle(), language_status(), BaseModel, HTTPException, User, Speech & Language Translation API Routes. Routes wrap the configured language… (+15 more)
 
 ### Community 52 - "BaselineData"
 Cohesion: 0.14
 Nodes (9): BaselineData, PatientReportData, _apply_report_adjustments(), _clamp_difficulty(), _compute_baseline_composite(), determine_starting_difficulty(), _rt_factor(), _score_to_difficulty() (+1 more)
 
 ### Community 53 - "test_phase6_7_alerts_reports.py"
-Cohesion: 0.17
-Nodes (22): AlertFlag, AlertSeverityEnum, AlertTriggerTypeEnum, AlertEngine, Any, AsyncSession, datetime, UUID (+14 more)
+Cohesion: 0.21
+Nodes (15): AlertEngine, Any, AsyncSession, datetime, UUID, P6 — Alert Engine: rule evaluation that WRITES AlertFlags + notifies. Rules…, Evaluate every patient with a session or reminder event in the last 14 days;…, Insert an AlertFlag unless one of the same trigger exists in 24h. (+7 more)
 
 ### Community 54 - "offlineQueue.ts"
 Cohesion: 0.16
@@ -516,17 +526,17 @@ Nodes (23): compilerOptions, allowArbitraryExtensions, allowImportingTsExtension
 Cohesion: 0.09
 Nodes (22): AuthStatus get, bool get, ChangeNotifier, UserModel, _applyTokens, AuthSession, AuthStatus, _ensurePatientProfile (+14 more)
 
-### Community 58 - "config.py"
-Cohesion: 0.06
-Nodes (36): Config, Refuse to boot a production process with placeholder secrets or open CORS., # NOTE: the legacy api-inference.huggingface.co host was retired; the, Settings, Response, RateLimitMiddleware, IP rate limiting — 100 req/min default (Phase 12). Uses Redis when reachable so…, ConversationStore (+28 more)
+### Community 58 - "test_phase12_gates.py"
+Cohesion: 0.11
+Nodes (29): Config, Refuse to boot a production process with placeholder secrets or open CORS., Settings, _login(), _patient(), asyncio, Consent-scope, permission-tier, export, and production-boot gates., _register() (+21 more)
 
 ### Community 59 - "ReminderService"
-Cohesion: 0.16
-Nodes (23): ReminderSchedule, ReminderTypeEnum, Any, AsyncSession, datetime, UUID, Escalation Rules: 1. 10 minutes unacknowledged -> Escalate to secondary…, Parse a cadence string into a sorted list of daily wall-clock times.… (+15 more)
+Cohesion: 0.11
+Nodes (41): escalation_scan(), Escalate unacknowledged reminders, send reprompts, mark misses, raise alerts.…, ReminderEvent, ReminderSchedule, ReminderStatusEnum, ReminderTypeEnum, notify_reprompts(), Send the 10-minute secondary notification for each newly ESCALATED event.… (+33 more)
 
-### Community 60 - "main.py"
-Cohesion: 0.09
-Nodes (31): get_db(), AsyncSession, Dependency for FastAPI routes: provides async DB session., Database module alias., health_check(), lifespan(), Serve single-page application UI at root URL., Health check endpoint for load balancers. (+23 more)
+### Community 60 - "deps.py"
+Cohesion: 0.06
+Nodes (46): AsyncClient, Security dependency helpers., Build a FastAPI dependency that enforces role-based access. Usage:…, require_role(), get_db(), AsyncSession, Dependency for FastAPI routes: provides async DB session., Database module alias. (+38 more)
 
 ### Community 61 - "AdaptiveEngine"
 Cohesion: 0.23
@@ -536,9 +546,9 @@ Nodes (11): AdaptiveEngine, Any, example_1_baseline_only(), example_2_baseline_w
 Cohesion: 0.10
 Nodes (14): ActiveAlert, DailyTrend, PatientDetail(), Schedule, SCREENING_FIELDS, SEVERITY_STYLE, streakDays(), Summary (+6 more)
 
-### Community 63 - "get_level_params"
-Cohesion: 0.06
-Nodes (55): GameLevelConfig, Single source of truth for per-game difficulty parameters. Board generators…, ContentItem, ContentPack, generate_match_it_board(), _pairs_for_level(), Any, NER-Themed Content Packs & Match-It Board Generator. Seedable content packs… (+47 more)
+### Community 63 - "extract_features"
+Cohesion: 0.05
+Nodes (81): GameLevelConfig, Single source of truth for per-game difficulty parameters. Board generators…, extract_features(), Features, game_name(), number(), session_origin(), timestamp() (+73 more)
 
 ### Community 64 - "2026-09-04-phase1-scaffold-data-models.md"
 Cohesion: 0.10
@@ -548,13 +558,13 @@ Nodes (20): Async engine, Backend, Bhashini (placeholder), Copy app code, Copy r
 Cohesion: 0.10
 Nodes (20): 10. Cleanup candidates (full list), 1. Phases implemented vs planned, 2. Critical missing pieces before deployment, 3. API keys / integrations not configured, 4. Build / test status (verified), 5. Files stale / should be deleted, 6. Actual directory size breakdown, 7. Build artifact / .gitignore configuration (+12 more)
 
-### Community 66 - "recall_service_test.dart"
-Cohesion: 0.22
-Nodes (7): main, _board, main, service, package:eldercare_mobile/games/game_analytics_engine.dart, package:eldercare_mobile/games/level_config.dart, package:eldercare_mobile/services/recall_service.dart
+### Community 66 - "package:flutter_test/flutter_test.dart"
+Cohesion: 0.11
+Nodes (15): main, _board, main, service, main, main, main, package:eldercare_mobile/games/game_analytics_engine.dart (+7 more)
 
 ### Community 67 - "Smriti — AI-Powered Cognitive Gaming and Memory Assistance Platform"
-Cohesion: 0.10
-Nodes (20): 1. Cognitive Games, 2. Caregiver Dashboard, 3. Reminders, 4. Voice Companion, 5. Text-to-Speech & Speech-to-Text, 6. Multilingual Support (NER Languages), 7. Offline Support, 🧠 About the Project (+12 more)
+Cohesion: 0.05
+Nodes (36): Configuration, Deployment — SIH26003 Elder-Care Companion (2026-09-06), Five-minute demo script, Manual walkthrough — pending device execution, Migration recovery and repeatable commands, Mobile (patient app), Old migration history, One-time environment setup (from `backend/`) (+28 more)
 
 ### Community 68 - "models.py"
 Cohesion: 0.25
@@ -577,16 +587,16 @@ Cohesion: 0.10
 Nodes (19): compilerOptions, allowImportingTsExtensions, erasableSyntaxOnly, lib, module, moduleDetection, noEmit, noFallthroughCasesInSwitch (+11 more)
 
 ### Community 73 - "State"
-Cohesion: 0.13
-Nodes (22): _DashboardScreen, _DashboardScreenState, _LoginScreen, _LoginScreenState, _Root, _RootState, RiskIntakeForm, _RiskIntakeFormState (+14 more)
+Cohesion: 0.08
+Nodes (32): ../config.dart, _DashboardScreen, _DashboardScreenState, _LoginScreen, _LoginScreenState, _Root, _RootState, build (+24 more)
 
 ### Community 74 - "MockLanguageService"
 Cohesion: 0.15
 Nodes (20): MockLanguageService, Deterministic local language provider for testing and offline development., test_garo_has_no_provider_code(), _client(), asyncio, MockTransport, Phase 8 tests — Bhashini provider & factory selection., test_asr_payload_and_parse() (+12 more)
 
-### Community 75 - "test_all_services.py"
-Cohesion: 0.11
-Nodes (33): escalation_scan(), Escalate unacknowledged reminders, send reprompts, mark misses, raise alerts.…, CaregiverPatientLink, ReminderEvent, ReminderStatusEnum, DashboardService, Any, AsyncSession (+25 more)
+### Community 75 - "PatientProfile"
+Cohesion: 0.12
+Nodes (20): AlertFlag, PatientProfile, DashboardService, Any, AsyncSession, UUID, Caregiver & Clinician Dashboard Analytics Service. Provides: - Multi-patient…, List all patients linked to this caregiver / ASHA worker with active status. (+12 more)
 
 ### Community 76 - "reminders.py"
 Cohesion: 0.19
@@ -601,16 +611,16 @@ Cohesion: 0.11
 Nodes (17): 1.1 `mobile/lib/games/game_analytics_engine.dart` — exists, fully written, 1.2 Where the engine is wired in the mobile app, 1.3 `GameAction` / `GameSession` — server model (`backend/app/models/all_models.py`), 1.4 `backend/app/routes/games.py` — endpoints, 1. Current state of analytics/telemetry in the codebase, 2.1 `mobile/lib/services/offline_sync_service.dart` (221 lines), 2.2 `mobile/lib/database/app_database.dart` (drift) — local tables, 2.3 Backend sync contract (+9 more)
 
 ### Community 79 - "GameSession"
-Cohesion: 0.09
-Nodes (43): GameSession, GameTypeEnum, DifficultyStrategy, evaluate_difficulty(), get_recent_sessions(), _log_adjustment(), ABC, Any (+35 more)
+Cohesion: 0.21
+Nodes (18): GameSession, Game Engine Service — Unified Class Interface for Game Sessions & Adaptive…, complete_game_session(), get_patient_game_history(), get_session_summary(), Any, AsyncSession, UUID (+10 more)
 
 ### Community 80 - "ReportService"
-Cohesion: 0.22
-Nodes (12): P7 — persisted weekly clinical summary (one per patient per week)., WeeklyReport, Any, AsyncSession, datetime, UUID, Automated Clinical & Cognitive Report Generation Service. Aggregates: - Game…, Monday 00:00 UTC of the reporting week (UTC-anchored; IST display is the… (+4 more)
+Cohesion: 0.10
+Nodes (31): P7 — persisted weekly clinical summary (one per patient per week)., WeeklyReport, EncryptionService, AES-256 Fernet-based field level encryption., Encrypt sensitive clinical text., Decrypt ciphertext back to plaintext., Any, AsyncSession (+23 more)
 
 ### Community 81 - "routine_service.py"
-Cohesion: 0.31
-Nodes (9): _config_for_level(), get_patient_routine(), Any, AsyncSession, UUID, Daily Routine Sequencing Game Service & Caregiver Routine Editor. Enables…, Retrieve custom routine for patient, or fallback to default., Caregiver routine editor: save custom steps to PatientProfile.routine. (+1 more)
+Cohesion: 0.17
+Nodes (16): _config_for_level(), generate_routine_sequencing_board(), get_patient_routine(), Any, AsyncSession, UUID, Daily Routine Sequencing Game Service & Caregiver Routine Editor. Enables…, Retrieve custom routine for patient, or fallback to default. (+8 more)
 
 ### Community 82 - "PerformanceTracker"
 Cohesion: 0.16
@@ -624,25 +634,25 @@ Nodes (16): Color, build, child, height, MonadGameCard, onTap, tint, width (+8 m
 Cohesion: 0.11
 Nodes (17): FlutterLocalNotificationsPlugin, reminderPhrase, cancelAll, cancelSchedule, initialize, _initialized, instance, _nextInstanceOf (+9 more)
 
-### Community 85 - "test_api_routes.py"
-Cohesion: 0.26
-Nodes (16): _create_patient(), _login(), asyncio, parametrize, API route tests — auth refresh, patient profiles + caregiver links, sync, games…, Regression: games routes previously crashed with TypeError from require_role…, Phase 8-10 endpoints are mounted and auth-gated where required., _register() (+8 more)
+### Community 85 - "ConversationStore"
+Cohesion: 0.15
+Nodes (14): ConversationStore, _demo(), Per-patient conversation history for the voice companion. Seam: Redis when…, Turn-taking memory keyed by patient id., reset_conversation_store_for_tests(), load_persona_prompt(), _patient_with_consent(), asyncio (+6 more)
 
 ### Community 86 - "Notification System Research — 2026-09-07"
 Cohesion: 0.14
 Nodes (13): 1. Current Notification Provider Interface, 2. How Reminders and Alerts Route to Notifications, 3. Existing Notification Providers, 4. Escalation Flow (Full), 5. Mobile Local Notification System, 6. What Would Be Needed to Add FCM and SMS, 7. Audit / Record-Keeping, Changes Needed (Practical) (+5 more)
 
-### Community 87 - "package:flutter_test/flutter_test.dart"
-Cohesion: 0.29
-Nodes (5): main, main, package:eldercare_mobile/services/voice_audio_service.dart, package:eldercare_mobile/services/voice_languages.dart, package:flutter_test/flutter_test.dart
+### Community 87 - "SarvamLanguageService"
+Cohesion: 0.13
+Nodes (13): Response, Sarvam AI speech & translation via the api.sarvam.ai REST API. Endpoints: -…, Languages with Sarvam BCP-47 tags — Khasi/Mizo excluded so the frontend can…, NMT via Sarvam-Translate; same-language input short-circuits., ASR via Saaras. Base64-decoded audio is uploaded as multipart `file`., TTS via Bulbul; returns the base64 audio from `audios[0]` as-is (the interface…, SarvamLanguageService, Phase 3 language naming/gating tests: manipuri canonical, meitei alias, garo… (+5 more)
 
-### Community 88 - "api_live_test.dart"
-Cohesion: 0.33
-Nodes (5): _live, _loginAs, main, package:eldercare_mobile/services/api_service.dart, package:eldercare_mobile/services/auth_session.dart
+### Community 88 - "generate_match_it_board"
+Cohesion: 0.13
+Nodes (18): ContentItem, ContentPack, generate_match_it_board(), list_content_packs(), _pairs_for_level(), Any, NER-Themed Content Packs & Match-It Board Generator. Seedable content packs…, Register (or replace) a themed set so caregivers/admins can add packs without a… (+10 more)
 
 ### Community 90 - "rag_upload_screen.dart"
-Cohesion: 0.15
-Nodes (13): ../config/app_config.dart, build, createState, _filePath, patientId, _pickFile, RagUploadScreen, _RagUploadScreenState (+5 more)
+Cohesion: 0.17
+Nodes (12): ../config/app_config.dart, build, createState, _filePath, patientId, _pickFile, RagUploadScreen, _RagUploadScreenState (+4 more)
 
 ### Community 91 - "Phase 1 Decisions"
 Cohesion: 0.15
@@ -652,13 +662,13 @@ Nodes (13): 1. MVP Cognitive Baseline, 2. Caregiver Dashboard: Flutter Web, 3. O
 Cohesion: 0.26
 Nodes (13): Insertable, UpdateCompanion, DataClass, GameActionRow, GameActionsCompanion, GameSessionRow, GameSessionsCompanion, PatientRoutineRow (+5 more)
 
-### Community 93 - "package:shared_preferences/shared_preferences.dart"
-Cohesion: 0.50
-Nodes (3): main, package:eldercare_dashboard/main.dart, package:shared_preferences/shared_preferences.dart
+### Community 93 - "RateLimitMiddleware"
+Cohesion: 0.24
+Nodes (5): Response, RateLimitMiddleware, IP rate limiting — 100 req/min default (Phase 12). Uses Redis when reachable so…, BaseHTTPMiddleware, Request
 
-### Community 94 - "rag_upload_widget.dart"
-Cohesion: 0.20
-Nodes (10): ../config.dart, build, createState, _lastResult, patientId, _pickAndUpload, _pickOnWeb, RagUploadWidget (+2 more)
+### Community 94 - "local_content_packs.dart"
+Cohesion: 0.18
+Nodes (10): dart:math, ../games/level_config.dart, board, defaultRoutineBoard, LocalContentPacks, _rng, summaries, ../models/game_models.dart (+2 more)
 
 ### Community 96 - "monad_widgets_test.dart"
 Cohesion: 0.17
@@ -666,7 +676,7 @@ Nodes (11): Container, FilledButton, main, package:eldercare_mobile/theme/monad_
 
 ### Community 97 - "test_risk_screening.py"
 Cohesion: 0.11
-Nodes (30): build_feature_array(), initialize_risk_screening(), _load_artifacts(), Any, Worker-initialized preliminary screening; not a clinical diagnosis., run_inference(), _validate_artifacts(), validate_input() (+22 more)
+Nodes (29): build_feature_array(), initialize_risk_screening(), _load_artifacts(), Any, Worker-initialized preliminary screening; not a clinical diagnosis., run_inference(), _validate_artifacts(), validate_input() (+21 more)
 
 ### Community 98 - "Verification Process"
 Cohesion: 0.06
@@ -680,9 +690,9 @@ Nodes (10): background_color, description, display, icons, name, orientation, pr
 Cohesion: 0.18
 Nodes (10): background_color, description, display, icons, name, orientation, prefer_related_applications, short_name (+2 more)
 
-### Community 101 - "clinical_notes_screen.dart"
-Cohesion: 0.14
-Nodes (14): build, ClinicalNotesScreen, _ClinicalNotesScreenState, createState, dispose, _label, _notes, _observation (+6 more)
+### Community 101 - "CompanionServiceError"
+Cohesion: 0.24
+Nodes (7): CompanionServiceError, Any, Exception, Send a message to Claude; returns a dict with reply_text + metadata., Full Voice Pipeline: Bhashini ASR -> LLM -> Bhashini TTS. Each stage degrades…, Raised when the companion cannot produce a reply (and fallback is disabled)., test_chat_raises_when_fallback_disabled()
 
 ### Community 102 - "Elder-Care Cognitive Companion Platform"
 Cohesion: 0.20
@@ -697,8 +707,8 @@ Cohesion: 0.29
 Nodes (9): setAuthToken(), AuthContext, AuthContextValue, AuthProvider(), AuthState, decodeRole(), decodeSub(), Role (+1 more)
 
 ### Community 105 - "List"
-Cohesion: 0.20
-Nodes (9): List, build, color, paint, shouldRepaint, subtitle, title, TrendChart (+1 more)
+Cohesion: 0.14
+Nodes (13): CustomPainter, _TrendPainter, List, CulturalArtPainter, build, color, paint, shouldRepaint (+5 more)
 
 ### Community 106 - "GSD Integration Checker"
 Cohesion: 0.06
@@ -713,24 +723,24 @@ Cohesion: 0.07
 Nodes (27): 1. Task Completeness, 2. Dependency Correctness, 3. File Ownership, 4. Scope Sanity, 5. Must-Haves Derivation, Core Responsibilities, Create VERIFICATION-CHECKER.md, Critical Rules (+19 more)
 
 ### Community 110 - "tts_cache.dart"
-Cohesion: 0.22
-Nodes (8): dart:io, cacheKey, _fileFor, _fnvPrime, _mask63, speechFor, TtsCache, static const int
+Cohesion: 0.14
+Nodes (12): dart:io, dart:typed_data, cacheKey, _fileFor, _fnvPrime, _mask63, speechFor, TtsCache (+4 more)
 
-### Community 111 - "reminder_voice_test.dart"
-Cohesion: 0.22
-Nodes (7): dart:typed_data, main, main, package:eldercare_mobile/models/game_models.dart, package:eldercare_mobile/models/shared_models.dart, package:eldercare_mobile/services/reminder_phrases.dart, package:eldercare_mobile/services/tts_cache.dart
+### Community 111 - "get_patient_summary"
+Cohesion: 0.33
+Nodes (9): acknowledge_alert(), get_caregiver_patients(), get_patient_summary(), AsyncSession, User, UUID, Retrieve all patients linked to this caregiver / ASHA worker., Retrieve 7-day cognitive trends, reminder compliance, and active alerts for a… (+1 more)
 
-### Community 112 - "Deployment — SIH26003 Elder-Care Companion (2026-09-06)"
-Cohesion: 0.22
-Nodes (8): Deployment — SIH26003 Elder-Care Companion (2026-09-06), Five-minute demo script, Manual walkthrough — pending device execution, Migration recovery and repeatable commands, Pre-deploy checklist (must complete before flip to production), Run, Status, Upgrade regression checkpoint — 2026-09-17
+### Community 112 - "test_game_engine_and_adaptive_difficulty"
+Cohesion: 0.33
+Nodes (7): GameEngineService, AsyncSession, UUID, Create and complete a game session with explicit outcome metrics., Compute the next adaptive difficulty level and reasoning., Test game session logging and rule-based difficulty adjustment., test_game_engine_and_adaptive_difficulty()
 
 ### Community 113 - "plugins"
 Cohesion: 0.22
 Nodes (8): plugins, rules, react/only-export-components, react/rules-of-hooks, $schema, oxc, typescript, warn
 
-### Community 114 - "test_risk_migration_postgres.py"
-Cohesion: 0.30
-Nodes (12): consent_cascade(), _insert(), _isolated_url(), migration_database(), patient_cascade(), postgres_url(), fixture, _screening() (+4 more)
+### Community 114 - "B-REPORT — single time-boxed hackathon B (shadow-only)"
+Cohesion: 0.29
+Nodes (6): B-REPORT — single time-boxed hackathon B (shadow-only), Completed, Demo line (honest), Fitted candidate (synthetic bootstrap — assumption conformity, NOT patient evidence), Incomplete / explicitly deferred (hard stop — not expanded), Verification evidence
 
 ### Community 115 - "OpenRouter Free-Tier Research — SIH26003"
 Cohesion: 0.25
@@ -809,8 +819,8 @@ Cohesion: 0.67
 Nodes (3): Show history, Summary, Verification & Testing
 
 ### Community 147 - "String?"
-Cohesion: 0.13
-Nodes (13): answer, build, expanded, MonadFAQRow, onTap, question, answer, build (+5 more)
+Cohesion: 0.10
+Nodes (18): answer, build, expanded, MonadFAQRow, onTap, question, build, label (+10 more)
 
 ### Community 163 - "GSD Codebase Mapper"
 Cohesion: 0.09
@@ -824,9 +834,9 @@ Nodes (21): Codebase Context, Core Responsibilities, Critical Rules, GSD Phase R
 Cohesion: 0.28
 Nodes (12): _login(), _patient(), asyncio, Phase 11 gates — no-implicit-access, read-audit trail, at-rest encryption., extracted_text is AES-256 encrypted at rest; retrieval uses plaintext chunks., A patient must never read another patient's data via any route., Linked caregiver may view patient data; each health read leaves an audit row., _register() (+4 more)
 
-### Community 166 - "test_phase0_fixes.py"
-Cohesion: 0.41
-Nodes (11): _grant_consent(), _login(), _patient(), asyncio, P0 stabilization regression tests — proves each critical fix blocks the bad…, _register(), test_consent_revoke_requires_ownership(), test_game_session_actions_reject_foreign_owner() (+3 more)
+### Community 166 - "env.py"
+Cohesion: 0.33
+Nodes (5): Alembic environment configuration for Elder-Care platform., Run migrations in 'offline' mode — emits SQL to stdout., Run migrations against a live database., run_migrations_offline(), run_migrations_online()
 
 ### Community 167 - "GSD Research Synthesizer"
 Cohesion: 0.10
@@ -837,8 +847,8 @@ Cohesion: 0.12
 Nodes (15): Core Responsibilities, Decision gate:**, GSD New Project, Phase 1: Setup, Phase 2: Brownfield Offer, Phase 3: Deep Questioning, Phase 4: Workflow Preferences, Phase 5: Research Decision (+7 more)
 
 ### Community 169 - "provision_staff_user"
-Cohesion: 0.38
-Nodes (9): provision_staff_user(), test_staff_provisioning_requires_isolated_fixture(), _clinician_with_patient(), asyncio, P5 — document file upload: PDF/text extraction feeds the existing RAG ingest.…, test_upload_real_pdf(), test_upload_rejects_empty_file(), test_upload_rejects_unsupported_type() (+1 more)
+Cohesion: 0.21
+Nodes (17): create_consented_patient(), provision_staff_user(), _clinician_with_patient(), asyncio, P5 — document file upload: PDF/text extraction feeds the existing RAG ingest.…, test_upload_real_pdf(), test_upload_rejects_empty_file(), test_upload_rejects_unsupported_type() (+9 more)
 
 ### Community 170 - "jobs.py"
 Cohesion: 0.15
@@ -853,8 +863,8 @@ Cohesion: 0.22
 Nodes (9): Binary Search / Divide and Conquer, Comment Out Everything, Differential Debugging, Git Bisect, Investigation Techniques, Minimal Reproduction, Observability First, Rubber Duck Debugging (+1 more)
 
 ### Community 173 - "app_flow_test.dart"
-Cohesion: 0.22
-Nodes (8): enterText, _loginAs, main, pump, pumpWidget, tap, package:eldercare_mobile/main.dart, package:integration_test/integration_test.dart
+Cohesion: 0.11
+Nodes (16): main, enterText, _loginAs, main, pump, pumpWidget, tap, _live (+8 more)
 
 ### Community 174 - "GSD Executor"
 Cohesion: 0.25
@@ -869,8 +879,8 @@ Cohesion: 0.25
 Nodes (7): Deviation Handling, GSD Execute Phase, Process, Related Skills, Success Criteria, Wave Execution Rules, When to Use
 
 ### Community 177 - "Cognitive games / ML — state"
-Cohesion: 0.29
-Nodes (6): Cognitive games / ML — state, Current status (2026-09-17), Dependency chain and next step, Historical planning record, Implementation and closure evidence from earlier execution, Remaining decisions / gates
+Cohesion: 0.25
+Nodes (7): A remediation and residual limitations, Active B scope and stop rule, Cognitive games / ML — state, Current status (2026-09-17), Dependency chain and next step, Historical planning record (inactive), Verified local runtime today — supplied main-agent evidence
 
 ### Community 178 - "Checkpoint Types"
 Cohesion: 0.29
@@ -904,9 +914,9 @@ Nodes (6): GSD Plan Phase, Output Documents, Process, Related Skills, Success Cr
 Cohesion: 0.29
 Nodes (6): GSD Verify Work, Process, Related Skills, Success Criteria, Verification Checklist, When to Use
 
-### Community 186 - "EncryptionService"
-Cohesion: 0.25
-Nodes (5): EncryptionService, AES-256 Fernet-based field level encryption., Encrypt sensitive clinical text., Decrypt ciphertext back to plaintext., test_encryption_uses_configured_key_not_hardcoded_default()
+### Community 186 - "AppDatabase"
+Cohesion: 0.67
+Nodes (3): _, @DriftDatabase, AppDatabase
 
 ### Community 187 - "Debug File Protocol"
 Cohesion: 0.33
@@ -989,8 +999,8 @@ Cohesion: 0.33
 Nodes (5): Entry Points, GSD Research Workflow, Phases, Success Criteria, When to Use
 
 ### Community 207 - "Cognitive games / ML milestone"
-Cohesion: 0.33
-Nodes (5): Binding independence and provisional B/C design, Cognitive games / ML milestone, Historical pre-A baseline (source inspection, not current implemented state), Outcomes and dependency order, Verification contract for future approved execution
+Cohesion: 0.25
+Nodes (7): A evidence and remaining limits, Binding B contract, Cognitive games / ML milestone, Default path and scope, Explicitly outside the timebox, Future approved execution only, Historical source context and inactive methodology
 
 ### Community 208 - "State Updates"
 Cohesion: 0.40
@@ -1141,8 +1151,8 @@ Cohesion: 0.40
 Nodes (4): GSD Verify Work Workflow, Phases, Success Criteria, When to Use
 
 ### Community 245 - "Documentation-only plan checker"
-Cohesion: 0.40
-Nodes (4): Documentation-only plan checker, Findings, Historical original-plan structure and dependency review, Requirement trace
+Cohesion: 0.29
+Nodes (6): Active requirement trace, Authoritative active path, Confirmed A evidence — supplied main-agent results, Documentation-only plan checker, Historical original-plan structure — inactive, not a current checklist, Remaining limits and approval status
 
 ### Community 246 - "Structured Returns"
 Cohesion: 0.50
@@ -1156,41 +1166,45 @@ Nodes (4): Authentication Error Indicators, Authentication Gate Protocol, Authen
 Cohesion: 0.50
 Nodes (4): Execution Patterns, Pattern A: Fully Autonomous (No Checkpoints), Pattern B: Has Checkpoints, Pattern C: Continuation (You Were Spawned to Continue)
 
-### Community 249 - "test_phase5_game_stats.py"
-Cohesion: 0.43
-Nodes (7): _clinician_patient(), asyncio, P5 — GET /games/patients/{id}/stats: accuracy + response-time trends., A basic-tier family caregiver is blocked from raw stats (dashboard already…, test_stats_empty_window(), test_stats_requires_clinical_tier(), test_stats_trend_and_deltas()
-
 ### Community 250 - "Final Commit"
 Cohesion: 0.67
 Nodes (3): 1. Stage Execution Artifacts, 2. Commit Metadata, Final Commit
+
+### Community 253 - "A-02 — current next step: A report and one bounded B approval"
+Cohesion: 0.40
+Nodes (4): A-02 — current next step: A report and one bounded B approval, One B approval/start decision, Output, Present A evidence
+
+### Community 254 - "B-01 — single time-boxed hackathon B"
+Cohesion: 0.25
+Nodes (7): B-01 — single time-boxed hackathon B, Block 1 — hours 0–2: fixed extractor, labels and bootstrap, Block 2 — hours 2–4: one fit and bounded manual retrain, Block 3 — hours 4–6: backend shadow, simple checks and final report, Explicitly deferred, Objective and hard boundary, One final report and next step
 
 ### Community 264 - "game_analytics_engine_test.dart"
 Cohesion: 0.40
 Nodes (4): GameAnalyticsEngine, engine, main, _session
 
 ### Community 270 - "Phase A — A-01 implementation summary (2026-09-17)"
-Cohesion: 0.22
-Nodes (8): Compose database closure evidence (earlier execution), Follow-up remediation and closure evidence, Historical initial RED → GREEN evidence (not latest counts), Next, Phase A — A-01 implementation summary (2026-09-17), Reconciliation answers, Remaining limitations and approval gates, What changed (uncommitted on chore/deployment-readiness)
+Cohesion: 0.20
+Nodes (9): Compose database closure evidence (earlier execution), Follow-up remediation and closure evidence, Historical initial RED → GREEN evidence (not latest counts), Next, Phase A — A-01 implementation summary (2026-09-17), Reconciliation answers, Remaining limitations and approval gates, Verified populated host and pinned runtime — supplied main-agent evidence (+1 more)
 
 ## Knowledge Gaps
-- **2060 isolated node(s):** `$schema`, `.opencode/plugins/graphify.js`, `matchCards`, `flippedIndices`, `CULTURAL_ITEMS` (+2055 more)
-  These have ≤1 connection - possible missing edges or undocumented components. (Counts symbols only; 2736 node(s) total have ≤1 connection when file, concept and rationale nodes are included.)
-- **17 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
+- **2096 isolated node(s):** `$schema`, `.opencode/plugins/graphify.js`, `matchCards`, `flippedIndices`, `CULTURAL_ITEMS` (+2091 more)
+  These have ≤1 connection - possible missing edges or undocumented components. (Counts symbols only; 2777 node(s) total have ≤1 connection when file, concept and rationale nodes are included.)
+- **26 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `_post` connect `_post` to `ComplianceService`, `dashboard/lib/main.dart`, `voice_companion.py`, `games.py`, `AuthService`, `patients.py`, `reminders.py`, `reports.py`, `User`, `main.py`?**
-  _High betweenness centrality (0.154) - this node is a cross-community bridge._
-- **Why does `_get` connect `games.py` to `ComplianceService`, `dashboard/lib/main.dart`, `voice_companion.py`, `patients.py`, `reminders.py`, `reports.py`, `User`, `_post`, `main.py`?**
-  _High betweenness centrality (0.080) - this node is a cross-community bridge._
-- **Why does `LanguageServiceError` connect `LanguageServiceError` to `MockLanguageService`, `test_ai4bharat_provider.py`, `test_sarvam_provider.py`, `_post`, `VoiceCompanionService`?**
-  _High betweenness centrality (0.032) - this node is a cross-community bridge._
+- **Why does `_post` connect `voice_companion.py` to `ComplianceService`, `dashboard/lib/main.dart`, `games.py`, `AuthService`, `patients.py`, `reminders.py`, `get_patient_summary`, `reports.py`, `language.py`, `deps.py`?**
+  _High betweenness centrality (0.128) - this node is a cross-community bridge._
+- **Why does `_get` connect `games.py` to `ComplianceService`, `dashboard/lib/main.dart`, `voice_companion.py`, `AuthService`, `patients.py`, `reminders.py`, `get_patient_summary`, `reports.py`, `language.py`, `deps.py`?**
+  _High betweenness centrality (0.103) - this node is a cross-community bridge._
+- **Why does `User` connect `User` to `test_risk_screening.py`, `ComplianceService`, `voice_companion.py`, `all_models.py`, `games.py`, `AuthService`, `patients.py`, `reminders.py`, `provision_staff_user`, `notification_service.py`, `reports.py`, `PatientProfile`, `timedelta`, `language.py`, `test_phase6_7_alerts_reports.py`, `SyncQueue`, `ReminderService`, `deps.py`?**
+  _High betweenness centrality (0.039) - this node is a cross-community bridge._
 - **Are the 73 inferred relationships involving `User` (e.g. with `can_access_patient()` and `ensure_clinical_access()`) actually correct?**
   _`User` has 73 INFERRED edges - model-reasoned connections that need verification._
-- **Are the 26 inferred relationships involving `PatientProfile` (e.g. with `can_access_patient()` and `ensure_clinical_access()`) actually correct?**
-  _`PatientProfile` has 26 INFERRED edges - model-reasoned connections that need verification._
+- **Are the 28 inferred relationships involving `PatientProfile` (e.g. with `can_access_patient()` and `ensure_clinical_access()`) actually correct?**
+  _`PatientProfile` has 28 INFERRED edges - model-reasoned connections that need verification._
+- **Are the 25 inferred relationships involving `GameSession` (e.g. with `_ensure_owned_session()` and `get_patient_stats()`) actually correct?**
+  _`GameSession` has 25 INFERRED edges - model-reasoned connections that need verification._
 - **Are the 27 inferred relationships involving `RoleEnum` (e.g. with `is_public_registration_role()` and `create_schedule()`) actually correct?**
   _`RoleEnum` has 27 INFERRED edges - model-reasoned connections that need verification._
-- **Are the 31 inferred relationships involving `ComplianceService` (e.g. with `ensure_consent()` and `export_patient_data()`) actually correct?**
-  _`ComplianceService` has 31 INFERRED edges - model-reasoned connections that need verification._
