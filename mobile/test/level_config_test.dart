@@ -31,14 +31,27 @@ void main() {
       expect(levels.routineIcons(3), isTrue);
     });
 
-    test('target seconds match the server seeds', () {
-      const levels = LevelConfig.bundled;
+    test('target seconds match the server seeds', () {      const levels = LevelConfig.bundled;
       expect(levels.targetSeconds('match_it', 1), 90);
       expect(levels.targetSeconds('match_it', 2), 150);
       expect(levels.targetSeconds('match_it', 3), 240);
       expect(levels.targetSeconds('routine_sequencing', 1), 45);
       expect(levels.targetSeconds('routine_sequencing', 2), 70);
       expect(levels.targetSeconds('routine_sequencing', 3), 120);
+    });
+  });
+
+  group('LevelConfig number_recall grids', () {
+    test('sequence lengths are 3/4/6 with 2s per item', () {
+      const levels = LevelConfig.bundled;
+      expect(levels.recallLength(1), 3);
+      expect(levels.recallLength(2), 4);
+      expect(levels.recallLength(3), 6);
+      expect(levels.recallShowSeconds(1), 2);
+      expect(levels.recallShowSeconds(3), 2);
+      expect(levels.targetSeconds('number_recall', 1), 60);
+      expect(levels.targetSeconds('number_recall', 2), 90);
+      expect(levels.targetSeconds('number_recall', 3), 150);
     });
   });
 

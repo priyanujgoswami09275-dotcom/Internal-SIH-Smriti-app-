@@ -70,13 +70,29 @@ String baselineToApi(CognitiveBaseline baseline) {
   }
 }
 
-enum GameType { matchIt, routineSequencing }
+enum GameType { matchIt, routineSequencing, numberRecall }
 
-GameType gameTypeFromApi(String value) =>
-    value == 'routine_sequencing' ? GameType.routineSequencing : GameType.matchIt;
+GameType gameTypeFromApi(String value) {
+  switch (value) {
+    case 'routine_sequencing':
+      return GameType.routineSequencing;
+    case 'number_recall':
+      return GameType.numberRecall;
+    default:
+      return GameType.matchIt;
+  }
+}
 
-String gameTypeToApi(GameType type) =>
-    type == GameType.matchIt ? 'match_it' : 'routine_sequencing';
+String gameTypeToApi(GameType type) {
+  switch (type) {
+    case GameType.routineSequencing:
+      return 'routine_sequencing';
+    case GameType.numberRecall:
+      return 'number_recall';
+    case GameType.matchIt:
+      return 'match_it';
+  }
+}
 
 enum ReminderType { medicine, water, food, exercise }
 

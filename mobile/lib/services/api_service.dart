@@ -358,6 +358,16 @@ class ApiService {
     return MatchItBoard.fromServerJson(data as Map<String, dynamic>);
   }
 
+  Future<RecallBoard> recallBoard({
+    required int difficultyLevel,
+  }) async {
+    final data = await getJson(
+      '${AppConfig.apiV1}/games/recall/board',
+      query: {'difficulty_level': '$difficultyLevel'},
+    );
+    return RecallBoard.fromServerJson(data as Map<String, dynamic>);
+  }
+
   Future<RoutineBoard> routineBoard({
     required String patientId,
     required int difficultyLevel,

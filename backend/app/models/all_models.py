@@ -54,6 +54,7 @@ class CaregiverPatientLink(Base):
 class GameTypeEnum(str, Enum):
     MATCH_IT = "match_it"
     ROUTINE_SEQUENCING = "routine_sequencing"
+    NUMBER_RECALL = "number_recall"
 
 class GameSession(Base):
     __tablename__ = "game_sessions"

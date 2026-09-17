@@ -498,3 +498,34 @@ class GameSessionSummary {
     );
   }
 }
+
+/// A generated Number Recall board: digit sequence to memorize and repeat.
+class RecallBoard {
+  final int difficultyLevel;
+  final int sequenceLength;
+  final int showSecondsPerItem;
+  final List<int> sequence;
+  final DateTime generatedAt;
+
+  const RecallBoard({
+    required this.difficultyLevel,
+    required this.sequenceLength,
+    required this.showSecondsPerItem,
+    required this.sequence,
+    required this.generatedAt,
+  });
+
+  /// Parse a board from the backend recall/board endpoint.
+  factory RecallBoard.fromServerJson(Map<String, dynamic> json) {
+    final seq = (json['sequence'] as List? ?? const [])
+        .map((e) => (e as num).toInt())
+        .toList();
+    return RecallBoard(
+      difficultyLevel: json['difficulty_level'] as int? ?? 1,
+      sequenceLength: json['sequence_length'] as int? ?? seq.length,
+      showSecondsPerItem: json['show_seconds_per_item'] as int? ?? 2,
+      sequence: seq,
+      generatedAt: DateTime.now(),
+    );
+  }
+}

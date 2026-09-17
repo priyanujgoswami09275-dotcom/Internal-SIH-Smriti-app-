@@ -26,6 +26,11 @@ DEFAULT_LEVEL_CONFIG: Dict[str, Dict[int, Dict[str, Any]]] = {
         2: {"steps": 4, "hints": True, "icons": True, "target_seconds": 70},
         3: {"steps": 6, "hints": False, "icons": True, "target_seconds": 120},
     },
+    "number_recall": {
+        1: {"sequence_length": 3, "show_seconds_per_item": 2, "target_seconds": 60},
+        2: {"sequence_length": 4, "show_seconds_per_item": 2, "target_seconds": 90},
+        3: {"sequence_length": 6, "show_seconds_per_item": 2, "target_seconds": 150},
+    },
 }
 
 

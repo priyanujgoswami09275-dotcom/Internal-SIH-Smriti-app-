@@ -1,4 +1,4 @@
-"""Game API Routes — Match It, Routine Sequencing, and Adaptive Difficulty.
+"""Game API Routes — Match It, Routine Sequencing, Number Recall, Adaptive Difficulty.
 
 Endpoints:
   POST /games/sessions — start a new game
@@ -30,7 +30,7 @@ from app.db import get_db
 from app.models.all_models import GameTypeEnum, PatientProfile, GameSession
 from app.models.user import User
 from app.services import game_service, difficulty_engine, routine_service, content_packs
-from app.services import level_config_service
+from app.services import level_config_service, recall_service
 
 router = APIRouter(prefix="/games", tags=["games"])
 
@@ -70,7 +70,7 @@ async def _ensure_owned_session(
 
 class StartGameRequest(BaseModel):
     """Start a new game session."""
-    game_type: str  # "match_it" or "routine_sequencing"
+    game_type: str  # "match_it" | "routine_sequencing" | "number_recall"
     difficulty_level: int = 1
     content_pack_id: Optional[str] = None  # For Match It
     routine_id: Optional[str] = None  # For Routine Sequencing
@@ -153,6 +153,15 @@ class RoutineSequencingBoardResponse(BaseModel):
     has_icons: bool
     shuffled_items: list
     correct_sequence: list[str]
+
+
+class NumberRecallBoardResponse(BaseModel):
+    """Generated number-recall memorization board."""
+    game_type: str
+    difficulty_level: int
+    sequence_length: int
+    show_seconds_per_item: int
+    sequence: list[int]
 
 
 class DifficultyEvaluationResponse(BaseModel):
@@ -489,6 +498,24 @@ async def generate_routine_board(
         include_hints=params.get("hints", difficulty_level <= 2),
     )
     return RoutineSequencingBoardResponse(**board)
+
+
+@router.get("/recall/board", response_model=NumberRecallBoardResponse)
+async def generate_number_recall_board(
+    difficulty_level: int = 1,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Generate a number-recall memorization board (length from level config)."""
+    params = await level_config_service.get_level_params(
+        db, "number_recall", difficulty_level
+    )
+    board = recall_service.generate_number_recall_board(
+        difficulty_level=difficulty_level,
+        sequence_length=params.get("sequence_length", 3),
+        show_seconds_per_item=params.get("show_seconds_per_item", 2),
+    )
+    return NumberRecallBoardResponse(**board)
 
 
 @router.post("/difficulty/evaluate", response_model=DifficultyEvaluationResponse)

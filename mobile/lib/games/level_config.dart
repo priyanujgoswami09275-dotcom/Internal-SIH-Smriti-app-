@@ -31,6 +31,11 @@ class LevelConfig {
       2: {'steps': 4, 'hints': true, 'icons': true, 'target_seconds': 70},
       3: {'steps': 6, 'hints': false, 'icons': true, 'target_seconds': 120},
     },
+    'number_recall': {
+      1: {'sequence_length': 3, 'show_seconds_per_item': 2, 'target_seconds': 60},
+      2: {'sequence_length': 4, 'show_seconds_per_item': 2, 'target_seconds': 90},
+      3: {'sequence_length': 6, 'show_seconds_per_item': 2, 'target_seconds': 150},
+    },
   });
 
   static LevelConfig _current = bundled;
@@ -100,4 +105,14 @@ class LevelConfig {
 
   int targetSeconds(String game, int level) =>
       (_params(game, level)['target_seconds'] as num?)?.toInt() ?? 60;
+
+  int recallLength(int level) =>
+      (_params('number_recall', level)['sequence_length'] as num?)
+          ?.toInt() ??
+      3;
+
+  int recallShowSeconds(int level) =>
+      (_params('number_recall', level)['show_seconds_per_item'] as num?)
+          ?.toInt() ??
+      2;
 }
