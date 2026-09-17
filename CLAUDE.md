@@ -36,7 +36,10 @@ env). Plus `python3 test_phase2_services.py` (standalone), `python3 smoke_e2e.py
 → dashboard → sync → companion → RAG → consent), and on the Flutter side
 `flutter test` (model parsing + analytics engine) plus
 `mobile/integration_test/app_flow_test.dart` (on-device, needs an emulator and a
-backend at `10.0.2.2:8000`).
+backend at `10.0.2.2:8000`; on physical devices use
+`adb -s SERIAL reverse tcp:8000 tcp:8000` plus
+`--dart-define=API_BASE_URL=http://localhost:8000` — see DEPLOYMENT.md
+"Run — September 30 demo").
 
 ---
 
@@ -407,7 +410,15 @@ docker-compose.yml            # pgvector/pg16 + redis + backend (no dashboard co
 - **Security gates:** `test_phase0_fixes.py` (5 P0 regressions: encryption config key, report decrypt, auth on `/language/*`, consent-revoke ownership, game-session IDOR), `test_phase11_gates.py` (cross-patient 403/404, read-audit rows, encrypted docs), `test_phase12_gates.py` (consent scoping, permission tiers, production secret/CORS refusal)
 - **Integration:** `test_api_routes.py` E2E flows; `smoke_e2e.py` for live-server vs real Postgres (companion-config POST treats a 409 as idempotent pass, so re-runs are clean)
 - **Frontend:** mobile `test/game_analytics_engine_test.dart` (difficulty rules + report fields) and `test/widget_test.dart` (model parsing); `test/api_live_test.dart` and `integration_test/app_flow_test.dart` need a running backend/emulator; dashboard single smoke widget test
-- **Commands:** `cd backend && python3 -m pytest app/tests tests -q` · `python3 test_phase2_services.py` · `python3 run_tests.py` · `python3 smoke_e2e.py` · `uvicorn app.main:app --reload` · `cd mobile && flutter test`
+- **Commands:** `cd backend && python3 -m pytest app/tests tests -q` · `python3 test_phase2_services.py` · `python3 run_tests.py` · `python3 smoke_e2e.py` · `cd mobile && flutter test`
+- **Demo runs (2026-09-30):** use `backend/.venv-demo` (Python 3.12) with
+  `ENABLE_BACKGROUND_JOBS=false` against the populated Homebrew Postgres
+  `localhost:5432/eldercare` (sysid `7681754862742343790`) — **not** the compose
+  cluster. Full runbook: DEPLOYMENT.md "Run — September 30 demo". Current source
+  (B) requires migration `0009_shadow_difficulty` (not approved/applied; SQLite-only
+  tested) before any restart at HEAD, so startup from new HEAD is blocked pending
+  backup + explicit approval; the pinned schema-0008 server (PID 51348) remains
+  valid until restarted.
 
 ---
 

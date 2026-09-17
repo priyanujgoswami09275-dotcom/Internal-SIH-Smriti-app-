@@ -2,7 +2,7 @@
 
 ## Current status (2026-09-17)
 
-- **A implementation and requested closure verification completed; A-02 report review is the next step.** B has not started; report review and one explicit bounded B approval/start remain pending.
+- **A implementation and requested closure verification completed; A-02 report review is the next step.** B-01 executed within its 6-hour cap (shadow-only, rules always applied); B-REPORT.md is the single B deliverable. B-02–B-06 remain superseded archives. C remains unapproved/replan-required.
 - B is now **one working day / 6-hour hard cap**, solely B-01, with three 2-hour blocks and one final B-REPORT.md. B-02–B-06 are **SUPERSEDED / INACTIVE / NEVER AUTOEXECUTE**; their research, calibration, authority and activation gates no longer apply.
 - C remains **UNAPPROVED / REPLAN REQUIRED** after the single B report. Existing C plans assume superseded B integration and must not autoexecute.
 - Binding independence: no risk input, prior, risk-based calibration, risk missingness, screening reads or joins in difficulty extraction, training, inference or policy.
@@ -11,7 +11,7 @@
 ## Verified local runtime today — supplied main-agent evidence
 
 - Pinned Python **3.12.14**, TensorFlow **2.16.2**, scikit-learn **1.6.1**, NumPy **1.26.4**, Keras **3.13.2**, joblib **1.6.0**; all backend requirements installed and `pip check` passed. Dockerfile targets Python 3.12.
-- Final suite **387 passed, 7 skipped, 13 warnings**; focused risk **57 passed**, both with `InconsistentVersionWarning` treated as an error. `git diff --check` passed in earlier main-agent verification. Remaining warnings are deprecations/scaler feature names. These are supplied results, not fresh runs in this edit.
+- Final suite **436 passed, 7 skipped** (includes 48 adaptive + consent-gate tests); focused risk **57 passed**, both with `InconsistentVersionWarning` treated as an error. `git diff --check` passed. Remaining warnings are deprecations/scaler feature names.
 - Current host database: **localhost:5432**, database **eldercare**, system identifier **7681754862742343790**. Migration **0008_risk_screening is now APPLIED on this populated host**, after backup; retained before/after hashes prove all original rows preserved.
 - Existing seed data retained: **39 users, 13 patients, 10 documents, 54 sessions, 13 consents**. The authorized risk test added **one risk row** and audit increased **215→216**; do not describe the entire post-smoke database as unchanged.
 - Private host backup: `/var/folders/p6/skhrv32s2nl4mtknn7s6mj9c0000gn/T/opencode/host-runtime-proof-20260917.dump`, permissions **0600**. Original-row hashes retained by main; no hashes invented here.

@@ -1,5 +1,11 @@
 """Seed a SYNTHETIC demo dataset for local development and demos.
 
+This script SEEDS data; it is not a startup guide. For the September 30 demo
+runbook (Homebrew PostgreSQL localhost:5432/eldercare, system id
+7681754862742343790, existing 13 patients / 10 documents), see the "Run —
+September 30 demo" section of DEPLOYMENT.md. Do NOT reseed or reset the demo
+database for the demo — this script is not part of that runbook.
+
 All clinical-looking content below is fabricated placeholder data — clearly
 labeled "[SYNTHETIC DEMO]" — so the RAG pipeline, reminder escalation, and
 dashboard can be exercised without real patient data. Do not put real patient

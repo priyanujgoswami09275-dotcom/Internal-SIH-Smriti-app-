@@ -126,6 +126,22 @@ Python >= 3.10
 Firebase CLI
 ```
 
+### Running locally (September 30 demo)
+
+**Do not use `docker compose up` for the demo.** The demo backend runs against
+the populated Homebrew PostgreSQL at `localhost:5432/eldercare` (system
+identifier `7681754862742343790`, existing 13 patients / 10 documents) — not the
+separate, empty compose cluster at `192.168.23.25`. Do not reseed or reset the
+demo database.
+
+Full runbook — including the `.venv-demo` Python 3.12 environment, the
+cluster preflight check, and the `ENABLE_BACKGROUND_JOBS=false` baseline — is in
+**[DEPLOYMENT.md → "Run — September 30 demo"](DEPLOYMENT.md)**. Mobile:
+`cd mobile && flutter pub get`, then on a device/emulator run
+`adb -s SERIAL reverse tcp:8000 tcp:8000` and
+`flutter run --debug -d SERIAL --dart-define=API_BASE_URL=http://localhost:8000`
+(Android emulators reach the host via `http://10.0.2.2:8000` instead).
+
 ## 📊 Project Status
 
 - [x] Problem research and requirement analysis

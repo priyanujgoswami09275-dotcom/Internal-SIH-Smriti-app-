@@ -15,11 +15,117 @@
 6. Configure real notification channel (SMS/FCM/APNs) beyond console.
 7. Clean build artifacts (mobile/build, .dart_tool; backend/.venv) and refresh graph (`graphify update .`).
 
-## Run
+## Run — September 30 demo (authoritative)
+
+The demo runs against the **populated Homebrew PostgreSQL cluster on the host**:
+`localhost:5432/eldercare`, system identifier `7681754862742343790`, holding the
+existing **13 patients and 10 documents**. Do **not** run
+`docker compose up` for the demo — the compose Postgres (`192.168.23.25:5432`,
+system id `7682040204916105254`) is a separate, empty cluster. Do **not** reseed
+or reset the demo database.
+
+### One-time environment setup (from `backend/`)
+
+Create a durable Python 3.12 virtualenv named `.venv-demo` (do not reuse the
+existing `.venv`, which is Python 3.14 and for tests):
+
+```sh
+python3.12 -m venv .venv-demo
+.venv-demo/bin/pip install -r requirements.txt
+.venv-demo/bin/pip check
 ```
-docker-compose up -d  # dev shape; swap to managed DB + TLS for prod
-python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8000
+
+### Configuration
+
+Repo-root `.env` already contains the correct private credentials; an optional
+`backend/.env` and exported environment variables override it (pydantic precedence:
+exported vars > `backend/.env` > root `.env`). Do not source it and do not print
+or echo any credentials.
+
+### Preflight — verify the target cluster before starting anything
+
+Run from `backend/` using the demo venv. This asserts host/port/db and the actual
+system identifier via SQLAlchemy, and reports row **counts only (no PHI)**:
+
+```sh
+.venv-demo/bin/python - <<'PY'
+from sqlalchemy import create_engine, text
+from sqlalchemy.engine import make_url
+from app.config import settings
+
+url = make_url(settings.DATABASE_URL)
+assert (url.host, url.port, url.database) == ("localhost", 5432, "eldercare"), (
+    f"wrong cluster: host={url.host} port={url.port} db={url.database}")
+engine = create_engine(settings.DATABASE_URL)
+with engine.connect() as conn:
+    sysid = conn.execute(text("SELECT system_identifier FROM pg_control_system()")).scalar()
+    assert sysid == 7681754862742343790, f"wrong cluster sysid: {sysid}"
+    patients = conn.execute(text("SELECT count(*) FROM patients")).scalar()
+    docs = conn.execute(text("SELECT count(*) FROM medical_documents")).scalar()
+print(f"OK: eldercare sysid={sysid} patients={patients} documents={docs}")
+PY
 ```
+
+Expected output: `OK: eldercare sysid=7681754862742343790 patients=13 documents=10`.
+If the system identifier differs, you are pointed at the wrong cluster — stop.
+
+### Start the backend (demo baseline)
+
+```sh
+ENABLE_BACKGROUND_JOBS=false .venv-demo/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --no-access-log
+```
+
+`ENABLE_BACKGROUND_JOBS=false` is the explicit demo baseline: no reminder
+generation/escalation jobs fire against the demo data. Enabling them later is a
+separate, explicit choice.
+
+### Mobile (patient app)
+
+From the `mobile/` directory:
+
+```sh
+flutter pub get
+flutter devices                      # find SERIAL of the attached device/emulator
+adb -s SERIAL reverse tcp:8000 tcp:8000
+flutter run --debug -d SERIAL --dart-define=API_BASE_URL=http://localhost:8000
+```
+
+With the `adb reverse` tunnel, the app reaches the host backend as
+`http://localhost:8000`. On an **Android emulator** (no reverse needed), the
+address is the explicit host loopback `http://10.0.2.2:8000`:
+
+```sh
+flutter run --debug -d emulator-5554 --dart-define=API_BASE_URL=http://10.0.2.2:8000
+```
+
+Both hosts are covered by the debug-only cleartext whitelist
+(`mobile/android/app/src/debug/` → `network_security_config.xml`); release builds
+stay TLS-only. The `API_BASE_URL` flag is defined in
+`mobile/lib/config/app_config.dart`. Physical-device behavior (mic, speaker,
+notifications, visual walkthrough) is **not verified** — do not claim on-device
+validation.
+
+### Startup blocked on current source until migration 0009 is approved
+
+Current source (Phase B, working tree) includes `0009_shadow_difficulty.py`,
+which is **REQUIRED before restarting code at this HEAD**. It is **not approved
+and not applied** to the demo database (`alembic_version` = `0008_risk_screening`)
+and has been tested on SQLite only. Startup from the new HEAD on the demo DB is
+**blocked until a fresh backup exists and migration approval is explicitly
+verified**. Do not perform a silent `alembic upgrade head` and do not fake a
+working startup by hand-patching schema 0008 to match it.
+
+The pinned backend from the previous run (Source A, **PID 51348**,
+Python 3.12, schema `0008_risk_screening`, `ENABLE_BACKGROUND_JOBS=false`) is
+valid **until it is restarted**; this release gate is pending. If that process
+dies, follow this runbook from the top — after the explicit 0009 approval —
+rather than improvising.
+
+### Old migration history
+
+The migration-recovery notes below are **historical record only** — they describe
+the earlier drift (`0003` stamp, `0005` rename, `0004` DDL recovery) and do not
+conflict with the demo database, which is a clean 0001→0008 chain.
 
 Source of truth: CLAUDE.md (reconciled 2026-09-06); the Phase 6 results below supersede the historical test counts above.
 
