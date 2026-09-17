@@ -5,7 +5,7 @@ level_config_service.DEFAULT_LEVEL_CONFIG): match_it pairs 2/4/6,
 routine steps 3/4/6 with icons on at every level.
 """
 revision = "0006_game_level_config"
-down_revision = "0005_demo_clinical_intake_placeholder"
+down_revision = "0005_clinical_intake"
 
 from alembic import op
 import sqlalchemy as sa
