@@ -170,6 +170,12 @@ class DifficultyEvaluationResponse(BaseModel):
     reason: str
     rule_triggered: Optional[str]
     recent_sessions_reviewed: int
+    source: Optional[str] = None
+    rule_version: Optional[str] = None
+    result: Optional[str] = None
+    shadow_probability: Optional[float] = None
+    shadow_model_version: Optional[str] = None
+    shadow_reason: Optional[str] = None
 
 
 # ============= Endpoints =============
@@ -527,9 +533,12 @@ async def evaluate_difficulty(
     db: AsyncSession = Depends(get_db),
 ):
     """Evaluate if difficulty should adjust for a patient."""
+    pid = UUID(patient_id)
+    await ensure_patient_access(db, current_user, pid)
+    await ensure_consent(db, pid, "game_data")
     evaluation = await difficulty_engine.evaluate_difficulty(
         db,
-        patient_id=UUID(patient_id),
+        patient_id=pid,
         game_type=GameTypeEnum(game_type),
         current_difficulty=current_difficulty,
     )

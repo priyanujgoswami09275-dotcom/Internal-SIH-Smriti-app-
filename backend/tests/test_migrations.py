@@ -40,6 +40,30 @@ def test_risk_screening_migration_is_additive_and_cascades():
         engine.dispose()
 
 
+def test_shadow_migration_preserves_legacy_rows_and_round_trips():
+    script = ScriptDirectory(str(MIGRATIONS))
+    assert script.get_heads() == ["0009_shadow_difficulty"]
+    revision = script.get_revision("0009_shadow_difficulty")
+    assert revision.down_revision == "0008_risk_screening"
+    engine = sa.create_engine("sqlite://")
+    try:
+        with engine.begin() as connection:
+            connection.execute(sa.text("CREATE TABLE difficulty_adjustment_logs (id INTEGER PRIMARY KEY, reason TEXT NOT NULL)"))
+            connection.execute(sa.text("INSERT INTO difficulty_adjustment_logs VALUES (1, 'legacy')"))
+            for _ in range(2):
+                with Operations.context(MigrationContext.configure(connection)):
+                    revision.module.upgrade()
+                row = connection.execute(sa.text("SELECT * FROM difficulty_adjustment_logs")).mappings().one()
+                assert row["reason"] == "legacy"
+                assert all(row[field] is None for field in ("source", "rule_version", "result", "shadow_probability", "shadow_model_version", "shadow_reason"))
+                connection.execute(sa.text("UPDATE difficulty_adjustment_logs SET source='rule_fallback', result='hold', shadow_probability=0.4"))
+                with Operations.context(MigrationContext.configure(connection)):
+                    revision.module.downgrade()
+                assert dict(connection.execute(sa.text("SELECT * FROM difficulty_adjustment_logs")).mappings().one()) == {"id": 1, "reason": "legacy"}
+    finally:
+        engine.dispose()
+
+
 def test_every_alembic_revision_id_fits_version_num_column():
     script = ScriptDirectory(str(MIGRATIONS))
     revisions = list(script.walk_revisions())

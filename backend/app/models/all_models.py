@@ -86,6 +86,12 @@ class DifficultyAdjustmentLog(Base):
     reason = Column(String(255), nullable=False)
     adjusted_at = Column(DateTime, default=func.now(), nullable=False)
     triggered_at = Column(DateTime, default=func.now(), nullable=False)
+    source = Column(String(50), nullable=True)
+    rule_version = Column(String(80), nullable=True)
+    result = Column(String(10), nullable=True)
+    shadow_probability = Column(Float, nullable=True)
+    shadow_model_version = Column(String(120), nullable=True)
+    shadow_reason = Column(String(80), nullable=True)
 
 class GameLevelConfig(Base):
     """Single source of truth for per-game difficulty parameters.

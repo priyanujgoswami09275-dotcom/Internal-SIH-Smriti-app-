@@ -21,6 +21,7 @@ _PLACEHOLDER_SECRETS = {
 class Settings(BaseSettings):
     PROJECT_NAME: str = "Elder-Care Cognitive Companion"
     PROJECT_VERSION: str = "0.1.0"
+    ADAPTIVE_SHADOW_MODEL: str = ""
     API_V1_STR: str = "/api/v1"
 
     # Database

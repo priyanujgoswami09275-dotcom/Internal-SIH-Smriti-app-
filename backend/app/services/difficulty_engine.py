@@ -10,6 +10,7 @@ from datetime import datetime, timezone, timedelta
 from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from app.services.adaptive_shadow import evaluate_shadow
 from app.models.all_models import (
     GameSession,
     DifficultyAdjustmentLog,
@@ -153,8 +154,10 @@ async def evaluate_difficulty(
         - reason: explanation of the adjustment
         - rule_triggered: which rule (if any) triggered the change
     """
+    decision_time = datetime.now(timezone.utc)
     if strategy is None:
         strategy = RuleBasedDifficultyStrategy()
+    default_rules = type(strategy) is RuleBasedDifficultyStrategy
 
     recent_sessions = await get_recent_sessions(db, patient_id, game_type)
 
@@ -169,11 +172,25 @@ async def evaluate_difficulty(
         direction = "bump" if new_difficulty > current_difficulty else "drop"
         reason = f"Difficulty {direction} from {current_difficulty} to {new_difficulty}"
         rule_triggered = direction
-        await _log_adjustment(
-            db, patient_id, game_type, current_difficulty, new_difficulty, reason
-        )
+
+    shadow = dict(shadow_probability=None, shadow_model_version=None, shadow_reason="custom_strategy")
+    if default_rules:
+        try:
+            shadow = await evaluate_shadow(db, patient_id, game_type, current_difficulty, decision_time)
+        except Exception:
+            shadow = dict(shadow_probability=None, shadow_model_version=None, shadow_reason="inference_error")
+    resulting_level = new_difficulty if new_difficulty is not None else current_difficulty
+    metadata = dict(
+        source="rule_fallback" if default_rules else "custom_strategy",
+        rule_version="rules-85-50-v1" if default_rules else None,
+        result="raise" if resulting_level > current_difficulty else "lower" if resulting_level < current_difficulty else "hold",
+        **shadow,
+    )
+    await _log_adjustment(db, patient_id, game_type, current_difficulty, resulting_level, reason,
+                          adjusted_at=decision_time, **metadata)
 
     return {
+        **metadata,
         "new_difficulty": new_difficulty,
         "reason": reason,
         "rule_triggered": rule_triggered,
@@ -188,6 +205,9 @@ async def _log_adjustment(
     old_difficulty: int,
     new_difficulty: int,
     reason: str,
+    *,
+    adjusted_at=None,
+    **metadata,
 ) -> None:
     """Log a difficulty adjustment for audit trail."""
     log = DifficultyAdjustmentLog(
@@ -196,7 +216,8 @@ async def _log_adjustment(
         old_difficulty=old_difficulty,
         new_difficulty=new_difficulty,
         reason=reason,
-        adjusted_at=datetime.now(timezone.utc),
+        adjusted_at=adjusted_at or datetime.now(timezone.utc),
+        **metadata,
     )
     db.add(log)
     await db.commit()
