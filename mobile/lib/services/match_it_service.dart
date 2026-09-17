@@ -1,6 +1,7 @@
 /// Match It game logic and state management.
 
 import 'dart:math';
+import '../games/level_config.dart';
 import '../models/game_models.dart';
 
 /// Game state for Match It.
@@ -95,27 +96,15 @@ class MatchItService {
   final Random _random = Random();
 
   /// Generate a shuffled board from content pack items.
+  /// Pair count comes from [LevelConfig] (server-synced, bundled fallback).
   MatchItBoard generateBoard({
     required String packId,
     required String packName,
     required int difficultyLevel,
     required List<Map<String, String>> items,
+    LevelConfig? levels,
   }) {
-    // Determine pair count based on difficulty
-    int pairCount;
-    switch (difficultyLevel) {
-      case 1:
-        pairCount = 4;
-        break;
-      case 2:
-        pairCount = 6;
-        break;
-      case 3:
-        pairCount = 9;
-        break;
-      default:
-        pairCount = 4;
-    }
+    final pairCount = (levels ?? LevelConfig.bundled).matchPairs(difficultyLevel);
 
     // Select random items for this game
     final shuffledItems = List<Map<String, String>>.from(items)..shuffle(_random);

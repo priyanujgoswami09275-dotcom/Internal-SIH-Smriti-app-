@@ -462,6 +462,12 @@ class ApiService {
     return base64Decode(b64);
   }
 
+  /// Full difficulty map for LevelConfig sync (GET /games/level-config).
+  Future<Map<String, dynamic>> fetchLevelConfig() async {
+    final data = await getJson('${AppConfig.apiV1}/games/level-config');
+    return data as Map<String, dynamic>;
+  }
+
   // =====================================================================
   // Caregiver dashboard
   // =====================================================================

@@ -73,17 +73,22 @@ void main() {
     });
   });
 
-  group('level change requires two consecutive agreeing sessions', () {
+  group('level change requires three consecutive agreeing sessions', () {
     test('single strong session does NOT raise the level', () {
       // L1 target 90s: 100% accuracy in 50s -> verdict +1
       final r = engine.recommendedLevel(_session(seconds: 50, attempts: 4, correct: 4));
       expect(r, 1, reason: 'first agreeing session must not move the level');
     });
 
-    test('two consecutive strong sessions raise the level', () {
+    test('two strong sessions still hold; the third raises the level', () {
+      // Mirrors the server bump streak (3 consecutive > 85%).
       engine.recommendedLevel(_session(seconds: 50, attempts: 4, correct: 4));
-      final r = engine.recommendedLevel(_session(seconds: 55, attempts: 4, correct: 4));
-      expect(r, 2);
+      final held =
+          engine.recommendedLevel(_session(seconds: 55, attempts: 4, correct: 4));
+      expect(held, 1, reason: 'only 2 of the required 3 agreeing sessions');
+      final raised =
+          engine.recommendedLevel(_session(seconds: 52, attempts: 4, correct: 4));
+      expect(raised, 2);
     });
 
     test('disagreeing sessions cancel the agreement window', () {
@@ -95,11 +100,14 @@ void main() {
       expect(r, 1);
     });
 
-    test('two consecutive weak sessions lower the level (L2 -> L1)', () {
+    test('three consecutive weak sessions lower the level (L2 -> L1)', () {
       final s1 = _session(seconds: 300, attempts: 4, correct: 1, level: 2);
       final s2 = _session(seconds: 320, attempts: 4, correct: 0, level: 2);
+      final s3 = _session(seconds: 310, attempts: 4, correct: 1, level: 2);
       engine.recommendedLevel(s1);
-      expect(engine.recommendedLevel(s2), 1);
+      expect(engine.recommendedLevel(s2), 2,
+          reason: 'only 2 of the required 3 agreeing sessions');
+      expect(engine.recommendedLevel(s3), 1);
     });
 
     test('level never drops below 1 nor exceeds 3', () {
@@ -121,9 +129,10 @@ void main() {
     test('accuracy < 40% -> lower verdict; > 85% fast -> raise verdict', () {
       // accuracy 39% is low; 40% exactly is not.
       final notLow = _session(seconds: 60, attempts: 100, correct: 40);
-      // Two low sessions from L2 must drop to L1.
+      // Two low sessions from L2 must hold; the third drops to L1.
       final lowL2 = _session(seconds: 60, attempts: 100, correct: 39, level: 2);
       engine.recommendedLevel(lowL2);
+      expect(engine.recommendedLevel(lowL2), 2);
       expect(engine.recommendedLevel(lowL2), 1);
       engine.reset();
       // 40% + slow time (60s < 90s target, so not slow) -> hold at L1.
@@ -132,6 +141,7 @@ void main() {
       // Sanity: the 39% verdict differs from the 40% one.
       engine.reset();
       final raise = _session(seconds: 50, attempts: 10, correct: 10);
+      engine.recommendedLevel(raise);
       engine.recommendedLevel(raise);
       expect(engine.recommendedLevel(raise), 2, reason: 'fast + perfect must raise');
     });

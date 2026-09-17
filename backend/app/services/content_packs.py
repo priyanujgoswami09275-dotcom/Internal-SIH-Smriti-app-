@@ -4,8 +4,10 @@ Seedable content packs featuring North Eastern Region cultural, botanical,
 wildlife, and household items. Designed for easy extension by caregivers/admins.
 """
 from dataclasses import dataclass
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 import random
+
+from app.services.level_config_service import default_params
 
 
 @dataclass
@@ -88,13 +90,10 @@ NER_CONTENT_PACKS: Dict[str, ContentPack] = {
     ),
 }
 
-# Difficulty levels to pair counts (mirrors the client spec grids:
-# L1 = 2x2 (2 pairs), L2 = 4x2 (4 pairs), L3 = 4x3 (6 pairs))
-DIFFICULTY_PAIRS_MAP: Dict[int, int] = {
-    1: 2,  # 2 pairs = 4 cards (Easy: 2x2 grid)
-    2: 4,  # 4 pairs = 8 cards (Medium: 4x2 grid)
-    3: 6,  # 6 pairs = 12 cards (Hard: 4x3 grid)
-}
+# Pair counts resolve from game_level_config (DEFAULT_LEVEL_CONFIG fallback).
+# Do not reintroduce a local map — the table is the single source of truth.
+def _pairs_for_level(difficulty_level: int) -> int:
+    return default_params("match_it", difficulty_level).get("pairs", 2)
 
 
 def register_content_pack(
@@ -141,10 +140,19 @@ def list_content_packs() -> List[Dict[str, Any]]:
     ]
 
 
-def generate_match_it_board(pack_id: str = "festivals_ner", difficulty_level: int = 1) -> Dict[str, Any]:
-    """Generate a randomized match-it board configuration for a given pack and difficulty."""
+def generate_match_it_board(
+    pack_id: str = "festivals_ner",
+    difficulty_level: int = 1,
+    pair_count: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Generate a randomized match-it board configuration for a given pack and difficulty.
+
+    pair_count resolves from game_level_config when omitted (routes pass the
+    DB-resolved value); the parameter exists so offline/pure callers stay sync.
+    """
     pack = NER_CONTENT_PACKS.get(pack_id) or NER_CONTENT_PACKS["festivals_ner"]
-    pair_count = DIFFICULTY_PAIRS_MAP.get(difficulty_level, 2)
+    if pair_count is None:
+        pair_count = _pairs_for_level(difficulty_level)
 
     # Pick N random distinct items from pack
     selected_items = random.sample(pack.items, min(pair_count, len(pack.items)))

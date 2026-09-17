@@ -20,6 +20,7 @@ import '../data/local_content_packs.dart';
 import '../games/game_analytics_engine.dart';
 import '../games/game_labels.dart';
 import '../games/game_visuals.dart';
+import '../games/level_config.dart';
 import '../models/game_models.dart';
 import '../models/shared_models.dart';
 import '../services/api_service.dart';
@@ -83,6 +84,10 @@ class _RoutineScreenState extends State<RoutineScreen> {
       _loading = true;
       _error = null;
     });
+    // Sync the difficulty map first (cached offline); the server board
+    // already agrees when online, the local pack when offline.
+    await LevelConfig.refresh(_api);
+    _engine.applyLevels(LevelConfig.current);
     try {
       final sessionId = await _api.startGame(
         gameType: 'routine_sequencing',
@@ -101,6 +106,7 @@ class _RoutineScreenState extends State<RoutineScreen> {
     } on Exception {
       final board = LocalContentPacks.defaultRoutineBoard(
         difficultyLevel: widget.difficultyLevel,
+        levels: LevelConfig.current,
       );
       final sessionId = 'offline_${DateTime.now().millisecondsSinceEpoch}';
       if (!mounted) return;

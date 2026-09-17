@@ -6,6 +6,7 @@ library;
 
 import 'dart:math';
 
+import '../games/level_config.dart';
 import '../models/game_models.dart';
 
 /// Game state for Daily Routine Sequencing.
@@ -92,21 +93,14 @@ class RoutineService {
   final Random _random = Random();
 
   /// Build a local board from routine steps (offline fallback).
+  /// Step count comes from [LevelConfig] (server-synced, bundled fallback).
   RoutineBoard generateBoard({
     required int difficultyLevel,
     required List<RoutineStep> steps,
+    LevelConfig? levels,
   }) {
-    int stepCount;
-    switch (difficultyLevel) {
-      case 1:
-        stepCount = 3;
-        break;
-      case 2:
-        stepCount = 5;
-        break;
-      default:
-        stepCount = 8;
-    }
+    final stepCount =
+        (levels ?? LevelConfig.bundled).routineSteps(difficultyLevel);
 
     final pool = List<RoutineStep>.from(steps)..shuffle(_random);
     final chosen = pool.take(stepCount).toList()..shuffle(_random);

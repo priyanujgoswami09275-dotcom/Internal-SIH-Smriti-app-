@@ -8,6 +8,8 @@
 /// Pure Dart (no Flutter imports) so rules are unit-testable.
 library;
 
+import 'level_config.dart';
+
 // =====================================================================
 // Models
 // =====================================================================
@@ -129,23 +131,26 @@ class GameAnalyticsEngine {
   static final GameAnalyticsEngine instance = GameAnalyticsEngine._();
 
   // ---- Rule thresholds ----
-  // Source of truth for level moves: backend difficulty_engine.py.
-  // Dart side uses the same numbers so in-app hints agree with server history.
-  // The bump-streak length lives on the server only (3 sessions); the client
-  // only mirrors per-session verdicts, not the streak.
+  // Source of truth for level moves: backend difficulty_engine.py
+  // (3-session bump streak, 2-session drop streak, 85%/50% bands).
+  // Dart mirrors the same numbers so in-app hints agree with the server;
+  // the server remains authoritative (POST /games/difficulty/evaluate).
   static const int stuckHintSeconds = 15;
   static const double lowAccuracyPct = 50.0;
   static const double highAccuracyPct = 85.0;
   static const double slowCompletionFactor = 1.5;
-  /// Local hint window: in-app level-change banner needs 2 agreeing sessions.
-  /// Server difficulty_engine.py enforces its own bump-streak (3) independently.
-  static const int sessionsBeforeChange = 2;
+  /// Agreement window matching the server's 3-consecutive-session bump rule:
+  /// the in-app level suggestion moves only after 3 agreeing sessions.
+  static const int sessionsBeforeChange = 3;
 
-  /// Per-level target seconds to complete the game (used by the slow rule).
-  static const Map<String, Map<int, int>> _levelTargets = {
-    'match_it': {1: 90, 2: 150, 3: 240},
-    'routine_sequencing': {1: 45, 2: 70, 3: 120},
-  };
+  /// Active level parameters (installed from the server map at game start
+  /// via [applyLevels]; bundled canonical until then).
+  LevelConfig _levels = LevelConfig.bundled;
+
+  void applyLevels(LevelConfig levels) => _levels = levels;
+
+  int _targetFor(String gameType, int difficultyLevel) =>
+      _levels.targetSeconds(gameType, difficultyLevel);
 
   /// Incorrect-move ceilings before the in-session hint fires.
   static const Map<int, int> incorrectMovesHintThreshold = {
@@ -154,13 +159,13 @@ class GameAnalyticsEngine {
     3: 5,
   };
 
-  // ---- Session history for the 2-session agreement rule ----
+  // ---- Session history for the 3-session agreement rule ----
   final Map<String, List<int>> _lastAdjustments = {}; // patientId -> [-1|0|1]
 
   /// Evaluate the finished session and build the performance report.
   GamePerformanceReport evaluate(CognitiveGameSession s) {
     final accuracy = s.accuracyPct.clamp(0.0, 100.0);
-    final target = _levelTargets[s.gameType]![s.difficultyLevel]!;
+    final target = _targetFor(s.gameType, s.difficultyLevel);
     final slow = !s.isCompleted || s.timeTakenInSeconds > target * slowCompletionFactor;
 
     // Cognitive speed: fraction of the level target not used (capped 0-100).
@@ -200,7 +205,7 @@ class GameAnalyticsEngine {
   }
 
   /// Next level for the patient, applying the dynamic rules with the
-  /// two-consecutive-sessions agreement requirement.
+  /// three-consecutive-sessions agreement requirement (server rule).
   int recommendedLevel(CognitiveGameSession s) {
     final verdict = _verdict(s);
     final history = _lastAdjustments.putIfAbsent(
@@ -219,7 +224,7 @@ class GameAnalyticsEngine {
 
   /// Single-session verdict: +1 raise, -1 lower, 0 hold.
   int _verdict(CognitiveGameSession s) {
-    final target = _levelTargets[s.gameType]![s.difficultyLevel]!;
+    final target = _targetFor(s.gameType, s.difficultyLevel);
     final slow = !s.isCompleted || s.timeTakenInSeconds > target * slowCompletionFactor;
     if (s.accuracyPct < lowAccuracyPct || slow) return -1;
     if (s.accuracyPct > highAccuracyPct &&

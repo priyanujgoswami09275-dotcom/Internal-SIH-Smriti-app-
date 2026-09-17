@@ -10,6 +10,7 @@ from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from app.models.all_models import PatientProfile
+from app.services.level_config_service import default_params
 
 
 DEFAULT_DAILY_ROUTINE: List[Dict[str, Any]] = [
@@ -136,12 +137,18 @@ DEFAULT_DAILY_ROUTINE: List[Dict[str, Any]] = [
     },
 ]
 
-# Step counts by difficulty
-ROUTINE_DIFFICULTY_STEPS: Dict[int, int] = {
-    1: 3,  # Level 1: 3 steps + full hints + icons
-    2: 4,  # Level 2: 4 steps + partial hints
-    3: 6,  # Level 3: 6 steps + text-only (no hints)
-}
+# Step counts/flags resolve from game_level_config (DEFAULT_LEVEL_CONFIG
+# fallback). Do not reintroduce a local map — the table is the single
+# source of truth.
+def _config_for_level(difficulty_level: int) -> Dict[str, Any]:
+    cfg = default_params("routine_sequencing", difficulty_level)
+    return {
+        "steps": cfg.get("steps", 3),
+        # Icons stay on at every level: accessibility aid, hard mode
+        # removes hints, not icons (see GameLevelConfig seeds).
+        "icons": cfg.get("icons", True),
+        "hints": cfg.get("hints", difficulty_level <= 2),
+    }
 
 
 async def get_patient_routine(db: AsyncSession, patient_id: UUID) -> List[Dict[str, Any]]:
@@ -174,10 +181,24 @@ async def update_patient_routine(
 
 
 def generate_routine_sequencing_board(
-    routine_steps: List[Dict[str, Any]], difficulty_level: int = 1
+    routine_steps: List[Dict[str, Any]],
+    difficulty_level: int = 1,
+    step_count: Optional[int] = None,
+    include_icons: Optional[bool] = None,
+    include_hints: Optional[bool] = None,
 ) -> Dict[str, Any]:
-    """Generate a routine sequencing puzzle with shuffled steps according to difficulty."""
-    step_count = ROUTINE_DIFFICULTY_STEPS.get(difficulty_level, 3)
+    """Generate a routine sequencing puzzle with shuffled steps according to difficulty.
+
+    Counts/flags resolve from game_level_config when omitted (routes pass the
+    DB-resolved values); the parameters exist so offline/pure callers stay sync.
+    """
+    cfg = _config_for_level(difficulty_level)
+    if step_count is None:
+        step_count = cfg["steps"]
+    if include_icons is None:
+        include_icons = cfg["icons"]
+    if include_hints is None:
+        include_hints = cfg["hints"]
     sorted_routine = sorted(routine_steps, key=lambda s: s["order"])
 
     # Pick a contiguous or well-spaced subset of steps to sequence
@@ -200,7 +221,7 @@ def generate_routine_sequencing_board(
             "title_bn": s.get("title_bn", s["title_en"]),
             "title_hi": s.get("title_hi", s["title_en"]),
             "approx_time": s.get("time", ""),
-            "icon": s.get("icon", "schedule") if difficulty_level <= 2 else None,
+            "icon": s.get("icon", "schedule") if include_icons else None,
             "hint": s.get("hint", "") if difficulty_level == 1 else None,
         }
         puzzle_items.append(item)
@@ -213,8 +234,8 @@ def generate_routine_sequencing_board(
     return {
         "difficulty_level": difficulty_level,
         "step_count": step_count,
-        "has_hints": difficulty_level <= 2,
-        "has_icons": True,
+        "has_hints": include_hints,
+        "has_icons": include_icons,
         "shuffled_items": shuffled_items,
         "correct_sequence": correct_sequence,
     }

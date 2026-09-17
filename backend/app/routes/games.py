@@ -30,6 +30,7 @@ from app.db import get_db
 from app.models.all_models import GameTypeEnum, PatientProfile, GameSession
 from app.models.user import User
 from app.services import game_service, difficulty_engine, routine_service, content_packs
+from app.services import level_config_service
 
 router = APIRouter(prefix="/games", tags=["games"])
 
@@ -356,6 +357,21 @@ async def get_patient_stats(
     }
 
 
+@router.get("/level-config", response_model=dict)
+async def get_level_config(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Full difficulty map {game: {level: params}} for mobile sync.
+
+    Mobile caches this and falls back to its bundled copy offline; the
+    table (seeded by migration 0006) is the single source of truth.
+    """
+    return {
+        "config": await level_config_service.get_all_level_config(db),
+    }
+
+
 @router.get("/content-packs", response_model=list[ContentPackSummary])
 async def list_content_packs(current_user: User = Depends(get_current_user)):
     """List available content packs for Match It."""
@@ -368,10 +384,16 @@ async def generate_match_it_board(
     pack_id: str,
     difficulty_level: int = 1,
     current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ):
-    """Generate a randomized Match It board."""
+    """Generate a randomized Match It board (pair count from level config)."""
+    params = await level_config_service.get_level_params(
+        db, "match_it", difficulty_level
+    )
     board = content_packs.generate_match_it_board(
-        pack_id=pack_id, difficulty_level=difficulty_level
+        pack_id=pack_id,
+        difficulty_level=difficulty_level,
+        pair_count=params.get("pairs", 2),
     )
     return MatchItBoardResponse(**board)
 
@@ -452,12 +474,19 @@ async def generate_routine_board(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Generate a routine sequencing puzzle for a patient."""
+    """Generate a routine sequencing puzzle for a patient (counts from level config)."""
     routine = await routine_service.get_patient_routine(
         db, patient_id=UUID(patient_id)
     )
+    params = await level_config_service.get_level_params(
+        db, "routine_sequencing", difficulty_level
+    )
     board = routine_service.generate_routine_sequencing_board(
-        routine, difficulty_level=difficulty_level
+        routine,
+        difficulty_level=difficulty_level,
+        step_count=params.get("steps", 3),
+        include_icons=params.get("icons", True),
+        include_hints=params.get("hints", difficulty_level <= 2),
     )
     return RoutineSequencingBoardResponse(**board)
 

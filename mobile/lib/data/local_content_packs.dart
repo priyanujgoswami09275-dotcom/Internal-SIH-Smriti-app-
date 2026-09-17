@@ -5,6 +5,7 @@ library;
 
 import 'dart:math';
 
+import '../games/level_config.dart';
 import '../models/game_models.dart';
 import '../models/shared_models.dart';
 
@@ -76,11 +77,19 @@ class LocalContentPacks {
     ],
   };
 
-  static MatchItBoard board(String packId, int difficultyLevel, String packName) {
-    // Spec grids: L1 = 2x2 (2 pairs), L2 = 4x2 (4 pairs),
+  /// Offline board. Pair count comes from [LevelConfig] (server-synced
+  /// via refresh at game start, bundled fallback offline).
+  static MatchItBoard board(
+    String packId,
+    int difficultyLevel,
+    String packName, [
+    LevelConfig? levels,
+  ]) {
+    // Canonical grids: L1 = 2x2 (2 pairs), L2 = 4x2 (4 pairs),
     // L3 = 4x3 (6 pairs) built from VISUALLY RELATED pairs so "harder"
     // is concrete (textiles vs textiles, instruments vs instruments).
-    final pairCount = difficultyLevel == 3 ? 6 : (difficultyLevel == 2 ? 4 : 2);
+    final pairCount =
+        (levels ?? LevelConfig.bundled).matchPairs(difficultyLevel);
     final source = List<Map<String, String>>.from(
       _items[packId] ?? _items['festivals_ner']!,
     )..shuffle(_rng);
@@ -129,7 +138,10 @@ class LocalContentPacks {
     );
   }
 
-  static RoutineBoard defaultRoutineBoard({int difficultyLevel = 1}) {
+  static RoutineBoard defaultRoutineBoard({
+    int difficultyLevel = 1,
+    LevelConfig? levels,
+  }) {
     const steps = [
       RoutineStep(stepId: 'wake', order: 1, time: '06:30', titleEn: 'Wake up', titleAs: 'শুই উঠা', icon: 'wb_sunny'),
       RoutineStep(stepId: 'brush', order: 2, time: '06:45', titleEn: 'Brush teeth', titleAs: 'দাঁত ঘঁহা', icon: 'brush'),
@@ -138,8 +150,9 @@ class LocalContentPacks {
       RoutineStep(stepId: 'bath', order: 5, time: '09:30', titleEn: 'Bathing', titleAs: 'গা ধোৱা', icon: 'shower'),
       RoutineStep(stepId: 'dress', order: 6, time: '09:45', titleEn: 'Dress in Traditional Attire', titleAs: 'পৰম্পৰাগত পোছাক', icon: 'checkroom'),
     ];
-    // Spec: L1 = 3 steps, L2 = 4 steps, L3 = 5-6 steps with fewer hints.
-    final count = difficultyLevel == 1 ? 3 : (difficultyLevel == 2 ? 4 : steps.length);
+    // Canonical: L1 = 3 steps, L2 = 4 steps, L3 = 6 steps (fewer hints).
+    final count =
+        (levels ?? LevelConfig.bundled).routineSteps(difficultyLevel);
     final chosen = steps.take(count).toList();
     final shuffled = List<RoutineStep>.from(chosen)..shuffle(_rng);
     return RoutineBoard(

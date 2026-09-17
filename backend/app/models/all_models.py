@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Date, JSON, DateTime, func, ForeignKey, Enum as SQLEnum, Boolean, Integer, Float
+from sqlalchemy import Column, String, Date, JSON, DateTime, func, ForeignKey, Enum as SQLEnum, Boolean, Integer, Float, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 import uuid
 from enum import Enum
@@ -85,6 +85,24 @@ class DifficultyAdjustmentLog(Base):
     reason = Column(String(255), nullable=False)
     adjusted_at = Column(DateTime, default=func.now(), nullable=False)
     triggered_at = Column(DateTime, default=func.now(), nullable=False)
+
+class GameLevelConfig(Base):
+    """Single source of truth for per-game difficulty parameters.
+
+    Board generators resolve values through level_config_service (DB row,
+    else DEFAULT_LEVEL_CONFIG fallback); mobile mirrors via
+    GET /games/level-config with a bundled fallback. No other module may
+    hardcode pair/step counts.
+    """
+    __tablename__ = "game_level_config"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    game_type = Column(String(50), nullable=False)
+    level = Column(Integer, nullable=False)
+    params = Column(JSON, nullable=False)
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
+
+    __table_args__ = (UniqueConstraint("game_type", "level"),)
 
 class ReminderTypeEnum(str, Enum):
     MEDICINE = "medicine"
