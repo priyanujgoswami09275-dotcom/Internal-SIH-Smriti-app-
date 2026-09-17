@@ -1,11 +1,23 @@
 /// Daily Reminders — gradient cards with cultural atmosphere.
+///
+/// Cards with a due (pending/escalated) event speak the reminder aloud via
+/// the server TTS chain (cached per phrase): a speaker button replays it,
+/// and the first due card auto-plays once per screen open. Text always
+/// stays on screen — voice is additive, never required.
 library;
+
+import 'dart:async';
 
 import 'package:flutter/material.dart';
 
 import '../models/shared_models.dart';
+import '../services/api_service.dart';
+import '../services/auth_session.dart';
+import '../services/reminder_phrases.dart';
 import '../services/reminder_scheduler.dart';
 import '../services/reminder_service.dart';
+import '../services/tts_cache.dart';
+import '../services/voice_audio_service.dart';
 import '../theme/monad_theme.dart';
 import '../widgets/monad/monad_pill_button.dart';
 
@@ -20,6 +32,13 @@ class RemindersScreen extends StatefulWidget {
 
 class _RemindersScreenState extends State<RemindersScreen> {
   final MobileReminderService _reminders = MobileReminderService();
+  final ApiService _api = ApiService.instance;
+  final VoiceAudioService _voice = VoiceAudioService();
+  late final TtsCache _tts = TtsCache(
+    synthesize: (text, language) =>
+        _api.synthesizeSpeech(text: text, language: language),
+  );
+  StreamSubscription<void>? _ttsDoneSub;
 
   List<ReminderScheduleModel>? _schedules;
   Map<String, ReminderEventModel> _openEventBySchedule = {};
@@ -27,23 +46,51 @@ class _RemindersScreenState extends State<RemindersScreen> {
   String? _error;
   final Set<String> _justAcked = {};
 
+  /// Card currently speaking (null when silent). Playback failures stay
+  /// silent — the text on the card is the fallback.
+  String? _speakingScheduleId;
+
+  /// Due cards already auto-played this screen open (auto-play fires once
+  /// per card so refreshes never replay audio uninvited).
+  final Set<String> _autoPlayed = {};
+
+  String get _voiceLanguage =>
+      AuthSession.instance.user?.preferredLanguage ?? 'assamese';
+
   @override
   void initState() {
     super.initState();
+    _ttsDoneSub = _voice.onReplyComplete.listen((_) {
+      if (mounted) setState(() => _speakingScheduleId = null);
+    });
     _load();
   }
 
+  @override
+  void dispose() {
+    _ttsDoneSub?.cancel();
+    _voice.stopPlayback();
+    _voice.dispose();
+    super.dispose();
+  }
+
   Future<void> _load() async {
-    setState(() { _loading = true; _error = null; });
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
     try {
       final schedules = await _reminders.getSchedules(widget.patientId);
       final events = await _reminders.getTodaysEvents(widget.patientId);
       for (final schedule in schedules) {
-        ReminderScheduler.instance.scheduleForSchedule(schedule).catchError((_) {});
+        ReminderScheduler.instance
+            .scheduleForSchedule(schedule)
+            .catchError((_) {});
       }
       final open = <String, ReminderEventModel>{};
       for (final e in events) {
-        if (e.status == ReminderStatus.pending || e.status == ReminderStatus.escalated) {
+        if (e.status == ReminderStatus.pending ||
+            e.status == ReminderStatus.escalated) {
           final existing = open[e.scheduleId];
           if (existing == null || e.scheduledAt.isAfter(existing.scheduledAt)) {
             open[e.scheduleId] = e;
@@ -56,15 +103,53 @@ class _RemindersScreenState extends State<RemindersScreen> {
         _openEventBySchedule = open;
         _loading = false;
       });
+      // Voice-first: speak the first due reminder once (never on refresh).
+      for (final schedule in schedules) {
+        if (_openEventBySchedule.containsKey(schedule.id) &&
+            !_autoPlayed.contains(schedule.id)) {
+          _autoPlayed.add(schedule.id);
+          _speakSchedule(schedule);
+          break;
+        }
+      }
     } on Exception catch (e) {
       if (!mounted) return;
-      setState(() { _loading = false; _error = 'Could not load reminders. $e'; });
+      setState(() {
+        _loading = false;
+        _error = 'Could not load reminders. $e';
+      });
     }
+  }
+
+  /// Speak the reminder for [schedule] (cached TTS, text stays as fallback).
+  /// Tapping the active card's speaker stops playback instead.
+  Future<void> _speakSchedule(ReminderScheduleModel schedule) async {
+    if (_speakingScheduleId == schedule.id) {
+      await _voice.stopPlayback();
+      if (mounted) setState(() => _speakingScheduleId = null);
+      return;
+    }
+    setState(() => _speakingScheduleId = schedule.id);
+    final audio = await _tts.speechFor(
+      reminderPhrase(schedule.reminderType, _voiceLanguage),
+      _voiceLanguage,
+    );
+    if (!mounted) return;
+    if (audio == null) {
+      // TTS unavailable for this phrase — the card text is the fallback.
+      setState(() => _speakingScheduleId = null);
+      return;
+    }
+    await _voice.playReply(audio);
   }
 
   Future<void> _handleAcknowledge(ReminderScheduleModel schedule) async {
     final openEvent = _openEventBySchedule[schedule.id];
     if (openEvent == null) return;
+    if (_speakingScheduleId == schedule.id) {
+      await _voice.stopPlayback();
+      _speakingScheduleId = null;
+    }
     final reachedServer = await _reminders.acknowledgeReminder(
       patientId: widget.patientId,
       eventId: openEvent.id,
@@ -105,28 +190,40 @@ class _RemindersScreenState extends State<RemindersScreen> {
 
   static IconData _iconFor(ReminderType type) {
     switch (type) {
-      case ReminderType.medicine: return Icons.medication;
-      case ReminderType.water: return Icons.water_drop;
-      case ReminderType.food: return Icons.restaurant;
-      case ReminderType.exercise: return Icons.directions_walk;
+      case ReminderType.medicine:
+        return Icons.medication;
+      case ReminderType.water:
+        return Icons.water_drop;
+      case ReminderType.food:
+        return Icons.restaurant;
+      case ReminderType.exercise:
+        return Icons.directions_walk;
     }
   }
 
   static String _assameseFor(ReminderType type) {
     switch (type) {
-      case ReminderType.medicine: return 'ঔষধ';
-      case ReminderType.water: return 'পানী';
-      case ReminderType.food: return 'খাদ্য';
-      case ReminderType.exercise: return 'চলাচল';
+      case ReminderType.medicine:
+        return 'ঔষধ';
+      case ReminderType.water:
+        return 'পানী';
+      case ReminderType.food:
+        return 'খাদ্য';
+      case ReminderType.exercise:
+        return 'চলাচল';
     }
   }
 
   static String _descriptionFor(ReminderType type) {
     switch (type) {
-      case ReminderType.medicine: return 'Time to take your medicine';
-      case ReminderType.water: return 'Stay hydrated — drink water';
-      case ReminderType.food: return 'Remember your meals';
-      case ReminderType.exercise: return 'Light movement helps your mind';
+      case ReminderType.medicine:
+        return 'Time to take your medicine';
+      case ReminderType.water:
+        return 'Stay hydrated — drink water';
+      case ReminderType.food:
+        return 'Remember your meals';
+      case ReminderType.exercise:
+        return 'Light movement helps your mind';
     }
   }
 
@@ -173,8 +270,7 @@ class _RemindersScreenState extends State<RemindersScreen> {
                   height: 64,
                   decoration: BoxDecoration(
                     color: Monad.parchment,
-                    borderRadius:
-                        BorderRadius.circular(Monad.radiusMin),
+                    borderRadius: BorderRadius.circular(Monad.radiusMin),
                     border: Border.all(color: Monad.ash, width: 1),
                   ),
                   child: Icon(
@@ -200,8 +296,7 @@ class _RemindersScreenState extends State<RemindersScreen> {
                             decoration: const ShapeDecoration(
                               color: Monad.parchment,
                               shape: StadiumBorder(
-                                  side: BorderSide(
-                                      color: Monad.ash, width: 1)),
+                                  side: BorderSide(color: Monad.ash, width: 1)),
                             ),
                             child: Text(
                               schedule.reminderType.name.toUpperCase(),
@@ -228,8 +323,7 @@ class _RemindersScreenState extends State<RemindersScreen> {
                       const SizedBox(height: 4),
                       Text(
                         done ? '' : schedule.cadence,
-                        style: Monad.monoBody
-                            .copyWith(color: Monad.graphite),
+                        style: Monad.monoBody.copyWith(color: Monad.graphite),
                       ),
                     ],
                   ),
@@ -237,44 +331,75 @@ class _RemindersScreenState extends State<RemindersScreen> {
               ],
             ),
           ),
-          // Action button — secondary (offBlack) pill; the screen's single
-          // lakeBlue primary is reserved, so repeated row actions stay black.
+          // Action row: speaker replays the spoken reminder (due cards),
+          // then the acknowledge button. Text always stays as the fallback.
           if (!done)
             Container(
               width: double.infinity,
               padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
               child: SizedBox(
                 height: 48,
-                child: ElevatedButton.icon(
-                  onPressed:
-                      !hasOpenEvent ? null : () => _handleAcknowledge(schedule),
-                  icon: Icon(
-                    hasOpenEvent ? Icons.check_circle : Icons.access_time,
-                    size: 24,
-                  ),
-                  label: Text(
-                    hasOpenEvent ? 'I Did This  কৰিলোঁ' : 'Not Due Now',
-                    style: Monad.monoButtonLabel.copyWith(fontSize: 20),
-                  ),
-                  // Secondary (offBlack) pill — the screen keeps lakeBlue
-                  // reserved; repeated row actions stay black per DESIGN.md.
-                  style: Monad.blackPill().copyWith(
-                    backgroundColor: WidgetStateProperty.resolveWith(
-                      (states) => states.contains(WidgetState.disabled)
-                          ? Monad.parchment
-                          : Monad.offBlack,
+                child: Row(
+                  children: [
+                    if (hasOpenEvent)
+                      Container(
+                        width: 48,
+                        height: 48,
+                        margin: const EdgeInsets.only(right: 10),
+                        decoration: BoxDecoration(
+                          color: Monad.parchment,
+                          borderRadius: BorderRadius.circular(Monad.radiusMin),
+                          border: Border.all(color: Monad.ash, width: 1),
+                        ),
+                        child: IconButton(
+                          tooltip: _speakingScheduleId == schedule.id
+                              ? 'Stop voice'
+                              : 'Hear reminder',
+                          icon: Icon(
+                            _speakingScheduleId == schedule.id
+                                ? Icons.stop
+                                : Icons.volume_up,
+                            color: Monad.offBlack,
+                            size: 24,
+                          ),
+                          onPressed: () => _speakSchedule(schedule),
+                        ),
+                      ),
+                    Expanded(
+                      child: ElevatedButton.icon(
+                        onPressed: !hasOpenEvent
+                            ? null
+                            : () => _handleAcknowledge(schedule),
+                        icon: Icon(
+                          hasOpenEvent ? Icons.check_circle : Icons.access_time,
+                          size: 24,
+                        ),
+                        label: Text(
+                          hasOpenEvent ? 'I Did This  কৰিলোঁ' : 'Not Due Now',
+                          style: Monad.monoButtonLabel.copyWith(fontSize: 20),
+                        ),
+                        // Secondary (offBlack) pill — the screen keeps lakeBlue
+                        // reserved; repeated row actions stay black per DESIGN.md.
+                        style: Monad.blackPill().copyWith(
+                          backgroundColor: WidgetStateProperty.resolveWith(
+                            (states) => states.contains(WidgetState.disabled)
+                                ? Monad.parchment
+                                : Monad.offBlack,
+                          ),
+                          foregroundColor: WidgetStateProperty.resolveWith(
+                            (states) => states.contains(WidgetState.disabled)
+                                ? Monad.smoke
+                                : Monad.white,
+                          ),
+                          side: WidgetStateProperty.resolveWith(
+                            (states) => states.contains(WidgetState.disabled)
+                                ? const BorderSide(color: Monad.ash, width: 1)
+                                : BorderSide.none,
+                          ),
+                        ),
+                      ),
                     ),
-                    foregroundColor: WidgetStateProperty.resolveWith(
-                      (states) => states.contains(WidgetState.disabled)
-                          ? Monad.smoke
-                          : Monad.white,
-                    ),
-                    side: WidgetStateProperty.resolveWith(
-                      (states) => states.contains(WidgetState.disabled)
-                          ? const BorderSide(color: Monad.ash, width: 1)
-                          : BorderSide.none,
-                    ),
-                  ),
+                  ],
                 ),
               ),
             ),
@@ -286,8 +411,7 @@ class _RemindersScreenState extends State<RemindersScreen> {
                 height: 48,
                 decoration: BoxDecoration(
                   color: Monad.parchment,
-                  borderRadius:
-                      BorderRadius.circular(Monad.radiusButton),
+                  borderRadius: BorderRadius.circular(Monad.radiusButton),
                   border: Border.all(color: Monad.ash, width: 1),
                 ),
                 child: Row(
@@ -296,8 +420,7 @@ class _RemindersScreenState extends State<RemindersScreen> {
                     const Icon(Icons.check_circle,
                         color: Monad.offBlack, size: 24),
                     const SizedBox(width: 10),
-                    Text('Well done! — ধন্যবাদ',
-                        style: Monad.patientBody),
+                    Text('Well done! — ধন্যবাদ', style: Monad.patientBody),
                   ],
                 ),
               ),
@@ -319,12 +442,14 @@ class _RemindersScreenState extends State<RemindersScreen> {
           : _error != null
               ? _messageView(Icons.cloud_off, _error!, retry: _load)
               : _schedules == null || _schedules!.isEmpty
-                  ? _messageView(Icons.alarm_on, 'No reminders yet — your caregiver will set them up.')
+                  ? _messageView(Icons.alarm_on,
+                      'No reminders yet — your caregiver will set them up.')
                   : RefreshIndicator(
                       onRefresh: _load,
                       color: Monad.lakeBlue,
                       child: ListView(
-                        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 20, vertical: 8),
                         children: [
                           _buildSectionHeader(
                             'Your Day',
@@ -346,7 +471,8 @@ class _RemindersScreenState extends State<RemindersScreen> {
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
             Container(
-              width: 80, height: 80,
+              width: 80,
+              height: 80,
               decoration: BoxDecoration(
                 color: Monad.parchment,
                 borderRadius: BorderRadius.circular(Monad.radiusMin + 8),

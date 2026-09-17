@@ -149,6 +149,16 @@ class VoiceAudioService {
     } catch (_) {}
   }
 
+  /// Fires when reply playback finishes naturally (screens reset their
+  /// speaking indicator; failures stay silent).
+  Stream<void> get onReplyComplete {
+    try {
+      return _player.onPlayerComplete;
+    } catch (_) {
+      return const Stream.empty();
+    }
+  }
+
   /// Play TTS reply bytes. Failures are swallowed — the caller keeps the
   /// text bubble as the fallback, so playback never breaks the chat.
   Future<void> playReply(List<int> audioBytes) async {
