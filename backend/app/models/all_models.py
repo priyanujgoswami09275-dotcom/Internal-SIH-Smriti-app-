@@ -55,6 +55,7 @@ class GameTypeEnum(str, Enum):
     MATCH_IT = "match_it"
     ROUTINE_SEQUENCING = "routine_sequencing"
     NUMBER_RECALL = "number_recall"
+    ODD_ONE_OUT = "odd_one_out"
 
 class GameSession(Base):
     __tablename__ = "game_sessions"
@@ -73,6 +74,7 @@ class GameSession(Base):
     accuracy_pct = Column(Float, nullable=True)
     avg_response_time_ms = Column(Float, nullable=True)
     raw_event_log = Column(JSON, nullable=True)
+    board_snapshot = Column(JSON, nullable=True)
     created_at = Column(DateTime, default=func.now(), nullable=False)
 
 class DifficultyAdjustmentLog(Base):

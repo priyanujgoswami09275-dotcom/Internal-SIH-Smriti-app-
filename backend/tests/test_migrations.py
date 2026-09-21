@@ -42,7 +42,7 @@ def test_risk_screening_migration_is_additive_and_cascades():
 
 def test_shadow_migration_preserves_legacy_rows_and_round_trips():
     script = ScriptDirectory(str(MIGRATIONS))
-    assert script.get_heads() == ["0009_shadow_difficulty"]
+    assert script.get_heads() == ["0010_odd_one_out"]
     revision = script.get_revision("0009_shadow_difficulty")
     assert revision.down_revision == "0008_risk_screening"
     engine = sa.create_engine("sqlite://")
@@ -60,6 +60,74 @@ def test_shadow_migration_preserves_legacy_rows_and_round_trips():
                 with Operations.context(MigrationContext.configure(connection)):
                     revision.module.downgrade()
                 assert dict(connection.execute(sa.text("SELECT * FROM difficulty_adjustment_logs")).mappings().one()) == {"id": 1, "reason": "legacy"}
+    finally:
+        engine.dispose()
+
+
+def test_odd_one_out_migration_additive_and_round_trips():
+    import json
+
+    script = ScriptDirectory(str(MIGRATIONS))
+    assert script.get_heads() == ["0010_odd_one_out"]
+    revision = script.get_revision("0010_odd_one_out")
+    assert revision.revision == "0010_odd_one_out"
+    assert revision.down_revision == "0009_shadow_difficulty"
+    engine = sa.create_engine("sqlite://")
+    try:
+        with engine.begin() as connection:
+            connection.execute(sa.text(
+                "CREATE TABLE game_sessions (id INTEGER PRIMARY KEY, game_type VARCHAR(50))"
+            ))
+            connection.execute(sa.text(
+                "INSERT INTO game_sessions (id, game_type) VALUES (1, 'match_it')"
+            ))
+            connection.execute(sa.text(
+                "CREATE TABLE game_level_config "
+                "(game_type VARCHAR(50), level INTEGER, params JSON)"
+            ))
+            with Operations.context(MigrationContext.configure(connection)):
+                revision.module.upgrade()
+            columns = [
+                column["name"]
+                for column in sa.inspect(connection).get_columns("game_sessions")
+            ]
+            assert "board_snapshot" in columns
+            row = connection.execute(sa.text(
+                "SELECT id, game_type, board_snapshot FROM game_sessions"
+            )).mappings().one()
+            assert row["id"] == 1
+            assert row["game_type"] == "match_it"
+            assert row["board_snapshot"] is None
+            seeds = connection.execute(sa.text(
+                "SELECT level, params FROM game_level_config "
+                "WHERE game_type = 'odd_one_out' ORDER BY level"
+            )).mappings().all()
+            assert [s["level"] for s in seeds] == [1, 2, 3]
+            assert json.loads(seeds[0]["params"]) == {"items": 3, "target_seconds": 45}
+            assert json.loads(seeds[1]["params"]) == {"items": 4, "target_seconds": 70}
+            assert json.loads(seeds[2]["params"]) == {"items": 6, "target_seconds": 120}
+            with Operations.context(MigrationContext.configure(connection)):
+                revision.module.downgrade()
+            assert connection.execute(sa.text(
+                "SELECT COUNT(*) FROM game_level_config WHERE game_type = 'odd_one_out'"
+            )).scalar() == 0
+            legacy = connection.execute(sa.text(
+                "SELECT id, game_type, board_snapshot FROM game_sessions"
+            )).mappings().one()
+            assert legacy["id"] == 1
+            assert legacy["game_type"] == "match_it"
+            assert legacy["board_snapshot"] is None
+            assert "game_sessions" in sa.inspect(connection).get_table_names()
+            with Operations.context(MigrationContext.configure(connection)):
+                revision.module.upgrade()
+            assert connection.execute(sa.text(
+                "SELECT COUNT(*) FROM game_level_config WHERE game_type = 'odd_one_out'"
+            )).scalar() == 3
+            rele = connection.execute(sa.text(
+                "SELECT id, game_type, board_snapshot FROM game_sessions"
+            )).mappings().one()
+            assert rele["id"] == 1
+            assert rele["board_snapshot"] is None
     finally:
         engine.dispose()
 

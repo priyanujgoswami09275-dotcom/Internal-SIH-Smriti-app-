@@ -36,7 +36,7 @@ def test_all_enum_columns_persist_lowercase_values():
     )
     # Sanity: enum_values yields the lowercase values the migration declares.
     assert enum_values(RoleEnum) == ["patient", "family_caregiver", "asha_worker", "clinician", "admin"]
-    assert enum_values(GameTypeEnum) == ["match_it", "routine_sequencing", "number_recall"]
+    assert enum_values(GameTypeEnum) == ["match_it", "routine_sequencing", "number_recall", "odd_one_out"]
 
 
 def test_user_model():
