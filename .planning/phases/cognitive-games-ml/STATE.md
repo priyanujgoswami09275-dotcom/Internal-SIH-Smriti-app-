@@ -38,6 +38,43 @@ Database uniqueness hardening and legacy-data authority review remain outstandin
 
 **A-01 → A-02 [present A report, one explicit B approval/start] → B-01 [6-hour maximum] → one B report → C replan [unapproved].**
 
+## A-02 approval record (2026-09-21)
+
+- User decision: **approve** — A evidence and B-01 report accepted as-is.
+- Scope: acceptance only. No new work authorized. B-01 already executed (`B-REPORT.md`, commits `7f650ac`/`fabec76`); this approval does not authorize activation, calibration, promotion tooling, or C implementation.
+- Next gated step: C replan, still **unapproved**. No C execution without a separate explicit approval.
+
+## C replan record (2026-09-21)
+
+- User approved starting the C replan (docs-only). Delivered: `C-REPLAN.md`.
+- Key corrections vs old C-01..C-04: next migration is `0010_odd_one_out` (0009 taken by
+  shadow difficulty); B-06-gated numbers demoted to proposed defaults pending gate R0;
+  nonexistent B-03/B-04/C-01 summary references dropped; semantic-category errors never
+  folded into the 3-category B extractor (fallback reasons instead); board endpoint must
+  carry the B-01 patient-access + `game_data` consent gate.
+- C implementation remains **unapproved**. Next: user picks replan §5 option 1 or 2.
+
+## C implementation record (2026-09-21)
+
+- User approved C implementation (replan §5 option 1). Built all slices in one session
+  under SDD (ledger: `.superpowers/sdd/C-REPLAN/progress.md`, git-ignored):
+  `d82490e` C-01' domain/config/migration, `daa64b8` C-02' integration,
+  `78b172c` C-03' mobile. Per-task reviews clean (two fix rounds, all closed).
+- Deliverables: `C-REPORT.md`, `C-01/C-02/C-03-SUMMARY.md` (this directory).
+- First-hand verification: backend **469 passed / 7 skipped** (pinned 3.12.14);
+  mobile `flutter test` all-pass, analyze zero new findings; `git diff --check` clean.
+- Migration 0010 applied nowhere (host/compose untouched); device checkpoint pending
+  (no isolation approval for manual play against any backend).
+- R0 Option A applied as recommended default (user authorized full build without
+  selecting A/B/C) — recorded in final report rulings.
+- Next: user acceptance (accept / accept-with-deferred-validation / hold).
+
+## C acceptance (2026-09-21)
+
+- User decision: **accept-with-deferred-validation**. Code, tests, and review accepted as
+  solid; the device play-test is genuinely outstanding, not a formality — deferred
+  explicitly, not waived. No activation/calibration/promotion authorized.
+
 Next: perform the documentation-only A-02 report review. No research-contract ratification gate; the bounded defaults are already written in B-01. Do not start B without explicit approval after the A report. No automatic old B gates, C implementation, activation or commits. Future report/artifact names describe planned outputs, not existing evidence.
 
 ## Historical planning record (inactive)
