@@ -105,8 +105,8 @@ class GameHistoryItem(BaseModel):
     session_id: UUID
     game_type: str
     difficulty_level: int
-    accuracy_pct: float
-    avg_response_time_ms: float
+    accuracy_pct: Optional[float] = None
+    avg_response_time_ms: Optional[float] = None
     completed_at: Optional[str]
 
 
@@ -220,7 +220,14 @@ async def start_game(
     patient_id = patient.id
     await ensure_consent(db, patient_id, "game_data")
 
-    game_type = GameTypeEnum(request.game_type)
+    try:
+        game_type = GameTypeEnum(request.game_type)
+    except ValueError:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid game_type '{request.game_type}'. Must be one of: "
+            + ", ".join(e.value for e in GameTypeEnum),
+        )
     session = await game_service.start_game_session(
         db,
         patient_id=patient_id,
@@ -249,7 +256,14 @@ async def record_action(
     db: AsyncSession = Depends(get_db),
 ):
     """Record a player action within a game session."""
-    session = await _ensure_owned_session(db, current_user, UUID(session_id))
+    try:
+        sid = UUID(session_id)
+    except ValueError:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid session_id '{session_id}': must be a valid UUID",
+        )
+    session = await _ensure_owned_session(db, current_user, sid)
     is_correct = request.is_correct
     response_time_ms = request.response_time_ms
     server_fields: dict = {}
@@ -280,7 +294,7 @@ async def record_action(
         }
     event = await game_service.record_game_action(
         db,
-        session_id=UUID(session_id),
+        session_id=sid,
         action_type=request.action_type,
         action_data=request.action_data,
         is_correct=is_correct,
@@ -310,8 +324,18 @@ async def complete_game(
     db: AsyncSession = Depends(get_db),
 ):
     """Complete a game session and compute final metrics."""
-    await _ensure_owned_session(db, current_user, UUID(session_id))
-    summary = await game_service.complete_game_session(db, session_id=UUID(session_id))
+    try:
+        sid = UUID(session_id)
+    except ValueError:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid session_id '{session_id}': must be a valid UUID",
+        )
+    await _ensure_owned_session(db, current_user, sid)
+    try:
+        summary = await game_service.complete_game_session(db, session_id=sid)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Game session not found")
     return SessionSummaryResponse(**summary)
 
 
@@ -325,9 +349,19 @@ async def get_session(
     from app.deps import ensure_patient_access
     from app.services.compliance_service import ComplianceService
 
-    session_summary = await game_service.get_session_summary(
-        db, session_id=UUID(session_id)
-    )
+    try:
+        sid = UUID(session_id)
+    except ValueError:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid session_id '{session_id}': must be a valid UUID",
+        )
+    try:
+        session_summary = await game_service.get_session_summary(
+            db, session_id=sid
+        )
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Game session not found")
     if session_summary.get("patient_id"):
         await ensure_patient_access(db, current_user, session_summary["patient_id"])
         await ComplianceService.log_read_access(
@@ -349,7 +383,14 @@ async def get_patient_history(
     await ensure_clinical_access(db, current_user, UUID(patient_id))
     await ensure_consent(db, UUID(patient_id), "game_data")
     await ComplianceService.log_read_access(db, current_user.id, "game_history", patient_id)
-    gt = GameTypeEnum(game_type) if game_type else None
+    try:
+        gt = GameTypeEnum(game_type) if game_type else None
+    except ValueError:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid game_type '{game_type}'. Must be one of: "
+            + ", ".join(e.value for e in GameTypeEnum),
+        )
     history = await game_service.get_patient_game_history(
         db, patient_id=UUID(patient_id), game_type=gt, limit=limit
     )
@@ -642,10 +683,18 @@ async def evaluate_difficulty(
     pid = UUID(patient_id)
     await ensure_patient_access(db, current_user, pid)
     await ensure_consent(db, pid, "game_data")
+    try:
+        gt = GameTypeEnum(game_type)
+    except ValueError:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid game_type '{game_type}'. Must be one of: "
+            + ", ".join(e.value for e in GameTypeEnum),
+        )
     evaluation = await difficulty_engine.evaluate_difficulty(
         db,
         patient_id=pid,
-        game_type=GameTypeEnum(game_type),
+        game_type=gt,
         current_difficulty=current_difficulty,
     )
     return DifficultyEvaluationResponse(**evaluation)
