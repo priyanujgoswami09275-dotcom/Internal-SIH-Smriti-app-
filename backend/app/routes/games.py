@@ -1,16 +1,18 @@
-"""Game API Routes — Match It, Routine Sequencing, Number Recall, Adaptive Difficulty.
+"""Game API Routes — Match It, Routine Sequencing, Number Recall, Odd-One-Out,
+Adaptive Difficulty.
 
 Endpoints:
-  POST /games/sessions — start a new game
-  POST /games/sessions/{session_id}/actions — record an action
-  POST /games/sessions/{session_id}/complete — finish and compute metrics
-  GET /games/sessions/{session_id} — retrieve session summary
-  GET /patients/{patient_id}/games/history — trend data for dashboard
-  GET /games/content-packs — list available content packs
-  GET /games/content-packs/{pack_id}/board — generate Match It board
-  POST /patients/{patient_id}/routine — set custom daily routine
-  GET /patients/{patient_id}/routine — get patient's routine
-  GET /routine/board — generate sequencing puzzle
+   POST /games/sessions — start a new game
+   POST /games/sessions/{session_id}/actions — record an action
+   POST /games/sessions/{session_id}/complete — finish and compute metrics
+   GET /games/sessions/{session_id} — retrieve session summary
+   GET /patients/{patient_id}/games/history — trend data for dashboard
+   GET /games/content-packs — list available content packs
+   GET /games/content-packs/{pack_id}/board — generate Match It board
+   POST /patients/{patient_id}/routine — set custom daily routine
+   GET /patients/{patient_id}/routine — get patient's routine
+   GET /routine/board — generate sequencing puzzle
+   GET /games/odd-one-out/board — generate Odd-One-Out board (server-held answer)
 """
 from typing import Optional
 from uuid import UUID
@@ -30,7 +32,7 @@ from app.db import get_db
 from app.models.all_models import GameTypeEnum, PatientProfile, GameSession
 from app.models.user import User
 from app.services import game_service, difficulty_engine, routine_service, content_packs
-from app.services import level_config_service, recall_service
+from app.services import level_config_service, recall_service, odd_one_out_service
 
 router = APIRouter(prefix="/games", tags=["games"])
 
@@ -70,7 +72,7 @@ async def _ensure_owned_session(
 
 class StartGameRequest(BaseModel):
     """Start a new game session."""
-    game_type: str  # "match_it" | "routine_sequencing" | "number_recall"
+    game_type: str  # "match_it" | "routine_sequencing" | "number_recall" | "odd_one_out"
     difficulty_level: int = 1
     content_pack_id: Optional[str] = None  # For Match It
     routine_id: Optional[str] = None  # For Routine Sequencing
@@ -164,6 +166,24 @@ class NumberRecallBoardResponse(BaseModel):
     sequence: list[int]
 
 
+class OddOneOutItem(BaseModel):
+    """One board entry: stable content-pack id + display name."""
+    item_id: str
+    name: str
+
+
+class OddOneOutBoardResponse(BaseModel):
+    """Generated Odd-One-Out board. The answer stays server-side in
+    ``session.board_snapshot`` and is never serialized here."""
+    game_type: str
+    difficulty_level: int
+    items: list[OddOneOutItem]
+    item_count: int
+    target_seconds: int
+    group_label: str
+    explanation: str
+
+
 class DifficultyEvaluationResponse(BaseModel):
     """Difficulty adjustment recommendation."""
     new_difficulty: Optional[int]
@@ -229,16 +249,56 @@ async def record_action(
     db: AsyncSession = Depends(get_db),
 ):
     """Record a player action within a game session."""
-    await _ensure_owned_session(db, current_user, UUID(session_id))
+    session = await _ensure_owned_session(db, current_user, UUID(session_id))
+    is_correct = request.is_correct
+    response_time_ms = request.response_time_ms
+    server_fields: dict = {}
+    if (
+        session.game_type == GameTypeEnum.ODD_ONE_OUT
+        and request.action_type == "select_odd_item"
+    ):
+        # Server-truth scoring: correctness derives from the stored board
+        # snapshot, never from client claims. Other games honor the client
+        # verdict as before.
+        snapshot = session.board_snapshot or {}
+        answer_item_id = snapshot.get("answer_item_id")
+        if not answer_item_id:
+            raise HTTPException(
+                status_code=422,
+                detail="no server board for this session; fetch board first",
+            )
+        action_data = request.action_data or {}
+        if response_time_ms is None:
+            response_time_ms = action_data.get("response_time_ms")
+        verdict = odd_one_out_service.score_odd_one_out(
+            action_data.get("selected_item_id"), answer_item_id
+        )
+        is_correct = verdict["correct"]
+        server_fields = {
+            "error_category": verdict["error_category"],
+            "opportunity": verdict["opportunity"],
+        }
     event = await game_service.record_game_action(
         db,
         session_id=UUID(session_id),
         action_type=request.action_type,
         action_data=request.action_data,
-        is_correct=request.is_correct,
-        response_time_ms=request.response_time_ms,
+        is_correct=is_correct,
+        response_time_ms=response_time_ms,
     )
+    if server_fields:
+        # Persist the server verdict + error_category in the stored event.
+        # Reassign — don't mutate — so change detection persists on flush.
+        updated_log = list(session.raw_event_log or [])
+        if updated_log:
+            patched = dict(updated_log[-1])
+            patched.update(server_fields)
+            updated_log[-1] = patched
+            session.raw_event_log = updated_log
+            await db.flush()
     await db.commit()  # record_game_action only flushes; persist before returning
+    if server_fields:
+        event = {**event, **server_fields}
 
     return {"status": "recorded", "event": event}
 
@@ -522,6 +582,52 @@ async def generate_number_recall_board(
         show_seconds_per_item=params.get("show_seconds_per_item", 2),
     )
     return NumberRecallBoardResponse(**board)
+
+
+@router.get("/odd-one-out/board", response_model=OddOneOutBoardResponse)
+async def generate_odd_one_out_board(
+    session_id: UUID,
+    difficulty_level: int = 1,
+    current_user: User = Depends(require_patient),
+    db: AsyncSession = Depends(get_db),
+):
+    """Generate an Odd-One-Out board for an owned session (counts from level
+    config). Same gate as start_game: caller-owned session + active
+    `game_data` consent. The full board (including `answer_item_id`) is stored
+    on `session.board_snapshot`; the response withholds the answer."""
+    session = await _ensure_owned_session(db, current_user, session_id)
+    res = await db.execute(
+        select(PatientProfile).where(PatientProfile.user_id == current_user.id)
+    )
+    patient = res.scalar_one_or_none()
+    if patient is None:
+        raise HTTPException(
+            status_code=404,
+            detail="No patient profile linked to this account. Create one via POST /patients first.",
+        )
+    await ensure_consent(db, patient.id, "game_data")
+    if difficulty_level not in (1, 2, 3):
+        raise HTTPException(
+            status_code=422, detail="difficulty_level must be 1, 2, or 3"
+        )
+    params = await level_config_service.get_level_params(
+        db, "odd_one_out", difficulty_level
+    )
+    board = odd_one_out_service.generate_odd_one_out_board(
+        difficulty_level, items=params.get("items"),
+    )
+    # Reassign — don't mutate — so SQLAlchemy persists the snapshot on commit.
+    session.board_snapshot = dict(board)
+    await db.commit()
+    return OddOneOutBoardResponse(
+        game_type=board["game_type"],
+        difficulty_level=board["difficulty_level"],
+        items=board["items"],
+        item_count=board["item_count"],
+        target_seconds=board["target_seconds"],
+        group_label=board["group_label"],
+        explanation=board["explanation"],
+    )
 
 
 @router.post("/difficulty/evaluate", response_model=DifficultyEvaluationResponse)

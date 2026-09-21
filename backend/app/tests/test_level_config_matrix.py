@@ -10,6 +10,7 @@ import pytest
 
 from app.models.all_models import GameLevelConfig
 from app.services import content_packs, routine_service
+from app.services import odd_one_out_service
 from app.services.level_config_service import (
     DEFAULT_LEVEL_CONFIG,
     get_all_level_config,
@@ -99,10 +100,74 @@ async def test_level_config_endpoint(client, db_session):
     assert config["match_it"]["3"]["pairs"] == 6
     assert config["routine_sequencing"]["2"]["steps"] == 4
     assert config["routine_sequencing"]["3"]["icons"] is True
+    assert config["odd_one_out"]["1"] == {"items": 3, "target_seconds": 45}
+    assert config["odd_one_out"]["2"] == {"items": 4, "target_seconds": 70}
+    assert config["odd_one_out"]["3"] == {"items": 6, "target_seconds": 120}
+
+
+@pytest.mark.asyncio
+async def test_odd_one_out_matrix_matches_canonical(db_session):
+    """Unseeded DB: 3/4/6 items with 45/70/120s targets, served via service."""
+    import random
+
+    for level, expected_items, expected_seconds in (
+        (1, 3, 45), (2, 4, 70), (3, 6, 120),
+    ):
+        params = await get_level_params(db_session, "odd_one_out", level)
+        assert params["items"] == expected_items
+        assert params["target_seconds"] == expected_seconds
+        board = odd_one_out_service.generate_odd_one_out_board(
+            level, items=params["items"], rng=random.Random(11))
+        assert board["item_count"] == expected_items
+        assert board["target_seconds"] == expected_seconds
+        assert board["answer_item_id"] in [i["item_id"] for i in board["items"]]
+
+
+@pytest.mark.asyncio
+async def test_served_odd_board_follows_config_endpoints(client):
+    """Served odd-one-out boards agree with the canonical counts per level."""
+    import uuid as uuid_lib
+
+    from app.models.all_models import GameSession
+
+    headers = await _auth(client)
+    resp = await client.post(
+        PATIENTS,
+        json={"name": "Odd Matrix", "cognitive_baseline": "healthy",
+              "region": "Assam", "district": "Kamrup"},
+        headers=headers,
+    )
+    assert resp.status_code == 201, resp.text
+    resp = await client.post(
+        "/api/v1/compliance/consent",
+        json={"patient_id": resp.json()["id"], "consent_type": "patient_self",
+              "scope": "all"},
+        headers=headers,
+    )
+    assert resp.status_code == 200, resp.text
+    for level, items in ((1, 3), (2, 4), (3, 6)):
+        resp = await client.post(
+            f"{GAMES}/sessions",
+            json={"game_type": "odd_one_out", "difficulty_level": level},
+            headers=headers,
+        )
+        assert resp.status_code == 200, resp.text
+        session_id = resp.json()["session_id"]
+        resp = await client.get(
+            f"{GAMES}/odd-one-out/board",
+            params={"session_id": session_id, "difficulty_level": level},
+            headers=headers,
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["item_count"] == items
+        assert len(body["items"]) == items
+        assert "answer_item_id" not in body
 
 
 @pytest.mark.asyncio
 async def test_served_boards_follow_config_endpoints(client):
+    """Served board endpoints agree with the canonical grids per level."""
     """Served board endpoints agree with the canonical grids per level."""
     headers = await _auth(client)
     for level, pairs in ((1, 2), (2, 4), (3, 6)):

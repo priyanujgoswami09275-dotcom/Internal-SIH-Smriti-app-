@@ -6,7 +6,7 @@ from sqlalchemy import select
 
 from app.config import settings
 from app.models.all_models import GameSession
-from app.services.adaptive_features import INPUT_NAMES, SCHEMA_VERSION, extract_features
+from app.services.adaptive_features import ACTIONS, INPUT_NAMES, SCHEMA_VERSION, extract_features
 
 
 MODEL_ROOT = Path(__file__).resolve().parents[2] / "ml_models" / "adaptive_success"
@@ -77,6 +77,11 @@ def predict_shadow(features, model_path):
 async def evaluate_shadow(db, patient_id, game_type, current_level, decision_time):
     if current_level == 3:
         return shadow_result("top_level")
+    game = getattr(game_type, "value", game_type)
+    if game not in ACTIONS:
+        # No learned support for this game (Odd-One-Out semantic errors are
+        # never folded into the 3-category vector): rules stay authoritative.
+        return shadow_result("unsupported_game")
     if not settings.ADAPTIVE_SHADOW_MODEL:
         return shadow_result("disabled")
     query = select(GameSession).where(

@@ -63,6 +63,10 @@ def extract_features(sessions, patient_id, game_type, current_level, decision_ti
     if decision is None:
         return Features(None, reason="invalid_timestamp")
     if current_level not in (1, 2, 3) or game not in ACTIONS:
+        if game == "odd_one_out":
+            # Odd-One-Out errors are semantic_category: never fold them into
+            # the fixed [mismatch, sequence_position, recall_position] vector.
+            return Features(None, reason="unsupported_game")
         return Features(None, reason="invalid_context")
     if current_level == 3:
         return Features(None, reason="top_level")

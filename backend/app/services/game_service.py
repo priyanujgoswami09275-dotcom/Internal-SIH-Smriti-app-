@@ -1,8 +1,8 @@
 """Shared Game Session Logging & Event Tracking.
 
 Unified service for starting, recording actions, and completing game sessions.
-Used by both Match It and Daily Routine Sequencing to log accuracy metrics,
-response times, and raw event history.
+Used by Match It, Daily Routine Sequencing, Number Recall, and Odd-One-Out to
+log accuracy metrics, response times, and raw event history.
 """
 from typing import List, Dict, Any, Optional
 from datetime import datetime, timezone
@@ -75,6 +75,21 @@ async def record_game_action(
         action_data: {"position": 0, "step_id": "wake_up"}
         is_correct: Whether step is in correct position for final submission
         response_time_ms: Time from step shown to placement
+
+    For Number Recall:
+        action_type: "show_sequence" (is_correct=None marker) / "recall_tap"
+        action_data: {"position": 0, "digit": 5, "expected": 5}
+        is_correct: Whether the tapped digit matches the expected digit
+        response_time_ms: Time from recall prompt to tap
+
+    For Odd-One-Out:
+        action_type: "select_odd_item"
+        action_data: {"selected_item_id": "dhol"}
+        is_correct: IGNORED — the route scores server-side from the stored
+            board_snapshot answer via score_odd_one_out and persists the
+            server verdict + error_category ("semantic_category") in the
+            event; a NULL snapshot is rejected before this service runs.
+        response_time_ms: Time from board display to selection
     """
     result = await db.execute(select(GameSession).where(GameSession.id == session_id))
     session = result.scalar_one_or_none()
