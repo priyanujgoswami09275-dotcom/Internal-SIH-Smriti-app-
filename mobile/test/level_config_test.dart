@@ -55,6 +55,34 @@ void main() {
     });
   });
 
+  group('LevelConfig odd_one_out grids', () {
+    test('item counts are 3/4/6 with 45/70/120s targets', () {
+      const levels = LevelConfig.bundled;
+      expect(levels.oddOneOutItems(1), 3);
+      expect(levels.oddOneOutItems(2), 4);
+      expect(levels.oddOneOutItems(3), 6);
+      expect(levels.targetSeconds('odd_one_out', 1), 45);
+      expect(levels.targetSeconds('odd_one_out', 2), 70);
+      expect(levels.targetSeconds('odd_one_out', 3), 120);
+    });
+
+    test('server override changes item count and timing', () {
+      final levels = LevelConfig.fromServerJson({
+        'odd_one_out': {
+          '1': {'items': 5, 'target_seconds': 90},
+          '2': {'items': 4, 'target_seconds': 70},
+          '3': {'items': 6, 'target_seconds': 120},
+        },
+      });
+      expect(levels.oddOneOutItems(1), 5);
+      expect(levels.targetSeconds('odd_one_out', 1), 90);
+    });
+
+    test('unknown level falls back to 3 items', () {
+      expect(LevelConfig.bundled.oddOneOutItems(99), 3);
+    });
+  });
+
   group('LevelConfig.fromServerJson', () {
     test('server map round-trips with string level keys', () {
       const serverMap = {

@@ -10,6 +10,7 @@ import 'package:flutter/material.dart';
 
 import 'models/shared_models.dart';
 import 'screens/caregiver_dashboard_screen.dart';
+import 'screens/odd_one_out_screen.dart';
 import 'screens/pack_picker_screen.dart';
 import 'screens/recall_screen.dart';
 import 'screens/reminders_screen.dart';
@@ -401,6 +402,17 @@ class _PatientHome extends StatelessWidget {
             onTap: () => Navigator.of(context).push(
               MaterialPageRoute<void>(
                 builder: (_) => RecallScreen(patientId: patientId),
+              ),
+            ),
+          ),
+          _homeButton(
+            context,
+            icon: Icons.quiz,
+            title: 'Odd One Out',
+            subtitle: 'Spot the item that does not belong',
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (_) => OddOneOutScreen(patientId: patientId),
               ),
             ),
           ),

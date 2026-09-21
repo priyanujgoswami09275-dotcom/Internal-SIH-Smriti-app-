@@ -36,6 +36,11 @@ class LevelConfig {
       2: {'sequence_length': 4, 'show_seconds_per_item': 2, 'target_seconds': 90},
       3: {'sequence_length': 6, 'show_seconds_per_item': 2, 'target_seconds': 150},
     },
+    'odd_one_out': {
+      1: {'items': 3, 'target_seconds': 45},
+      2: {'items': 4, 'target_seconds': 70},
+      3: {'items': 6, 'target_seconds': 120},
+    },
   });
 
   static LevelConfig _current = bundled;
@@ -115,4 +120,7 @@ class LevelConfig {
       (_params('number_recall', level)['show_seconds_per_item'] as num?)
           ?.toInt() ??
       2;
+
+  int oddOneOutItems(int level) =>
+      (_params('odd_one_out', level)['items'] as num?)?.toInt() ?? 3;
 }

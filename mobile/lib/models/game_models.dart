@@ -470,6 +470,15 @@ class GameSessionSummary {
   final DateTime startedAt;
   final DateTime completedAt;
 
+  /// Server-assigned continuation (display-only: the client never computes
+  /// promotion locally). The patient session-complete endpoint returns
+  /// summary fields only (difficulty evaluation is a separate staff-gated
+  /// endpoint the app never calls), so these stay null for real payloads
+  /// and are set only by explicit construction (tests / future contract).
+  final int? nextDifficultyLevel;
+  final String? source;
+  final String? reason;
+
   const GameSessionSummary({
     required this.sessionId,
     required this.gameType,
@@ -481,8 +490,16 @@ class GameSessionSummary {
     required this.avgResponseTimeMs,
     required this.startedAt,
     required this.completedAt,
+    this.nextDifficultyLevel,
+    this.source,
+    this.reason,
   });
 
+  /// Parses exactly the session-complete summary shape (mirrors what
+  /// recall_screen consumes via typed completeGame): session_id,
+  /// accuracy_pct, total_attempts, correct/incorrect counts. Unknown keys
+  /// (including any next-level/source/reason variants) are ignored — the
+  /// endpoint carries none, so nothing speculative is trusted.
   factory GameSessionSummary.fromJson(Map<String, dynamic> json) {
     return GameSessionSummary(
       sessionId: json['session_id'],
@@ -528,4 +545,94 @@ class RecallBoard {
       generatedAt: DateTime.now(),
     );
   }
+}
+
+/// One tile on an Odd-One-Out board. Carries only the public item identity
+/// (id + display name) — the answer stays server-side and is never modeled.
+class OddOneOutItem {
+  final String itemId;
+  final String name;
+
+  const OddOneOutItem({required this.itemId, required this.name});
+
+  factory OddOneOutItem.fromJson(Map<String, dynamic> json) => OddOneOutItem(
+        itemId: json['item_id'] as String? ?? '',
+        name: json['name'] as String? ?? '',
+      );
+
+  Map<String, dynamic> toJson() => {'item_id': itemId, 'name': name};
+}
+
+/// An Odd-One-Out board: a set of items where all but one share the group.
+///
+/// Parsed from `GET /games/odd-one-out/board` (`game_type`,
+/// `difficulty_level`, `items: [{item_id, name}]`, `item_count`,
+/// `target_seconds`, `group_label`, `explanation`). The response never
+/// contains the answer, and neither does this model: correctness always
+/// comes from the server verdict, never from local inspection.
+class OddOneOutBoard {
+  final String gameType;
+  final int difficultyLevel;
+  final List<OddOneOutItem> items;
+  final int itemCount;
+  final int targetSeconds;
+  final String groupLabel;
+  final String explanation;
+  final DateTime generatedAt;
+
+  const OddOneOutBoard({
+    required this.gameType,
+    required this.difficultyLevel,
+    required this.items,
+    required this.itemCount,
+    required this.targetSeconds,
+    required this.generatedAt,
+    this.groupLabel = '',
+    this.explanation = '',
+  });
+
+  factory OddOneOutBoard.fromServerJson(Map<String, dynamic> json) {
+    final items = ((json['items'] as List? ?? const [])
+            .whereType<Map>()
+            .map((e) =>
+                OddOneOutItem.fromJson(Map<String, dynamic>.from(e))))
+        .toList();
+    return OddOneOutBoard(
+      gameType: json['game_type'] as String? ?? 'odd_one_out',
+      difficultyLevel: json['difficulty_level'] as int? ?? 1,
+      items: items,
+      itemCount: (json['item_count'] as num?)?.toInt() ?? items.length,
+      targetSeconds: (json['target_seconds'] as num?)?.toInt() ?? 60,
+      groupLabel: json['group_label'] as String? ?? '',
+      explanation: json['explanation'] as String? ?? '',
+      generatedAt: DateTime.now(),
+    );
+  }
+
+  /// Snapshot form for the offline board cache (SharedPreferences).
+  Map<String, dynamic> toJson() => {
+        'game_type': gameType,
+        'difficulty_level': difficultyLevel,
+        'items': items.map((i) => i.toJson()).toList(),
+        'item_count': itemCount,
+        'target_seconds': targetSeconds,
+        'group_label': groupLabel,
+        'explanation': explanation,
+      };
+
+  factory OddOneOutBoard.fromJson(Map<String, dynamic> json) =>
+      OddOneOutBoard(
+        gameType: json['game_type'] as String? ?? 'odd_one_out',
+        difficultyLevel: json['difficulty_level'] as int? ?? 1,
+        items: ((json['items'] as List? ?? const [])
+                .whereType<Map>()
+                .map((e) =>
+                    OddOneOutItem.fromJson(Map<String, dynamic>.from(e))))
+            .toList(),
+        itemCount: (json['item_count'] as num?)?.toInt() ?? 0,
+        targetSeconds: (json['target_seconds'] as num?)?.toInt() ?? 60,
+        groupLabel: json['group_label'] as String? ?? '',
+        explanation: json['explanation'] as String? ?? '',
+        generatedAt: DateTime.now(),
+      );
 }

@@ -70,7 +70,7 @@ String baselineToApi(CognitiveBaseline baseline) {
   }
 }
 
-enum GameType { matchIt, routineSequencing, numberRecall }
+enum GameType { matchIt, routineSequencing, numberRecall, oddOneOut }
 
 GameType gameTypeFromApi(String value) {
   switch (value) {
@@ -78,6 +78,8 @@ GameType gameTypeFromApi(String value) {
       return GameType.routineSequencing;
     case 'number_recall':
       return GameType.numberRecall;
+    case 'odd_one_out':
+      return GameType.oddOneOut;
     default:
       return GameType.matchIt;
   }
@@ -89,6 +91,8 @@ String gameTypeToApi(GameType type) {
       return 'routine_sequencing';
     case GameType.numberRecall:
       return 'number_recall';
+    case GameType.oddOneOut:
+      return 'odd_one_out';
     case GameType.matchIt:
       return 'match_it';
   }
