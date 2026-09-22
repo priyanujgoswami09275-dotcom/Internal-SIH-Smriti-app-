@@ -82,6 +82,6 @@ async def test_clinical_note_envelope_materializes_symptom_log(
     assert len(rows) == 1
     row = rows[0]
     assert row.entry_source.value == "manual_asha"
-    assert row.notes != notes  # AES-256 at rest: stored ciphertext
+    assert row.notes != notes  # Fernet at rest: stored ciphertext
     assert EncryptionService().decrypt(row.notes) == notes
     assert row.severity == 3

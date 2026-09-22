@@ -124,10 +124,8 @@ async def test_chat_text_message_and_history_capped(client):
     profile = await create_consented_patient(client, "Cap Test")
     p = await _register(client, f"+91{uuid.uuid4().int % 10**10}")
     h = await _login(client, p["phone"])
-    # Bind profile to this user so access passes; consent already granted.
-    from app.models.all_models import PatientProfile  # noqa: F401 — binding via API below
-    # create_consented_patient registers its own user; use /patients/{id}/caregivers
-    # is not needed — instead exercise the caps via validation (pre-DB).
+    # The caps are enforced by request validation before any DB work, so the
+    # profile's ownership does not matter here — 422 arrives either way.
     big = "x" * 2001
     r = await client.post(f"{COMPANION}/chat/text", headers=h, json={
         "patient_id": profile["id"], "message": big, "language": "english"})
