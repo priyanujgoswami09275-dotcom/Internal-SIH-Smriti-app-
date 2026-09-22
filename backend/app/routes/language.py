@@ -86,7 +86,7 @@ async def speech_to_text(
         text = await lang_service.speech_to_text(req.audio_base64, req.source_language)
     except LanguageServiceError as exc:
         _handle(exc)
-    return {"recognized_text": text, "source_language": req.source_language}
+    return {"recognized_text": text, "source_language": req.source_language, "provider": getattr(lang_service, "name", "unknown")}
 
 
 @router.post("/tts")
@@ -100,7 +100,7 @@ async def text_to_speech(
         audio = await lang_service.text_to_speech(req.text, req.target_language)
     except LanguageServiceError as exc:
         _handle(exc)
-    return {"audio_base64": audio, "target_language": req.target_language}
+    return {"audio_base64": audio, "target_language": req.target_language, "provider": getattr(lang_service, "name", "unknown")}
 
 
 @router.post("/translate")

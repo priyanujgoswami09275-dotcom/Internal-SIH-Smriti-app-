@@ -178,15 +178,17 @@ async def test_tts_payload_and_parse_base64_audios():
         return httpx.Response(200, json={"request_id": "r3", "audios": [fake_audio]})
 
     client = _client(handler)
-    audio_b64 = await client.text_to_speech("নমস্কাৰ", "assamese")
+    # Bulbul-covered language (Wave 6 gating): assamese is NMT/ASR-only and
+    # now raises UnsupportedLanguageError before any network call.
+    audio_b64 = await client.text_to_speech("नमस्कार", "hindi")
     assert audio_b64 == fake_audio
     # Proves the audios[] entry is valid base64 (interface returns base64 audio).
     assert base64.b64decode(audio_b64) == b"RIFF....wav-bytes"
 
     assert captured["url"] == "https://api.sarvam.ai/text-to-speech"
     assert captured["headers"]["api-subscription-key"] == "test-key"
-    assert captured["json"]["text"] == "নমস্কাৰ"
-    assert captured["json"]["language_code"] == "as-IN"
+    assert captured["json"]["text"] == "नमस्कार"
+    assert captured["json"]["language_code"] == "hi-IN"
     assert captured["json"]["model"] == "bulbul:v3"
 
 

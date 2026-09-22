@@ -120,8 +120,12 @@ class FCMNotificationProvider(NotificationProvider):
 
     async def _audit(self, provider: str, kind, event_id, recipient, address, status) -> None:
         # Minimal audit: write to NotificationDelivery. No receipt confirmation
-        # (P2) — just record that the attempt happened.
+        # (P2) — just record that the attempt happened. recipient arrives as a
+        # string (notify_escalation_results serializes user.id); the UUID column
+        # needs a real UUID object, so coerce — otherwise the INSERT raises
+        # StatementError and the swallowed except leaves NO audit row at all.
         from sqlalchemy import insert
+        from uuid import UUID as _UUID
         if self.db is not None:
             try:
                 await self.db.execute(
@@ -130,7 +134,7 @@ class FCMNotificationProvider(NotificationProvider):
                         "provider": provider,
                         "kind": kind.value if hasattr(kind, "value") else str(kind),
                         "event_id": event_id,
-                        "recipient_user_id": recipient,
+                        "recipient_user_id": _UUID(str(recipient)) if recipient else None,
                         "address": address,
                         "status": status.value if hasattr(status, "value") else str(status),
                     },
@@ -143,9 +147,10 @@ class FCMNotificationProvider(NotificationProvider):
         if token:
             # Real FCM call: POST to FCM v1 endpoint with server key / service account.
             # Not implemented here (needs FCM_SERVICE_ACCOUNT_JSON / FCM_SERVER_KEY).
-            # Degrades gracefully to logging.
+            # Degrades gracefully to logging. The audit records FAILED — nothing
+            # was actually delivered, and the trail must never claim SENT.
             logger.info("[notification:fcm] alert %s for %s (token %s...): %s", alert_id, patient_id, token[:10], summary)
-            await self._audit("fcm", NotificationKindEnum.ALERT, alert_id, recipients[0].get("user_id") if recipients else None, token[:200], NotificationDeliveryStatusEnum.SENT)
+            await self._audit("fcm", NotificationKindEnum.ALERT, alert_id, recipients[0].get("user_id") if recipients else None, token[:200], NotificationDeliveryStatusEnum.FAILED)
         else:
             logger.info("[notification:fcm] alert %s for %s — no device token; console fallback.", alert_id, patient_id)
             await self._audit("fcm", NotificationKindEnum.ALERT, alert_id, recipients[0].get("user_id") if recipients else None, None, NotificationDeliveryStatusEnum.FAILED)
@@ -153,8 +158,9 @@ class FCMNotificationProvider(NotificationProvider):
     async def send_reminder_reprompt(self, *, patient_id: UUID, event_id: UUID, reminder_type: str) -> None:
         token = await self._resolve_token(patient_id)
         if token:
+            # No real FCM send is implemented — audit FAILED, never SENT.
             logger.info("[notification:fcm] reprompt event %s (%s) for %s (token %s...)", event_id, reminder_type, patient_id, token[:10])
-            await self._audit("fcm", NotificationKindEnum.REPROMPT, event_id, None, token[:200], NotificationDeliveryStatusEnum.SENT)
+            await self._audit("fcm", NotificationKindEnum.REPROMPT, event_id, None, token[:200], NotificationDeliveryStatusEnum.FAILED)
         else:
             logger.info("[notification:fcm] reprompt event %s — no device token; console fallback.", event_id)
             await self._audit("fcm", NotificationKindEnum.REPROMPT, event_id, None, None, NotificationDeliveryStatusEnum.FAILED)

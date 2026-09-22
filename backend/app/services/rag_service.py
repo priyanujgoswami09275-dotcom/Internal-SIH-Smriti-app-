@@ -66,9 +66,17 @@ class RAGService:
 
     @staticmethod
     def cosine_similarity(a: List[float], b: List[float]) -> float:
+        """True cosine similarity: scale-independent (providers emit unit
+        vectors, where this equals the raw dot product; non-normalized
+        vectors are normalized here so scores stay comparable)."""
         if not a or not b or len(a) != len(b):
             return 0.0
-        return sum(x * y for x, y in zip(a, b))
+        dot = sum(x * y for x, y in zip(a, b))
+        norm_a = sum(x * x for x in a) ** 0.5
+        norm_b = sum(y * y for y in b) ** 0.5
+        if norm_a == 0.0 or norm_b == 0.0:
+            return 0.0
+        return dot / (norm_a * norm_b)
 
     # =====================================================================
     # Chunking

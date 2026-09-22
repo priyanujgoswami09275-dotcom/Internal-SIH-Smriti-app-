@@ -60,7 +60,6 @@ _PLACEHOLDER_KEYS = {"", "mock_key", "placeholder-key"}
 # Sarvam AI language codes (BCP-47). Translate (Sarvam-Translate) and ASR
 # (Saaras) cover all 23 listed languages incl. Assamese/Bodo/Manipuri.
 # TTS (Bulbul) docs list only 11 (bn/en/gu/hi/kn/ml/mr/od/pa/ta/te) —
-# as/brx/mni TTS support must be verified against the live API.
 # Khasi and Mizo are NOT covered anywhere — see SarvamLanguageService._lang_code.
 SARVAM_LANG_CODES: Dict[str, str] = {
     "assamese": "as-IN",
@@ -87,6 +86,16 @@ SARVAM_LANG_CODES: Dict[str, str] = {
     "punjabi": "pa-IN",
     "tamil": "ta-IN",
     "telugu": "te-IN",
+}
+
+# Bulbul TTS covers only these base languages (Sarvam docs): bn/en/gu/hi/kn/
+# ml/mr/od/pa/ta/te. TTS requests outside this subset (e.g. Assamese — the
+# app default) must fail fast with UnsupportedLanguageError instead of a
+# gateway error from the live API.
+BULBUL_TTS_BASE_CODES = {"bn", "en", "gu", "hi", "kn", "ml", "mr", "od", "pa", "ta", "te"}
+TTS_LANG_CODES: Dict[str, str] = {
+    name: code for name, code in SARVAM_LANG_CODES.items()
+    if code.split("-")[0] in BULBUL_TTS_BASE_CODES
 }
 
 # AI4Bharat models on the Hugging Face Inference API. Language subsets: these
@@ -543,6 +552,20 @@ class SarvamLanguageService(LanguageServiceProvider):
             )
         return code
 
+    def _tts_lang_code(self, language: str) -> str:
+        """Map a language to its Bulbul TTS tag — restricted to the languages
+        Bulbul actually synthesizes. Raises UnsupportedLanguageError for
+        NMT/ASR-only languages (e.g. Assamese) so the UI shows an honest
+        "not yet available" instead of a gateway error."""
+        code = TTS_LANG_CODES.get((language or "").lower())
+        if not code:
+            raise UnsupportedLanguageError(
+                f"Text-to-speech for '{language}' is not yet available. "
+                f"TTS-supported: {sorted(TTS_LANG_CODES)}",
+                language=language or "",
+            )
+        return code
+
     def _headers(self) -> dict:
         return {"api-subscription-key": self.api_key}
 
@@ -635,8 +658,9 @@ class SarvamLanguageService(LanguageServiceProvider):
 
     async def text_to_speech(self, text: str, target_language: str) -> str:
         """TTS via Bulbul; returns the base64 audio from `audios[0]` as-is
-        (the interface contract is already base64 audio)."""
-        code = self._lang_code(target_language)
+        (the interface contract is already base64 audio). Validated against
+        the Bulbul-covered language subset, not the full NMT list."""
+        code = self._tts_lang_code(target_language)
         payload = {
             "text": text,
             "language_code": code,
