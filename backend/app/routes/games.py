@@ -45,6 +45,17 @@ require_viewer = require_role("patient", "family_caregiver", "asha_worker", "cli
 require_admin = require_role("admin")
 
 
+def _parse_pid(patient_id: str) -> UUID:
+    """Malformed patient_id is a client error (422), never a 500."""
+    try:
+        return UUID(patient_id)
+    except ValueError:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid patient_id '{patient_id}': must be a valid UUID",
+        )
+
+
 async def _ensure_owned_session(
     db: AsyncSession, current_user: User, session_id: UUID
 ) -> GameSession:
@@ -380,9 +391,11 @@ async def get_patient_history(
     """Retrieve game history for a patient (clinical-tier view). Audited."""
     from app.services.compliance_service import ComplianceService
 
-    await ensure_clinical_access(db, current_user, UUID(patient_id))
-    await ensure_consent(db, UUID(patient_id), "game_data")
-    await ComplianceService.log_read_access(db, current_user.id, "game_history", patient_id)
+    pid = _parse_pid(patient_id)
+    limit = min(max(limit, 1), 500)
+    await ensure_clinical_access(db, current_user, pid)
+    await ensure_consent(db, pid, "game_data")
+    await ComplianceService.log_read_access(db, current_user.id, "game_history", pid)
     try:
         gt = GameTypeEnum(game_type) if game_type else None
     except ValueError:
@@ -392,7 +405,7 @@ async def get_patient_history(
             + ", ".join(e.value for e in GameTypeEnum),
         )
     history = await game_service.get_patient_game_history(
-        db, patient_id=UUID(patient_id), game_type=gt, limit=limit
+        db, patient_id=pid, game_type=gt, limit=limit
     )
     return [GameHistoryItem(**item) for item in history]
 
@@ -413,7 +426,7 @@ async def get_patient_stats(
     from collections import defaultdict
     from app.services.compliance_service import ComplianceService
 
-    pid = UUID(patient_id)
+    pid = _parse_pid(patient_id)
     await ensure_clinical_access(db, current_user, pid)
     await ensure_consent(db, pid, "game_data")
     await ComplianceService.log_read_access(db, current_user.id, "game_stats", pid)
@@ -568,10 +581,11 @@ async def update_patient_routine(
     db: AsyncSession = Depends(get_db),
 ):
     """Update patient's custom daily routine (caregiver editor)."""
-    await ensure_patient_access(db, current_user, UUID(patient_id))
+    pid = _parse_pid(patient_id)
+    await ensure_patient_access(db, current_user, pid)
     steps = [s.model_dump() for s in request.steps]
     updated = await routine_service.update_patient_routine(
-        db, patient_id=UUID(patient_id), steps=steps
+        db, patient_id=pid, steps=steps
     )
     return {"status": "updated", "steps": updated}
 
@@ -582,9 +596,16 @@ async def get_patient_routine(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Retrieve patient's daily routine."""
+    """Retrieve patient's daily routine.
+
+    No-implicit-access: the routine is the patient's own daily schedule, so
+    only owners, linked caregivers, and staff may read it (matches every
+    other patient-data route).
+    """
+    pid = _parse_pid(patient_id)
+    await ensure_patient_access(db, current_user, pid)
     routine = await routine_service.get_patient_routine(
-        db, patient_id=UUID(patient_id)
+        db, patient_id=pid
     )
     return {"routine": routine}
 
@@ -701,7 +722,7 @@ async def evaluate_difficulty(
     db: AsyncSession = Depends(get_db),
 ):
     """Evaluate if difficulty should adjust for a patient."""
-    pid = UUID(patient_id)
+    pid = _parse_pid(patient_id)
     await ensure_patient_access(db, current_user, pid)
     await ensure_consent(db, pid, "game_data")
     try:

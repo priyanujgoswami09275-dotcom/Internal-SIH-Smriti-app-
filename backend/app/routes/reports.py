@@ -3,13 +3,13 @@
 import uuid
 from typing import List, Dict, Any, Optional
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import require_role
 from app.database import get_db
 from app.deps import ensure_clinical_access, ensure_consent
-from app.models.all_models import User
+from app.models.all_models import DocumentTypeEnum, User
 from app.services.compliance_service import ComplianceService
 from app.services.document_extraction import MAX_UPLOAD_BYTES, extract_document_text
 from app.services.rag_service import RAGService
@@ -29,6 +29,18 @@ class DocumentUploadRequest(BaseModel):
     title: Optional[str] = None
     chunk_size: int = 500
     chunk_overlap: int = 100
+
+    @field_validator("doc_type")
+    @classmethod
+    def _validate_doc_type(cls, v: str) -> str:
+        try:
+            DocumentTypeEnum(v)
+        except ValueError:
+            raise ValueError(
+                f"Invalid doc_type '{v}'. Must be one of: "
+                + ", ".join(e.value for e in DocumentTypeEnum)
+            )
+        return v
 
 
 class DocumentQueryRequest(BaseModel):

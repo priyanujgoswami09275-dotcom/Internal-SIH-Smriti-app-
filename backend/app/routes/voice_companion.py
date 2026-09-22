@@ -12,7 +12,7 @@ from datetime import datetime
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -39,9 +39,10 @@ require_admin_clinician = require_role("clinician", "admin")
 
 class TextChatRequest(BaseModel):
     patient_id: uuid.UUID
-    message: str
+    # Bounded so an oversized message can never reach the LLM provider.
+    message: str = Field(max_length=2000)
     language: str = "assamese"
-    history: Optional[List[dict]] = None
+    history: Optional[List[dict]] = Field(default=None, max_length=50)
 
 
 class VoiceChatRequest(BaseModel):
