@@ -4,10 +4,8 @@
 /// Fields from feature_names.json in order, grouped by category.
 library;
 
-import 'dart:convert';
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
-import '../config.dart';
+import '../main.dart';
 import '../theme/monad_theme.dart';
 import 'monad/monad_pill_button.dart';
 
@@ -125,27 +123,20 @@ class _RiskIntakeFormState extends State<RiskIntakeForm> {
     "Forgetfulness": int.tryParse(_forgetfulness.text),
   };
 
+  /// Submits via [Api.submitRiskScreening] so the request carries the
+  /// Authorization header and refresh-retry. Server 401/403/422 details
+  /// surface in [_error] via the thrown exception.
   Future<void> _submit() async {
     setState(() { _loading = true; _error = null; });
     try {
-      final payload = _buildPayload();
-      final res = await http.post(
-        Uri.parse('$apiBaseUrl/api/v1/patients/${widget.patientId}/risk-screening'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode(payload),
+      final data = await Api.submitRiskScreening(
+        patientId: widget.patientId,
+        payload: _buildPayload(),
       );
-      final data = res.body.isEmpty ? <String, dynamic>{} : jsonDecode(res.body) as Map<String, dynamic>;
-      if (res.statusCode >= 200 && res.statusCode < 300) {
-        widget.onResult(data);
-        if (mounted) Navigator.of(context).pop();
-      } else {
-        setState(() {
-          _error = (data['detail'] ?? data['errors'] ?? 'Error ${res.statusCode}').toString();
-          _loading = false;
-        });
-      }
+      widget.onResult(data);
+      if (mounted) Navigator.of(context).pop();
     } catch (e) {
-      setState(() { _error = e.toString(); _loading = false; });
+      if (mounted) setState(() { _error = e.toString(); _loading = false; });
     }
   }
 

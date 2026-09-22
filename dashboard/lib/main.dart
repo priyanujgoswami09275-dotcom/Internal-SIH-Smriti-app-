@@ -32,7 +32,7 @@ import 'config.dart';
 // retries once — fixing the 15-minute access-token expiry killing the UI.
 // =====================================================================
 
-class _Api {
+class Api {
   static String? _token;
   static String? _refreshToken;
   static String? _userId;
@@ -43,6 +43,33 @@ class _Api {
 
   static String? get userId => _userId;
   static bool get hasSession => _token != null && _refreshToken != null;
+
+  /// Injectable client seam for tests (minimal: production uses the
+  /// top-level http helpers; tests set a fake via [testClient]).
+  static http.Client? _testClient;
+
+  @visibleForTesting
+  static set testClient(http.Client? c) => _testClient = c;
+
+  @visibleForTesting
+  static http.Client? get testClient => _testClient;
+
+  @visibleForTesting
+  static void setTestSession(
+      {String? token, String? refreshToken, String? userId}) {
+    _token = token;
+    _refreshToken = refreshToken;
+    _userId = userId;
+  }
+
+  @visibleForTesting
+  static void resetForTest() {
+    _token = null;
+    _refreshToken = null;
+    _userId = null;
+    _refreshInFlight = null;
+    _testClient = null;
+  }
 
   /// Load any persisted session at startup.
   static Future<void> init() async {
@@ -76,28 +103,60 @@ class _Api {
         if (_token != null) 'Authorization': 'Bearer $_token',
       };
 
+  static Future<http.Response> _rawPost(Uri url,
+      {Map<String, String>? headers, Object? body}) {
+    final c = _testClient;
+    if (c != null) return c.post(url, headers: headers, body: body);
+    return http.post(url, headers: headers, body: body);
+  }
+
+  static Future<http.Response> _rawGet(Uri url,
+      {Map<String, String>? headers}) {
+    final c = _testClient;
+    if (c != null) return c.get(url, headers: headers);
+    return http.get(url, headers: headers);
+  }
+
+  static Future<http.Response> _rawDelete(Uri url,
+      {Map<String, String>? headers}) {
+    final c = _testClient;
+    if (c != null) return c.delete(url, headers: headers);
+    return http.delete(url, headers: headers);
+  }
+
   static Future<dynamic> _post(String path,
       {Map<String, dynamic>? body, bool auth = true}) async {
-    return _withRefresh(auth, () => http.post(Uri.parse('$apiBaseUrl$path'),
+    return _withRefresh(auth, () => _rawPost(Uri.parse('$apiBaseUrl$path'),
         headers: _headers(), body: jsonEncode(body ?? const {})));
   }
 
   static Future<dynamic> _get(String path, {bool auth = true}) async {
-    return _withRefresh(auth, () => http.get(Uri.parse('$apiBaseUrl$path'), headers: _headers()));
+    return _withRefresh(auth,
+        () => _rawGet(Uri.parse('$apiBaseUrl$path'), headers: _headers()));
+  }
+
+  /// Shared refresh-retry core at the raw-response level.
+  static Future<http.Response> _withRefreshResponse(
+      Future<http.Response> Function() send) async {
+    var res = await send();
+    if (res.statusCode == 401 && await _refresh()) {
+      res = await send();
+    }
+    return res;
   }
 
   /// Run a request; on 401 (expired access token) refresh once and retry.
   static Future<dynamic> _withRefresh(
       bool auth, Future<http.Response> Function() send) async {
-    var res = await send();
-    if (auth && res.statusCode == 401 && await _refresh()) {
-      res = await send();
-    }
-    return _decode(res);
+    if (!auth) return _decode(await send());
+    return _decode(await _withRefreshResponse(send));
   }
 
+  /// DELETE with the same refresh-retry as GET/POST. Returns the raw
+  /// response so the `deleteSchedule` call-site `_decode` is unchanged.
   static Future<http.Response> _delete(String path) =>
-      http.delete(Uri.parse('$apiBaseUrl$path'), headers: _headers());
+      _withRefreshResponse(
+          () => _rawDelete(Uri.parse('$apiBaseUrl$path'), headers: _headers()));
 
   static dynamic _decode(http.Response res) {
     final data = res.body.isEmpty ? null : jsonDecode(res.body);
@@ -107,12 +166,26 @@ class _Api {
         : 'HTTP ${res.statusCode}');
   }
 
+  /// In-flight refresh future: concurrent 401s await the same refresh
+  /// instead of firing parallel refresh POSTs.
+  static Future<bool>? _refreshInFlight;
+
   /// Exchange the refresh token for a fresh pair. Returns false when it fails
-  /// (caller should send the user back to login).
-  static Future<bool> _refresh() async {
+  /// (caller should send the user back to login). Serialized: concurrent
+  /// callers share one in-flight refresh.
+  static Future<bool> _refresh() {
+    final ongoing = _refreshInFlight;
+    if (ongoing != null) return ongoing;
+    final fut = _doRefresh();
+    _refreshInFlight = fut;
+    fut.whenComplete(() => _refreshInFlight = null);
+    return fut;
+  }
+
+  static Future<bool> _doRefresh() async {
     if (_refreshToken == null) return false;
     try {
-      final res = await http.post(
+      final res = await _rawPost(
         Uri.parse('$apiBaseUrl/api/v1/auth/refresh'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({'refresh_token': _refreshToken}),
@@ -154,7 +227,26 @@ class _Api {
     }
   }
 
+  /// Best-effort server logout (POST /api/v1/auth/logout, access-token
+  /// authed per backend/app/routes/auth.py) BEFORE clearing local state, so
+  /// the server refresh token is revoked. Network/server errors are ignored:
+  /// the local clear must always happen. Uses the raw client (never
+  /// [_withRefresh]) to avoid refresh recursion.
   static Future<void> logout() async {
+    final refreshToken = _refreshToken;
+    try {
+      if (_token != null) {
+        await _rawPost(
+          Uri.parse('$apiBaseUrl/api/v1/auth/logout'),
+          headers: _headers(),
+          body: jsonEncode({
+            if (refreshToken != null) 'refresh_token': refreshToken,
+          }),
+        ).timeout(const Duration(seconds: 5));
+      }
+    } catch (_) {
+      // best-effort only — fall through to the local clear.
+    }
     _token = null;
     _refreshToken = null;
     _userId = null;
@@ -194,6 +286,18 @@ class _Api {
   static Future<List<Map<String, dynamic>>> auditLogs({int limit = 50}) async {
     final data = await _get('/api/v1/compliance/audit-logs?limit=$limit');
     return (data as List).cast<Map<String, dynamic>>();
+  }
+
+  /// POST /api/v1/patients/{id}/risk-screening with Authorization header
+  /// and refresh-retry (via [_post]). Throws with the server `detail` on
+  /// 401/403/422 so callers surface it instead of failing silently.
+  static Future<Map<String, dynamic>> submitRiskScreening(
+      {required String patientId,
+      required Map<String, dynamic> payload}) async {
+    final data =
+        await _post('/api/v1/patients/$patientId/risk-screening', body: payload);
+    if (data is Map) return Map<String, dynamic>.from(data);
+    return <String, dynamic>{};
   }
 }
 
@@ -292,7 +396,7 @@ class _TrendPainter extends CustomPainter {
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await _Api.init();
+  await Api.init();
   runApp(const CaregiverDashboardApp());
 }
 
@@ -328,10 +432,10 @@ class _RootState extends State<_Root> {
   }
 
   Future<void> _restore() async {
-    final ok = await _Api.validateSession();
+    final ok = await Api.validateSession();
     if (!mounted) return;
     setState(() {
-      _userId = ok ? _Api.userId : null;
+      _userId = ok ? Api.userId : null;
       _checking = false;
     });
   }
@@ -339,7 +443,7 @@ class _RootState extends State<_Root> {
   void _onLoggedIn(String userId) => setState(() => _userId = userId);
 
   Future<void> _logout() async {
-    await _Api.logout();
+    await Api.logout();
     if (mounted) setState(() => _userId = null);
   }
 
@@ -386,9 +490,9 @@ class _LoginScreenState extends State<_LoginScreen> {
       _error = null;
     });
     try {
-      await _Api.login(_phone.text.trim(), _password.text);
+      await Api.login(_phone.text.trim(), _password.text);
       if (!mounted) return;
-      widget.onLoggedIn(_Api.userId!);
+      widget.onLoggedIn(Api.userId!);
     } on Exception catch (e) {
       if (mounted) setState(() => _error = '$e');
     } finally {
@@ -479,6 +583,7 @@ class _DashboardScreenState extends State<_DashboardScreen> {
   String? _error;
   List<Map<String, dynamic>>? _schedules;
   List<Map<String, dynamic>>? _auditLogs;
+  String? _auditError;
   Map<String, dynamic>? _riskScreeningResult;
   bool _isClinicalView(Map s) => s['view'] == 'clinical';
 
@@ -494,7 +599,7 @@ class _DashboardScreenState extends State<_DashboardScreen> {
       _error = null;
     });
     try {
-      final patients = await _Api.patients(widget.caregiverId);
+      final patients = await Api.patients(widget.caregiverId);
       if (!mounted) return;
       setState(() {
         _patients = patients;
@@ -516,11 +621,11 @@ class _DashboardScreenState extends State<_DashboardScreen> {
   Future<void> _select(String patientId, {bool silent = false}) async {
     if (!silent) setState(() => _loading = true);
     try {
-      final summary = await _Api.summary(patientId);
+      final summary = await Api.summary(patientId);
       // Schedules load lazily too — cheap, and keeps one code path.
       List<Map<String, dynamic>>? schedules;
       try {
-        schedules = await _Api.schedules(patientId);
+        schedules = await Api.schedules(patientId);
       } catch (_) {
         schedules = null; // some roles (admin) cannot fetch schedules per-patient
       }
@@ -545,7 +650,7 @@ class _DashboardScreenState extends State<_DashboardScreen> {
     final pid = _selectedPatientId;
     if (pid == null) return;
     try {
-      await _Api.createSchedule(pid, reminderType, cadence);
+      await Api.createSchedule(pid, reminderType, cadence);
       await _select(pid, silent: true);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -561,7 +666,7 @@ class _DashboardScreenState extends State<_DashboardScreen> {
 
   Future<void> _removeSchedule(String scheduleId) async {
     try {
-      await _Api.deleteSchedule(scheduleId);
+      await Api.deleteSchedule(scheduleId);
       await _select(_selectedPatientId!, silent: true);
     } on Exception catch (e) {
       if (mounted) {
@@ -573,24 +678,34 @@ class _DashboardScreenState extends State<_DashboardScreen> {
 
   Future<void> _toggleAudit() async {
     if (_auditLogs != null) {
-      setState(() => _auditLogs = null); // collapse
+      setState(() {
+        _auditLogs = null; // collapse
+        _auditError = null;
+      });
       return;
     }
     try {
-      final logs = await _Api.auditLogs(limit: 50);
-      if (mounted) setState(() => _auditLogs = logs);
-    } on Exception catch (e) {
+      final logs = await Api.auditLogs(limit: 50);
       if (mounted) {
-        setState(() => _auditLogs = [
-          {'detail': 'Audit view is admin-only. ($e)'}
-        ]);
+        setState(() {
+          _auditLogs = logs;
+          _auditError = null;
+        });
+      }
+    } on Exception catch (e) {
+      // Never inject a fake log row: empty list + a dedicated caption.
+      if (mounted) {
+        setState(() {
+          _auditLogs = [];
+          _auditError = 'Audit view is admin-only ($e)';
+        });
       }
     }
   }
 
   Future<void> _ack(String alertId) async {
     try {
-      await _Api.acknowledge(alertId);
+      await Api.acknowledge(alertId);
       await _select(_selectedPatientId!);
     } on Exception catch (e) {
       if (mounted) {
@@ -665,6 +780,13 @@ class _DashboardScreenState extends State<_DashboardScreen> {
             ...content,
             if (_auditLogs != null) ...[
               const SizedBox(height: 16),
+              if (_auditError != null)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: Text(_auditError!,
+                      style:
+                          Monad.monoBodySm.copyWith(color: Monad.crimson)),
+                ),
               _auditPanel(),
             ],
           ],
@@ -708,6 +830,7 @@ class _DashboardScreenState extends State<_DashboardScreen> {
     final isClinical = _isClinicalView(s);
     final accuracy = (s['accuracy_pct'] as num? ?? 0).toDouble();
     final compliance = (s['compliance_pct'] as num? ?? 0).toDouble();
+    final remindersTotal = (s['reminders_total'] as num? ?? 0).toInt();
     final speed = (s['avg_response_time_ms'] as num? ?? 0).toDouble();
     final alerts = s['active_alerts'] as List? ?? const [];
     final flags = (s['clinical_flags'] as Map<String, dynamic>? ?? const {})
@@ -748,8 +871,17 @@ class _DashboardScreenState extends State<_DashboardScreen> {
               final tiles = [
                 _tile('Cognitive accuracy (7d)', '${accuracy.toStringAsFixed(0)}%',
                     '${s['games_played'] ?? 0} games', Monad.offBlack),
-                _tile('Reminder compliance', '${compliance.toStringAsFixed(0)}%',
-                    '${s['reminders_acknowledged']}/${s['reminders_total']} acknowledged', Monad.offBlack),
+                // reminders_total == 0 means "no data", not 100%: the
+                // backend still reports 100.0, so correct it client-side.
+                _tile(
+                    'Reminder compliance',
+                    remindersTotal == 0
+                        ? '—'
+                        : '${compliance.toStringAsFixed(0)}%',
+                    remindersTotal == 0
+                        ? 'no reminders yet'
+                        : '${s['reminders_acknowledged']}/${s['reminders_total']} acknowledged',
+                    Monad.offBlack),
                 _tile('Avg response time', speed > 0 ? '${(speed / 1000).toStringAsFixed(1)}s' : '—',
                     'last 7 days', Monad.offBlack),
               ];
@@ -779,9 +911,10 @@ class _DashboardScreenState extends State<_DashboardScreen> {
                 .map((t) => (t['avg_response_time_ms'] as num?)?.toDouble())
                 .whereType<double>()
                 .toList();
+            // Aggregates pool all games per day — say so in the titles.
             final charts = [
-              TrendChart(values: acc, title: 'Daily accuracy trend (14d)', unitLabel: '%'),
-              TrendChart(values: rt, title: 'Response time trend (14d)', unitLabel: 'ms'),
+              TrendChart(values: acc, title: 'Daily accuracy trend (14d), all games', unitLabel: '%'),
+              TrendChart(values: rt, title: 'Response time trend (14d), all games', unitLabel: 'ms'),
             ];
             if (c.maxWidth >= 700) {
               return Row(children: [
@@ -848,23 +981,47 @@ class _DashboardScreenState extends State<_DashboardScreen> {
               subtitle: Text('Reminder flag: ${flags['high_missed_reminders'] == true ? '3+ missed in 7 days' : 'none'}', style: Monad.monoBodySm),
             ),
           ),
-        // Cognitive risk screening — clinical view only
+        // Cognitive risk screening — clinical view only. Basic tier gets a
+        // locked note instead: no card, no button, no dead POST.
         const SizedBox(height: 12),
-        RiskScreeningCard(result: _riskScreeningResult),
-        const SizedBox(height: 8),
-        // Intake button — opens 32-field form; feeds endpoint; updates card.
-        FilledButton.icon(
-          icon: const Icon(Icons.medical_services, size: 18),
-          label: const Text('Run Screening (32 inputs)'),
-          onPressed: () => showDialog(
-            context: context,
-            builder: (_) => RiskIntakeForm(
-              patientId: _selectedPatientId ?? '',
-              patientName: '',
-              onResult: (r) => setState(() => _riskScreeningResult = r),
+        if (isClinical) ...[
+          RiskScreeningCard(result: _riskScreeningResult),
+          const SizedBox(height: 8),
+          // Intake button — opens 32-field form; feeds endpoint; updates card.
+          FilledButton.icon(
+            icon: const Icon(Icons.medical_services, size: 18),
+            label: const Text('Run Screening (32 inputs)'),
+            onPressed: () => showDialog(
+              context: context,
+              builder: (_) => RiskIntakeForm(
+                patientId: _selectedPatientId ?? '',
+                patientName: '',
+                onResult: (r) => setState(() => _riskScreeningResult = r),
+              ),
             ),
           ),
-        ),
+        ] else ...[
+          Container(
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: Monad.tintGold,
+              borderRadius: BorderRadius.circular(Monad.radiusMin),
+              border: Border.all(color: Monad.ash, width: 1),
+            ),
+            child: const Row(children: [
+              Icon(Icons.lock_outline, size: 22, color: Monad.graphite),
+              SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  'Screening needs clinical tier / health-data consent — '
+                  'run screening is available to linked clinical staff with '
+                  'health-data consent.',
+                  style: Monad.monoBodySm,
+                ),
+              ),
+            ]),
+          ),
+        ],
       ],
     );
   }
