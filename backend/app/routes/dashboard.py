@@ -78,6 +78,10 @@ async def acknowledge_alert(
     if not alert:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Alert not found")
 
+    # Enforce: a caregiver/clinician may only acknowledge alerts bound to
+    # their own patient panel (patients they are linked to).
+    await ensure_patient_access(db, current_user, alert.patient_id)
+
     from datetime import datetime, timezone
     alert.acknowledged_at = datetime.now(timezone.utc)
     alert.acknowledged_by = current_user.id

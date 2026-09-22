@@ -186,6 +186,13 @@ async def test_served_boards_follow_config_endpoints(client):
     )
     assert resp.status_code == 201, resp.text
     patient_id = resp.json()["id"]
+    # Routine board is patient-scoped + game_data-consent-gated (Wave 1B).
+    resp = await client.post(
+        "/api/v1/compliance/consent",
+        json={"patient_id": patient_id, "consent_type": "patient_self", "scope": "all"},
+        headers=headers,
+    )
+    assert resp.status_code == 200, resp.text
     for level, steps in ((1, 3), (2, 4), (3, 6)):
         resp = await client.get(
             f"{GAMES}/routine/board",

@@ -502,7 +502,13 @@ async def generate_match_it_board(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Generate a randomized Match It board (pair count from level config)."""
+    """Generate a randomized Match It board (pair count from level config).
+
+    Generic content-pack puzzle: no patient data is served here, so any
+    authenticated caller may fetch it (matches mobile/frontend contract).
+    Patient scoping + consent are enforced at session start, not on the
+    static board.
+    """
     params = await level_config_service.get_level_params(
         db, "match_it", difficulty_level
     )
@@ -591,8 +597,17 @@ async def generate_routine_board(
     db: AsyncSession = Depends(get_db),
 ):
     """Generate a routine sequencing puzzle for a patient (counts from level config)."""
+    try:
+        pid = UUID(patient_id)
+    except ValueError:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid patient_id '{patient_id}': must be a valid UUID",
+        )
+    await ensure_patient_access(db, current_user, pid)
+    await ensure_consent(db, pid, "game_data")
     routine = await routine_service.get_patient_routine(
-        db, patient_id=UUID(patient_id)
+        db, patient_id=pid
     )
     params = await level_config_service.get_level_params(
         db, "routine_sequencing", difficulty_level
@@ -613,7 +628,13 @@ async def generate_number_recall_board(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Generate a number-recall memorization board (length from level config)."""
+    """Generate a number-recall memorization board (length from level config).
+
+    Generic digit puzzle: no patient data is served here, so any
+    authenticated caller may fetch it (matches mobile contract).
+    Patient scoping + consent are enforced at session start, not on the
+    static board.
+    """
     params = await level_config_service.get_level_params(
         db, "number_recall", difficulty_level
     )

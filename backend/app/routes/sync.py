@@ -103,6 +103,7 @@ async def pending_sync_items(
     db: AsyncSession = Depends(get_db),
 ):
     """Return unsynced queue items for a patient (synced_at IS NULL)."""
+    await ensure_patient_access(db, current_user, patient_id)
     items = await get_pending_sync(db, patient_id)
     return [
         {
