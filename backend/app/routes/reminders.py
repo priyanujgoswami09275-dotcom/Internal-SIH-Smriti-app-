@@ -126,6 +126,18 @@ async def record_event(
 ):
     """Record a reminder event. Caller must have access to the patient."""
     await ensure_patient_access(db, current_user, request.patient_id)
+    # The schedule must exist and belong to the named patient — otherwise a
+    # forged or cross-patient schedule_id would be stored on the event row.
+    schedule = await ReminderService.get_schedule(db, request.schedule_id)
+    if schedule is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Schedule not found"
+        )
+    if schedule.patient_id != request.patient_id:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="schedule does not belong to this patient",
+        )
     event = await ReminderService.record_reminder_event(
         db=db,
         schedule_id=request.schedule_id,
@@ -170,6 +182,7 @@ async def get_patient_events(
     db: AsyncSession = Depends(get_db),
 ):
     """List a patient's reminder events. Access is enforced and audited."""
+    limit = min(max(limit, 1), 500)  # cap like the compliance audit trail
     await ensure_patient_access(db, current_user, patient_id)
     await ComplianceService.log_read_access(db, current_user.id, "reminder_event", patient_id)
     return await ReminderService.get_patient_reminder_events(
