@@ -88,6 +88,12 @@ async def test_stable_accuracy_raises_no_cognitive_alert(db_session):
 @pytest.mark.asyncio
 async def test_hourly_pass_covers_all_active_patients(db_session):
     patient, user = await _mk_patient(db_session)
+    # The pass derives cognitive health signals, so it skips patients without
+    # active health_data consent (Wave 5 purpose limitation).
+    from app.models.all_models import ConsentRecord
+    db_session.add(ConsentRecord(
+        patient_id=patient.id, scope="all", consent_type="patient_self",
+        grantor_id=user.id))
     db_session.add(GameSession(patient_id=patient.id, game_type=GameTypeEnum.MATCH_IT,
         difficulty_level=1, attempts=10, correct_count=9, incorrect_count=1,
         avg_response_time_ms=1000.0, started_at=datetime.now(timezone.utc)))

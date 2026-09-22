@@ -27,6 +27,7 @@ from app.models.all_models import (
     AlertFlag,
     AlertSeverityEnum,
     AlertTriggerTypeEnum,
+    ConsentRecord,
     GameSession,
     ReminderEvent,
     ReminderSchedule,
@@ -130,8 +131,10 @@ class AlertEngine:
 
     @staticmethod
     async def run_hourly_pass(db: AsyncSession, now: datetime | None = None) -> Dict[str, int]:
-        """Evaluate every patient with a session or reminder event in the last
-        14 days; notify caregivers for newly raised alerts. Never raises."""
+        """Evaluate every consented patient with a session or reminder event in
+        the last 14 days; notify caregivers for newly raised alerts. Never
+        raises. Patients without active health_data consent are skipped
+        (purpose limitation — the pass derives cognitive health signals)."""
         now = now or datetime.now(timezone.utc)
         since = now - timedelta(days=14)
 
@@ -148,6 +151,13 @@ class AlertEngine:
             )
         ).scalars().all()
         patient_ids = list(set(game_patients) | set(rem_patients))
+        consented = set((await db.execute(
+            select(ConsentRecord.patient_id).where(
+                ConsentRecord.revoked_at.is_(None),
+                ConsentRecord.scope.in_(["health_data", "all"]),
+            )
+        )).scalars().all())
+        patient_ids = [pid for pid in patient_ids if pid in consented]
 
         alerts_created = 0
         notified = 0

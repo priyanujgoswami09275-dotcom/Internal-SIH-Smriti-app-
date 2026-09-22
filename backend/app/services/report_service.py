@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, distinct
 
 from app.models.all_models import (
-    PatientProfile, GameSession, ReminderEvent,
+    ConsentRecord, PatientProfile, GameSession, ReminderEvent,
     SymptomLog, ReminderStatusEnum, WeeklyReport,
 )
 from app.services.compliance_service import EncryptionService
@@ -164,10 +164,19 @@ class ReportService:
     async def generate_reports_for_all_patients(
         db: AsyncSession, now: datetime | None = None
     ) -> Dict[str, int]:
-        """Sunday-midnight job body: one persisted report per active patient."""
+        """Sunday-midnight job body: one persisted report per consented
+        active patient. Patients without active health_data consent are
+        skipped (purpose limitation — reports persist health-derived data)."""
         patient_ids = (
             await db.execute(select(distinct(PatientProfile.id)))
         ).scalars().all()
+        consented = set((await db.execute(
+            select(ConsentRecord.patient_id).where(
+                ConsentRecord.revoked_at.is_(None),
+                ConsentRecord.scope.in_(["health_data", "all"]),
+            )
+        )).scalars().all())
+        patient_ids = [pid for pid in patient_ids if pid in consented]
         created = updated = 0
         week_start = ReportService._week_start(now)
         for pid in patient_ids:
