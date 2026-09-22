@@ -16,8 +16,6 @@ import 'screens/recall_screen.dart';
 import 'screens/reminders_screen.dart';
 import 'screens/routine_screen.dart';
 import 'screens/voice_companion_screen.dart';
-import 'screens/clinical_notes_screen.dart';
-import 'screens/rag_upload_screen.dart';
 import 'services/api_service.dart';
 import 'services/auth_session.dart';
 import 'services/offline_sync_service.dart';
@@ -269,7 +267,7 @@ class _HomeShellState extends State<HomeShell> {
       return _ProfileSetup(onCreated: (id) => setState(() => _patientId = id));
     }
 
-    return _PatientHome(patientId: _patientId!);
+    return PatientHome(patientId: _patientId!);
   }
 }
 
@@ -348,9 +346,13 @@ class _ProfileSetupState extends State<_ProfileSetup> {
   }
 }
 
-class _PatientHome extends StatelessWidget {
+/// Patient home — games, routine, reminders, voice. No clinical upload
+/// entry here: RAG document upload requires staff roles + clinical tier
+/// (patients 403 even authenticated), so it lives on the staff
+/// [CaregiverDashboardScreen] surface only.
+class PatientHome extends StatelessWidget {
   final String patientId;
-  const _PatientHome({required this.patientId});
+  const PatientHome({super.key, required this.patientId});
 
   @override
   Widget build(BuildContext context) {
@@ -435,17 +437,6 @@ class _PatientHome extends StatelessWidget {
             onTap: () => Navigator.of(context).push(
               MaterialPageRoute<void>(
                 builder: (_) => VoiceCompanionScreen(patientId: patientId),
-              ),
-            ),
-          ),
-          _homeButton(
-            context,
-            icon: Icons.upload_file,
-            title: 'Medical Documents',
-            subtitle: 'Upload prescription, report or doctor note',
-            onTap: () => Navigator.of(context).push(
-              MaterialPageRoute<void>(
-                builder: (_) => RagUploadScreen(patientId: patientId),
               ),
             ),
           ),

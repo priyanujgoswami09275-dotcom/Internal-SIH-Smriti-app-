@@ -18,6 +18,7 @@ import '../widgets/dev_role_menu.dart';
 import '../widgets/monad/monad_pill_button.dart';
 import '../widgets/trend_chart.dart';
 import 'clinical_notes_screen.dart';
+import 'rag_upload_screen.dart';
 
 class CaregiverDashboardScreen extends StatefulWidget {
   final String caregiverId;
@@ -251,6 +252,22 @@ class _CaregiverDashboardScreenState extends State<CaregiverDashboardScreen> {
                 );
               },
             ),
+          // RAG medical-document upload — staff-only surface (patients 403
+          // even authenticated: backend requires staff roles + clinical
+          // tier + health-data consent). Hidden until a patient is selected.
+          if (_selectedPatientId != null)
+            IconButton(
+              tooltip: 'Upload medical document',
+              icon: const Icon(Icons.upload_file_outlined),
+              onPressed: () {
+                Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) =>
+                        RagUploadScreen(patientId: _selectedPatientId!),
+                  ),
+                );
+              },
+            ),
         ],
       ),
       body: _buildBody(),
@@ -326,6 +343,10 @@ class _CaregiverDashboardScreenState extends State<CaregiverDashboardScreen> {
           _sectionHeader('Schedules'),
           const SizedBox(height: 12),
           _schedulesCard(),
+          const SizedBox(height: 24),
+          _sectionHeader('Medical Documents'),
+          const SizedBox(height: 12),
+          _documentsCard(),
           const SizedBox(height: 24),
           _sectionHeader('Audit trail'),
           const SizedBox(height: 12),
@@ -712,6 +733,47 @@ class _CaregiverDashboardScreenState extends State<CaregiverDashboardScreen> {
                   ),
                 );
               }),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// RAG medical-document entry — staff-only by construction (this screen
+  /// never renders for patients). Pushes the upload screen for the selected
+  /// patient; server 403s (clinical-tier/consent) surface there with detail.
+  Widget _documentsCard() {
+    final patientId = _selectedPatientId;
+    return Card(
+      elevation: 0,
+      shape: Monad.cardShape,
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Medical Documents', style: Monad.subheading),
+            const SizedBox(height: 8),
+            const Text(
+              'Upload prescriptions, discharge summaries, care plans. '
+              'They are embedded and searchable in the clinical Q&A flow.',
+              style: Monad.monoBodySm,
+            ),
+            const SizedBox(height: 16),
+            MonadPillButton(
+              label: 'Upload Document',
+              variant: MonadPillVariant.secondary,
+              onPressed: patientId == null
+                  ? null
+                  : () {
+                      Navigator.of(context).push(
+                        MaterialPageRoute<void>(
+                          builder: (_) =>
+                              RagUploadScreen(patientId: patientId),
+                        ),
+                      );
+                    },
+            ),
           ],
         ),
       ),

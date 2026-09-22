@@ -1,16 +1,32 @@
 /// RAG document upload — POST /api/v1/reports/documents/upload
-/// Minimal file picker (HTML input element on web) → upload → snackbar feedback.
-/// Lazy: uses `package:http` MultipartRequest; no new dependency.
+/// Web file picker (HTML input element) → authed multipart upload →
+/// snackbar feedback with server detail. No new dependency.
 library;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import '../config.dart';
+
+import '../main.dart';
 import '../theme/monad_theme.dart';
+import 'rag_upload_picker_stub.dart'
+    if (dart.library.html) 'rag_upload_picker_web.dart';
+
+typedef RagUploadFn = Future<dynamic> Function({
+  required String patientId,
+  required Uint8List bytes,
+  required String filename,
+  String docType,
+  String? title,
+});
+
+typedef RagPickFn = Future<({Uint8List bytes, String filename})?> Function();
 
 class RagUploadWidget extends StatefulWidget {
   final String patientId;
-  const RagUploadWidget({super.key, required this.patientId});
+  final RagUploadFn? uploadFn;
+  final RagPickFn? pickFn;
+  const RagUploadWidget(
+      {super.key, required this.patientId, this.uploadFn, this.pickFn});
 
   @override
   State<RagUploadWidget> createState() => _RagUploadWidgetState();
@@ -21,8 +37,8 @@ class _RagUploadWidgetState extends State<RagUploadWidget> {
   String? _lastResult;
 
   Future<void> _pickAndUpload() async {
-    // Web file picker via HTML input — no new dependency.
-    if (kIsWeb) {
+    // Tests force the web path via [pickFn]; production uses kIsWeb.
+    if (widget.pickFn != null || kIsWeb) {
       await _pickOnWeb();
     } else {
       setState(() => _lastResult = 'File picker available on web dashboard only.');
@@ -30,36 +46,62 @@ class _RagUploadWidgetState extends State<RagUploadWidget> {
   }
 
   Future<void> _pickOnWeb() async {
-    setState(() { _uploading = true; _lastResult = null; });
+    setState(() {
+      _uploading = true;
+      _lastResult = null;
+    });
     try {
-      // The upload path needs a real file picker + multipart upload, which is
-      // not wired yet. Until then, show the exact curl command so a clinical
-      // user can upload documents while the UI path is pending.
-      if (mounted) {
+      final picked = widget.pickFn != null
+          ? await widget.pickFn!()
+          : await pickDocumentFile();
+      if (!mounted) return;
+      if (picked == null) {
         setState(() {
-          _lastResult =
-              'Upload via the API is pending. Curl command provided below.';
           _uploading = false;
+          _lastResult = 'No file selected.';
         });
-        showDialog(
-          context: context,
-          builder: (_) => AlertDialog(
-            title: const Text('Upload Document'),
-            content: SelectableText(
-              'curl -X POST $apiBaseUrl/api/v1/reports/documents/upload \\\n'
-              '  -H "Authorization: Bearer \$TOKEN" \\\n'
-              '  -F "patient_id=${widget.patientId}" \\\n'
-              '  -F "doc_type=prescription" \\\n'
-              '  -F "title=Care Plan" \\\n'
-              '  -F "file=@/path/to/file.pdf"',
-              style: Monad.monoBodySm,
-            ),
-            actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text('OK'))],
-          ),
-        );
+        return;
       }
+      await _uploadBytes(picked.bytes, picked.filename);
     } catch (e) {
-      setState(() { _lastResult = 'Error: $e'; _uploading = false; });
+      if (!mounted) return;
+      setState(() {
+        _uploading = false;
+        _lastResult = 'Upload failed: $e';
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Upload failed: $e')),
+      );
+    }
+  }
+
+  Future<void> _uploadBytes(Uint8List bytes, String filename) async {
+    try {
+      final uploader = widget.uploadFn ?? Api.uploadDocument;
+      await uploader(
+        patientId: widget.patientId,
+        bytes: bytes,
+        filename: filename,
+        docType: 'prescription',
+        title: 'Care Plan',
+      );
+      if (!mounted) return;
+      setState(() {
+        _uploading = false;
+        _lastResult = 'Uploaded $filename successfully.';
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Uploaded $filename successfully.')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _uploading = false;
+        _lastResult = 'Upload failed: $e';
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Upload failed: $e')),
+      );
     }
   }
 
@@ -92,7 +134,9 @@ class _RagUploadWidgetState extends State<RagUploadWidget> {
                   ),
                   if (_lastResult != null) ...[
                     const SizedBox(height: 6),
-                    Text(_lastResult!, style: Monad.monoCaption.copyWith(color: Monad.terracotta)),
+                    Text(_lastResult!,
+                        style:
+                            Monad.monoCaption.copyWith(color: Monad.terracotta)),
                   ],
                 ],
               ),

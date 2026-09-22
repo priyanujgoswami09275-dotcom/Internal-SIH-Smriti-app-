@@ -9,6 +9,7 @@
 library;
 
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
@@ -122,6 +123,12 @@ class Api {
     final c = _testClient;
     if (c != null) return c.delete(url, headers: headers);
     return http.delete(url, headers: headers);
+  }
+
+  static Future<http.StreamedResponse> _rawSend(http.BaseRequest request) {
+    final c = _testClient;
+    if (c != null) return c.send(request);
+    return request.send();
   }
 
   static Future<dynamic> _post(String path,
@@ -298,6 +305,38 @@ class Api {
         await _post('/api/v1/patients/$patientId/risk-screening', body: payload);
     if (data is Map) return Map<String, dynamic>.from(data);
     return <String, dynamic>{};
+  }
+
+  /// POST /api/v1/reports/documents/upload as an authed multipart request.
+  /// Backend contract (`backend/app/routes/reports.py`): multipart `file`
+  /// part + `patient_id` / `doc_type` / `title` fields; staff roles +
+  /// clinical access + `health_data` consent enforced server-side.
+  /// Sends the auth header via [_headers] (Content-Type dropped so the
+  /// multipart boundary survives) with refresh-retry via [_withRefresh].
+  /// Throws with the server `detail` on failure so callers surface it.
+  static Future<dynamic> uploadDocument({
+    required String patientId,
+    required Uint8List bytes,
+    required String filename,
+    String docType = 'prescription',
+    String? title,
+  }) async {
+    return _withRefresh(true, () async {
+      // patient_id is a query param on the FastAPI signature; it is also
+      // sent as a form field so the contract holds either way.
+      final uri = Uri.parse('$apiBaseUrl/api/v1/reports/documents/upload')
+          .replace(queryParameters: {'patient_id': patientId});
+      final req = http.MultipartRequest('POST', uri);
+      final h = _headers()..remove('Content-Type');
+      req.headers.addAll(h);
+      req.fields['patient_id'] = patientId;
+      req.fields['doc_type'] = docType;
+      if (title != null && title.isNotEmpty) req.fields['title'] = title;
+      req.files
+          .add(http.MultipartFile.fromBytes('file', bytes, filename: filename));
+      final streamed = await _rawSend(req);
+      return http.Response.fromStream(streamed);
+    });
   }
 }
 
