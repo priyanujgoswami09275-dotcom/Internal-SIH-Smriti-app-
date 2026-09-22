@@ -518,7 +518,7 @@ class ApiService {
   Future<void> deleteSchedule(String scheduleId) async {
     // Plain DELETE with auth; no body (matches web dashboard contract).
     final res =
-        await _send('DELETE', '/reminders/schedules/$scheduleId');
+        await _send('DELETE', '${AppConfig.apiV1}/reminders/schedules/$scheduleId');
     if (res.statusCode >= 200 && res.statusCode < 300) return;
     throw ApiException('HTTP ${res.statusCode}', statusCode: res.statusCode);
   }

@@ -744,14 +744,24 @@ class _CaregiverDashboardScreenState extends State<CaregiverDashboardScreen> {
           body = Column(
             children: [
               for (final l in snap.data!.take(20))
-                ListTile(
-                  dense: true,
-                  contentPadding: EdgeInsets.zero,
-                  title: Text('${l['action']} · ${l['resource_type']}',
-                      style: Monad.monoBodySm.copyWith(color: Monad.offBlack)),
-                  subtitle: Text(
-                      'by ${l['actor_id'] ?? 'system'} · ${(l['created_at'] ?? '')}'.substring(0, 60),
-                      style: Monad.monoCaption),
+                Builder(
+                  builder: (_) {
+                    final label =
+                        'by ${l['user_id'] ?? 'system'} · ${l['timestamp'] ?? ''}';
+                    return ListTile(
+                      dense: true,
+                      contentPadding: EdgeInsets.zero,
+                      title: Text('${l['action']} · ${l['resource_type']}',
+                          style: Monad.monoBodySm
+                              .copyWith(color: Monad.offBlack)),
+                      subtitle: Text(
+                        // Cap at 60 chars without crashing on short labels
+                        // (substring end must not exceed the string length).
+                        label.length > 60 ? label.substring(0, 60) : label,
+                        style: Monad.monoCaption,
+                      ),
+                    );
+                  },
                 ),
             ],
           );
