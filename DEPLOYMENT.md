@@ -1,10 +1,10 @@
 # Deployment — SIH26003 Elder-Care Companion (2026-09-06)
 
 ## Status
-- All 12 phases implemented (CLAUDE.md reconciliation).
-- 130 pytest pass + 1 skipped (pypdf env); 21/21 standalone service tests.
-- CI: pytest + alembic + smoke_e2e (Postgres 16) + flutter pub/get/analyze.
-- Production posture: secret/CORS refusal (config.py:149-158), rate limit (Redis+fallback), Fernet encryption, audit logs.
+- All 12 phases implemented (CLAUDE.md reconciliation) + fix-it waves 1-6 (2026-09-22/23): input-validation 422s, patient-access gates, client always-fail features, data integrity, PG round-trip-safe migrations, P1 hardening, stub honesty.
+- 509 pytest pass + 7 skipped (run from `backend/`: `python3 -m pytest app/tests tests -q`); 21/21 standalone service tests.
+- CI: pytest + alembic + smoke_e2e (Postgres 16) + flutter pub/get/analyze/test (mobile 102/5 skipped, dashboard 15).
+- Production posture: secret/CORS refusal (config.py:149-158), rate limit (Redis+fallback, 30s recovery cooldown + bucket eviction), Fernet encryption, audit logs.
 
 ## Pre-deploy checklist (must complete before flip to production)
 1. Generate real SECRET_KEY (>=24 chars) and ENCRYPTION_KEY (>=16 chars).
@@ -129,7 +129,17 @@ conflict with the demo database, which is a clean 0001→0008 chain.
 
 Source of truth: CLAUDE.md (reconciled 2026-09-06); the Phase 6 results below supersede the historical test counts above.
 
-## Upgrade regression checkpoint — 2026-09-17
+## Upgrade regression checkpoint — 2026-09-23 (fix-it waves 1-6)
+
+- Backend: `python3 -m pytest app/tests tests -q` from `backend/` — 509 passed, 7 skipped. All tests pass under the CI invocation (working-directory: backend); the earlier adaptive-CLI failure was an invocation-directory artifact, now resolved.
+- Standalone services: `python3 test_phase2_services.py` — 21 passed.
+- Mobile: `flutter test` — 102 passed, 5 live-API tests skipped; `flutter analyze` — 43 pre-existing informational findings, 0 errors.
+- Dashboard: `flutter test` — 15 passed; `flutter analyze` — 33 pre-existing informational findings.
+- Migrations: full-chain round-trip proven on a THROWAWAY PG 16 container (`smriti-mig-w4`, removed after proof; demo DB untouched): upgrade head → downgrade base → upgrade head all green; 12 seed rows across 4 game types verified; 0004 orphan enum types now dropped in downgrade; 0007/0010 `ALTER TYPE` existence-guarded; 0001 enum-name typo fixed (`symptomentrysourceenum`, matches the model-derived name); 0005 downgrade symmetric. Full-chain SQLite support is PG-only by design (runtime is PG; per-revision SQLite tests cover the compatible revisions).
+- Fix-it highlights: schedule/event cross-checks (404/422), offline Odd-One-Out replay fetches a fresh server board, sync failures stay pending + retryable (never silently dropped), clinical notes ride the offline_symptom outbox, RAG upload wired on both clients (staff-only), single-flight token refresh (mobile + dashboard), FCM audit records FAILED (a real bug made it record nothing at all), consent-gated alert/weekly job passes, honest dashboard widgets.
+- Not verified: physical-device play-test (deferred), live provider calls (keys absent by design).
+
+## Historical checkpoint — 2026-09-17
 
 - Backend: `python3 -m pytest app/tests tests -q` — 184 passed, 3 skipped, 8 warnings.
 - Standalone services: `python3 test_phase2_services.py` — 21 passed.
