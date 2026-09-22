@@ -142,15 +142,25 @@ class ApiService {
     return response;
   }
 
+  /// Shared in-flight refresh: parallel 401s await the same refresh instead of
+  /// racing (the second refresh of a rotated token would fail and spuriously
+  /// log the user out). Cleared when the refresh settles.
+  Future<AuthTokens>? _refreshInFlight;
+
   Future<bool> _tryRefresh() async {
+    final token = refreshToken;
+    if (token == null) return false;
     try {
-      final tokens = await refresh(refreshToken!);
+      _refreshInFlight ??= refresh(token);
+      final tokens = await _refreshInFlight!;
       authToken = tokens.accessToken;
       refreshToken = tokens.refreshToken;
       onTokensRefreshed?.call(tokens.accessToken, tokens.refreshToken);
       return true;
     } catch (_) {
       return false;
+    } finally {
+      _refreshInFlight = null;
     }
   }
 
