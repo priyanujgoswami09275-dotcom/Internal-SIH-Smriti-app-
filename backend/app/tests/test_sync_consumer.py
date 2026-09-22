@@ -104,8 +104,20 @@ async def test_consumer_records_error_for_invalid_payload(db_session):
             select(SyncQueue).where(SyncQueue.patient_id == pid)
         )
     ).scalar_one()
-    assert row.synced_at is not None  # acked so it does not block the queue
+    assert row.synced_at is None  # stays pending so it can be retried
     assert "entered_by" in (row.last_error or "")
+    assert row.retry_count == 1
+
+    counts = await consume_sync_queue(db_session, patient_id=pid)
+    assert counts["errors"] == 1 and counts["materialized"] == 0
+
+    row = (
+        await db_session.execute(
+            select(SyncQueue).where(SyncQueue.patient_id == pid)
+        )
+    ).scalar_one()
+    assert row.synced_at is None
+    assert row.retry_count == 2
 
 
 @pytest.mark.asyncio

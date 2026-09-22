@@ -91,8 +91,11 @@ async def consume_sync_queue(
     """Materialize pending outbox rows into domain records.
 
     Currently supports ``offline_symptom`` creates -> encrypted ``SymptomLog``.
-    Rows that cannot be materialized are marked synced with a ``last_error`` so
-    they do not wedge the queue. Returns per-kind counts.
+    Other resource types are acknowledged at the outbox (replayed via live
+    endpoints). Rows that fail materialization stay pending (``synced_at``
+    NULL) with ``last_error`` set and ``retry_count`` incremented so they
+    remain visible in ``GET /sync/pending`` for retry. Returns per-kind
+    counts.
     """
     encryption = encryption or EncryptionService()
     stmt = select(SyncQueue).where(SyncQueue.synced_at.is_(None))
@@ -143,7 +146,7 @@ async def consume_sync_queue(
             counts["errors"] += 1
             item.last_error = str(exc)[:480]
             item.retry_count = (item.retry_count or 0) + 1
-            item.synced_at = datetime.now(timezone.utc)  # don't wedge the queue
+            # Do NOT set synced_at — failure stays pending and retryable
     if rows:
         await db.commit()
     return counts

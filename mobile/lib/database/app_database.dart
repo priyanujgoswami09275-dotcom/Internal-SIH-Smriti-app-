@@ -285,10 +285,14 @@ class AppDatabase extends _$AppDatabase {
   }
 
   Future<void> markSyncItemFailed(String itemId, String error) async {
+    final row = (await (select(syncQueue)
+          ..where((t) => t.id.equals(itemId)))
+        .getSingleOrNull());
+    final currentRetry = row?.retryCount ?? 0;
     await (update(syncQueue)..where((t) => t.id.equals(itemId))).write(
       SyncQueueCompanion(
         lastError: Value(error),
-        retryCount: const Value(1),
+        retryCount: Value(currentRetry + 1),
       ),
     );
   }
