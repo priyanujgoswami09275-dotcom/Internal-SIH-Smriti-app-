@@ -221,10 +221,29 @@ class OfflineSyncService {
 
   Future<void> _replayGameSession(SyncQueueItem item) async {
     final payload = Map<String, dynamic>.from(item.payload);
+    final gameType = payload['game_type'] as String? ?? 'match_it';
+    final difficultyLevel = payload['difficulty_level'] as int? ?? 1;
     final sessionId = await api.startGame(
-      gameType: payload['game_type'] as String? ?? 'match_it',
-      difficultyLevel: payload['difficulty_level'] as int? ?? 1,
+      gameType: gameType,
+      difficultyLevel: difficultyLevel,
     );
+    if (gameType == 'odd_one_out') {
+      // The fresh server session has no board, so `record_action` would
+      // 422 ("no server board") and drop the round. Fetch a fresh board
+      // for the NEW session first — same path + query the screen uses
+      // (`oddOneOutBoardPath`: session_id + difficulty_level). The server
+      // re-scores the buffered taps against it (server-truth; offline
+      // taps were never judged locally). A failing fetch propagates so
+      // the item stays failed/retryable via `syncNow` → `markSyncItemFailed`
+      // (which keeps `syncedAt` NULL).
+      await api.getJson(
+        '${AppConfig.apiV1}/games/odd-one-out/board',
+        query: {
+          'session_id': sessionId,
+          'difficulty_level': '$difficultyLevel',
+        },
+      );
+    }
     final actions = (payload['actions'] as List? ?? const [])
         .cast<Map<String, dynamic>>();
     for (final action in actions) {
