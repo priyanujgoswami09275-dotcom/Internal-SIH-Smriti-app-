@@ -15,6 +15,7 @@
 library;
 
 import 'dart:async';
+import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 
@@ -69,6 +70,73 @@ class OfflineSyncService {
       },
       createdAt: DateTime.now(),
     ));
+  }
+
+  /// Clinical-note queue item builder (pure — unit-tested without a database).
+  ///
+  /// Notes ride the existing `offline_symptom` pipeline (no new enum, no
+  /// migration): the backend consumer materializes `offline_symptom`/`create`
+  /// into an encrypted `SymptomLog`, categorized by entry `source`. The local
+  /// queue id is timestamp-based like the other enqueue helpers; `resourceId`
+  /// is a client-generated UUID v4 (stdlib `dart:math` only — no new
+  /// dependency) because `/api/v1/sync` requires a UUID `resource_id`.
+  static SyncQueueItem clinicalNoteItem({
+    required String patientId,
+    required String enteredBy,
+    required String source,
+    required int severity,
+    required String notes,
+    required DateTime recordedAt,
+  }) {
+    assert(severity >= 1 && severity <= 5, 'severity must be 1-5');
+    final ms = DateTime.now().millisecondsSinceEpoch;
+    return SyncQueueItem(
+      id: 'clinical_${ms}_$patientId',
+      patientId: patientId,
+      resourceType: 'offline_symptom',
+      operation: 'create',
+      resourceId: _newUuidV4(),
+      payload: {
+        'entered_by': enteredBy,
+        'source': source,
+        'severity': severity,
+        'notes': notes,
+        'recorded_at': recordedAt.toIso8601String(),
+      },
+      createdAt: DateTime.now(),
+    );
+  }
+
+  /// Queue a clinical note for offline-safe delivery via the symptom pipeline.
+  /// The flush path (`syncNow` → `_pushGeneric`) already posts the correct
+  /// `/api/v1/sync` envelope for generic items, so nothing changes there.
+  Future<void> enqueueClinicalNote({
+    required String patientId,
+    required String enteredBy,
+    required String source,
+    required int severity,
+    required String notes,
+    required DateTime recordedAt,
+  }) async {
+    await db.enqueueSyncItem(clinicalNoteItem(
+      patientId: patientId,
+      enteredBy: enteredBy,
+      source: source,
+      severity: severity,
+      notes: notes,
+      recordedAt: recordedAt,
+    ));
+  }
+
+  /// Client-generated UUID v4 without new dependencies.
+  static String _newUuidV4() {
+    final random = Random.secure();
+    final bytes = List<int>.generate(16, (_) => random.nextInt(256));
+    bytes[6] = (bytes[6] & 0x0f) | 0x40; // version 4
+    bytes[8] = (bytes[8] & 0x3f) | 0x80; // variant RFC 4122
+    final hex = bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+    return '${hex.substring(0, 8)}-${hex.substring(8, 12)}-'
+        '${hex.substring(12, 16)}-${hex.substring(16, 20)}-${hex.substring(20)}';
   }
 
   Future<void> enqueueGameSession({

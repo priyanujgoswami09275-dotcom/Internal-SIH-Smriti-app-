@@ -6,13 +6,15 @@ library;
 
 import 'package:flutter/material.dart';
 import '../models/shared_models.dart';
-import '../services/api_service.dart';
+import '../services/auth_session.dart';
+import '../services/offline_sync_service.dart';
 import '../theme/monad_theme.dart';
 import '../widgets/monad/monad_pill_button.dart';
 
 class ClinicalNotesScreen extends StatefulWidget {
   final String patientId;
-  const ClinicalNotesScreen({super.key, required this.patientId});
+  final OfflineSyncService? sync;
+  const ClinicalNotesScreen({super.key, required this.patientId, this.sync});
 
   @override
   State<ClinicalNotesScreen> createState() => _ClinicalNotesScreenState();
@@ -33,28 +35,40 @@ class _ClinicalNotesScreenState extends State<ClinicalNotesScreen> {
   }
 
   Future<void> _save() async {
-    if (_notes.text.trim().isEmpty) {
+    final notesText = _notes.text.trim();
+    if (notesText.isEmpty) {
       setState(() => _result = 'Please enter notes.');
+      return;
+    }
+    final user = AuthSession.instance.user;
+    if (user == null) {
+      setState(() => _result = 'Please sign in again.');
       return;
     }
     setState(() { _saving = true; _result = null; });
     try {
-      // POST to /api/v1/sync — clinical observation; offline-safe queue path
-      // is the same one used by symptom logs. The backend categorizes on its end.
-      await ApiService.instance.postJson(
-        '/api/v1/sync',
-        body: {
-          'patient_id': widget.patientId,
-          'kind': 'clinical_observation',
-          'severity': _severity,
-          'notes': _notes.text.trim(),
-          'observation': _observation.text.trim(),
-        },
+      // Offline-safe: enqueue onto the offline_symptom pipeline (the same one
+      // used by symptom logs). The backend categorizes on its end by source.
+      // SymptomLog.severity is a 1-5 scale; the screen offers low/medium/high.
+      final severity = _severity == 'high' ? 4 : _severity == 'medium' ? 3 : 2;
+      final source =
+          user.role == Role.ashaWorker ? 'manual_asha' : 'manual_caregiver';
+      final observationText = _observation.text.trim();
+      final combined = observationText.isEmpty
+          ? notesText
+          : '$observationText\n$notesText';
+      await (widget.sync ?? OfflineSyncService.instance).enqueueClinicalNote(
+        patientId: widget.patientId,
+        enteredBy: user.id,
+        source: source,
+        severity: severity,
+        notes: combined,
+        recordedAt: DateTime.now(),
       );
       if (!mounted) return;
       setState(() {
         _saving = false;
-        _result = 'Saved successfully.';
+        _result = 'Queued — will send when online.';
         _notes.clear();
         _observation.clear();
       });
@@ -120,7 +134,7 @@ class _ClinicalNotesScreenState extends State<ClinicalNotesScreen> {
             if (_result != null) ...[
               const SizedBox(height: 16),
               Text(_result!, style: Monad.monoBodySm.copyWith(
-                color: _result!.contains('successfully') || _result!.contains('Saved') ? Monad.teaGreen : Monad.crimson,
+                color: _result!.contains('Queued') || _result!.contains('successfully') || _result!.contains('Saved') ? Monad.teaGreen : Monad.crimson,
               )),
             ],
           ],
