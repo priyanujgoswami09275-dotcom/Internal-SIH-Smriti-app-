@@ -19,7 +19,17 @@ SEEDS = [
 
 
 def upgrade() -> None:
-    op.execute("ALTER TYPE gametypeenum ADD VALUE 'number_recall'")
+    # Existence-guarded: enum values survive downgrade (PG cannot drop them),
+    # so an unguarded ADD VALUE breaks the downgrade→upgrade round-trip.
+    bind = op.get_bind()
+    if bind.dialect.name == "postgresql":
+        op.execute(
+            "DO $$ BEGIN "
+            "IF NOT EXISTS (SELECT 1 FROM pg_enum e JOIN pg_type t ON e.enumtypid = t.oid "
+            "WHERE t.typname = 'gametypeenum' AND e.enumlabel = 'number_recall') THEN "
+            "ALTER TYPE gametypeenum ADD VALUE 'number_recall'; "
+            "END IF; END $$;"
+        )
     config = sa.table(
         "game_level_config",
         sa.column("game_type", sa.String(50)),

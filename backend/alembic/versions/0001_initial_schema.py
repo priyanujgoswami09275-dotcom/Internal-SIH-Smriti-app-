@@ -58,7 +58,7 @@ sync_resource_enum = ENUM(
 sync_operation_enum = ENUM("create", "update", "delete", name="syncoperationenum", create_type=False)
 symptom_source_enum = ENUM(
     "manual_caregiver", "manual_asha", "manual_clinician",
-    name="symptomentrysourcenum", create_type=False,
+    name="symptomentrysourceenum", create_type=False,
 )
 document_type_enum = ENUM(
     "pdf", "scanned_image", "report", "prescription",

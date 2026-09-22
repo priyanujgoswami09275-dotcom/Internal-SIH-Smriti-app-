@@ -23,7 +23,15 @@ SEEDS = [
 def upgrade() -> None:
     bind = op.get_bind()
     if bind.dialect.name == "postgresql":
-        op.execute("ALTER TYPE gametypeenum ADD VALUE 'odd_one_out'")
+        # Existence-guarded: enum values survive downgrade (PG cannot drop
+        # them), so an unguarded ADD VALUE breaks the round-trip.
+        op.execute(
+            "DO $$ BEGIN "
+            "IF NOT EXISTS (SELECT 1 FROM pg_enum e JOIN pg_type t ON e.enumtypid = t.oid "
+            "WHERE t.typname = 'gametypeenum' AND e.enumlabel = 'odd_one_out') THEN "
+            "ALTER TYPE gametypeenum ADD VALUE 'odd_one_out'; "
+            "END IF; END $$;"
+        )
     columns = [
         column["name"]
         for column in sa.inspect(bind).get_columns("game_sessions")

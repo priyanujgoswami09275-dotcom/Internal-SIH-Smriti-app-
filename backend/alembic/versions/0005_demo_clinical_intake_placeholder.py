@@ -19,4 +19,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_column("patients", "clinical_features")
+    # Symmetric with upgrade: drop only when the column exists.
+    columns = sa.inspect(op.get_bind()).get_columns("patients")
+    if any(column["name"] == "clinical_features" for column in columns):
+        op.drop_column("patients", "clinical_features")

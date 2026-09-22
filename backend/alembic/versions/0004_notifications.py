@@ -44,3 +44,7 @@ def downgrade():
     op.drop_table('notification_deliveries')
     op.drop_index('ix_user_device_tokens_user_id', table_name='user_device_tokens')
     op.drop_table('user_device_tokens')
+    # The inline enums are created with the tables; without these drops they
+    # orphan in PG and the re-upgrade fails with DuplicateObject.
+    op.execute("DROP TYPE IF EXISTS notificationkindenum")
+    op.execute("DROP TYPE IF EXISTS notificationdeliverystatusenum")
