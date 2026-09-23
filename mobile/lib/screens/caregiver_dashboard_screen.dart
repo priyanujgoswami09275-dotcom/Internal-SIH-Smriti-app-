@@ -19,8 +19,10 @@ import '../widgets/dev_role_menu.dart';
 import '../widgets/monad/monad_pill_button.dart';
 import '../widgets/risk_screening_card.dart';
 import 'caregiver/sections/alerts_card.dart';
+import 'caregiver/sections/compliance_log.dart';
 import 'caregiver/sections/metrics_tiles.dart';
 import 'caregiver/sections/patient_switcher.dart';
+import 'caregiver/sections/schedules_card.dart';
 import 'caregiver/sections/trends_section.dart';
 import 'clinical_notes_screen.dart';
 import 'rag_upload_screen.dart';
@@ -414,11 +416,11 @@ class _CaregiverDashboardScreenState extends State<CaregiverDashboardScreen> {
           const SizedBox(height: 24),
           _sectionHeader('Compliance'),
           const SizedBox(height: 12),
-          _complianceLog(),
+          ComplianceLog(events: _events),
           const SizedBox(height: 24),
           _sectionHeader('Schedules'),
           const SizedBox(height: 12),
-          _schedulesCard(),
+          SchedulesCard(schedules: _schedules, onAdd: _addSchedule, onRemove: _removeSchedule),
           const SizedBox(height: 24),
           _sectionHeader('Medical Documents'),
           const SizedBox(height: 12),
@@ -438,166 +440,6 @@ class _CaregiverDashboardScreenState extends State<CaregiverDashboardScreen> {
   /// (the server returns exactly their one linked patient anyway).
   bool get _showPatientSwitcher =>
       AuthSession.instance.user?.role == Role.ashaWorker;
-
-  /// Reminder compliance log — today's events with escalation status.
-  Widget _complianceLog() {
-    final events = _events;
-    return Card(
-      elevation: 0,
-      shape: Monad.cardShape,
-      child: Padding(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('Today\'s reminders', style: Monad.subheading),
-            const SizedBox(height: 12),
-            if (events == null)
-              Text('Reminder log unavailable right now.',
-                  style: Monad.monoBodySm)
-            else if (events.isEmpty)
-              Text('No reminders scheduled for today.',
-                  style: Monad.monoBodySm)
-            else
-              ...events.map((e) {
-                final escalated = e.status == ReminderStatus.escalated;
-                final missed = e.status == ReminderStatus.missed;
-                final done = !escalated && !missed;
-                final tint = done
-                    ? Monad.tintMint
-                    : (escalated ? Monad.tintCoral : Monad.tintGold);
-                return Container(
-                  margin: const EdgeInsets.only(bottom: 10),
-                  decoration: BoxDecoration(
-                    color: tint,
-                    borderRadius:
-                        BorderRadius.circular(Monad.radiusMin),
-                    boxShadow: Monad.cardShadow,
-                  ),
-                  padding: const EdgeInsets.all(14),
-                  child: Row(
-                    children: [
-                      Icon(
-                        done
-                            ? Icons.check_circle
-                            : escalated
-                                ? Icons.notification_important
-                                : Icons.event_busy,
-                        color: Monad.offBlack,
-                        size: 28,
-                      ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              done
-                                  ? 'DONE'
-                                  : e.status.name.toUpperCase(),
-                              style: Monad.monoLabel,
-                            ),
-                            Text(
-                              '${e.scheduledAt.toLocal()}'
-                                  .substring(0, 16),
-                              style: Monad.monoCaption.copyWith(
-                                  color: Monad.offBlack),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ],
-                  ),
-                );
-              }),
-          ],
-        ),
-      ),
-    );
-  }
-
-  /// Schedule editing — same create/delete endpoints as the web dashboard.
-  Widget _schedulesCard() {
-    final schedules = _schedules;
-    return Card(
-      elevation: 0,
-      shape: Monad.cardShape,
-      child: Padding(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Text('Schedules', style: Monad.subheading),
-                TextButton.icon(
-                  onPressed: _addSchedule,
-                  icon: const Icon(Icons.add, size: 18),
-                  label: const Text('ADD'),
-                ),
-              ],
-            ),
-            const SizedBox(height: 8),
-            if (schedules == null)
-              Text('Schedules unavailable right now.', style: Monad.monoBodySm)
-            else if (schedules.isEmpty)
-              Text('No schedules yet.', style: Monad.monoBodySm)
-            else
-              ...schedules.map((s) {
-                final typeColor =
-                    Monad.reminderColor(s.reminderType.name);
-                // Fixed type mapping: medicine = lakeBlue, water = skyBlue,
-                // food = gold, exercise = mint (tinted surfaces + icon +
-                // label together).
-                final tint = s.reminderType == ReminderType.medicine
-                    ? Color.lerp(Monad.parchment, Monad.lakeBlue, 0.12)!
-                    : s.reminderType == ReminderType.water
-                        ? Monad.tintSky
-                        : s.reminderType == ReminderType.food
-                            ? Monad.tintGold
-                            : Monad.tintMint;
-                return ListTile(
-                  dense: true,
-                  contentPadding: EdgeInsets.zero,
-                  leading: Container(
-                    decoration: BoxDecoration(
-                      color: tint,
-                      borderRadius:
-                          BorderRadius.circular(Monad.radiusMin),
-                    ),
-                    padding: const EdgeInsets.all(8),
-                    child: Icon(
-                      s.reminderType == ReminderType.medicine
-                          ? Icons.medication
-                          : s.reminderType == ReminderType.water
-                              ? Icons.water_drop
-                              : s.reminderType == ReminderType.food
-                                  ? Icons.restaurant
-                                  : Icons.directions_walk,
-                      color: typeColor == Monad.mint || typeColor == Monad.gold
-                          ? Monad.offBlack
-                          : typeColor,
-                      size: 24,
-                    ),
-                  ),
-                  title: Text(s.reminderType.name.toUpperCase(),
-                      style: Monad.patientBody),
-                  subtitle: Text('${s.cadence} · ${s.isActive ? 'active' : 'paused'}',
-                      style: Monad.monoBodySm),
-                  trailing: IconButton(
-                    tooltip: 'Remove',
-                    icon: const Icon(Icons.delete_outline, size: 20),
-                    color: Monad.graphite,
-                    onPressed: () => _removeSchedule(s.id),
-                  ),
-                );
-              }),
-          ],
-        ),
-      ),
-    );
-  }
 
   /// RAG medical-document entry — staff-only by construction (this screen
   /// never renders for patients). Pushes the upload screen for the selected
