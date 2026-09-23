@@ -18,9 +18,10 @@ import '../theme/monad_theme.dart';
 import '../widgets/dev_role_menu.dart';
 import '../widgets/monad/monad_pill_button.dart';
 import '../widgets/risk_screening_card.dart';
-import '../widgets/trend_chart.dart';
 import 'caregiver/sections/alerts_card.dart';
+import 'caregiver/sections/metrics_tiles.dart';
 import 'caregiver/sections/patient_switcher.dart';
+import 'caregiver/sections/trends_section.dart';
 import 'clinical_notes_screen.dart';
 import 'rag_upload_screen.dart';
 import 'risk_intake_screen.dart';
@@ -352,7 +353,7 @@ class _CaregiverDashboardScreenState extends State<CaregiverDashboardScreen> {
           AlertsCard(summary: summary, onAcknowledge: _acknowledge),
           if ((summary['active_alerts'] as List? ?? []).isNotEmpty)
             const SizedBox(height: 16),
-          _metrics(summary),
+          MetricsTiles(summary: summary),
           const SizedBox(height: 24),
           if (summary['view'] == 'clinical') ...[
             _sectionHeader('Risk screening'),
@@ -409,7 +410,7 @@ class _CaregiverDashboardScreenState extends State<CaregiverDashboardScreen> {
           ],
           _sectionHeader('Trends'),
           const SizedBox(height: 12),
-          _trends(summary), // hidden server-side for view=basic
+          TrendsSection(summary: summary), // hidden server-side for view=basic
           const SizedBox(height: 24),
           _sectionHeader('Compliance'),
           const SizedBox(height: 12),
@@ -437,85 +438,6 @@ class _CaregiverDashboardScreenState extends State<CaregiverDashboardScreen> {
   /// (the server returns exactly their one linked patient anyway).
   bool get _showPatientSwitcher =>
       AuthSession.instance.user?.role == Role.ashaWorker;
-
-  Widget _metrics(Map<String, dynamic> summary) {
-    final isClinical = summary['view'] == 'clinical';
-    final compliance = (summary['compliance_pct'] as num? ?? 0).toDouble();
-    final games = summary['games_played'] as int? ?? 0;
-    final ack = summary['reminders_acknowledged'] as int? ?? 0;
-    final total = summary['reminders_total'] as int? ?? 0;
-    final missed = summary['reminders_missed'] as int? ?? 0;
-    final tiles = <Widget>[
-      if (isClinical)
-        _tile(
-          'Cognitive accuracy',
-          '${((summary['accuracy_pct'] as num? ?? 0) as double).toStringAsFixed(0)}%',
-          '$games games (7d)',
-          Icons.psychology,
-          Monad.tintSky,
-        ),
-      _tile('Compliance', '${compliance.toStringAsFixed(0)}%',
-          '$ack/$total acknowledged', Icons.alarm_on, Monad.tintMint),
-      _tile('Missed', '$missed', 'last 7 days', Icons.event_busy,
-          missed > 0 ? Monad.tintCoral : Monad.tintGold),
-    ];
-    return GridView.count(
-      crossAxisCount: 2,
-      shrinkWrap: true,
-      physics: const NeverScrollableScrollPhysics(),
-      mainAxisSpacing: 12,
-      crossAxisSpacing: 12,
-      childAspectRatio: 1.15,
-      children: tiles,
-    );
-  }
-
-  /// 14-day sparklines — same daily_trends array the web charts render.
-  /// Server strips it for basic tier, so basic caregivers see the note.
-  Widget _trends(Map<String, dynamic> summary) {
-    final trends = (summary['daily_trends'] as List? ?? const [])
-        .cast<Map<String, dynamic>>();
-    if (trends.isEmpty) {
-      return Container(
-        padding: const EdgeInsets.all(14),
-        decoration: BoxDecoration(
-          color: Monad.tintGold,
-          borderRadius: BorderRadius.circular(Monad.radiusMin),
-          border: Border.all(color: Monad.ash, width: 1),
-        ),
-        child: const Row(children: [
-          Icon(Icons.lock_outline, size: 22, color: Monad.graphite),
-          SizedBox(width: 10),
-          Expanded(
-            child: Text(
-              'Basic view — accuracy and response-time trends are visible '
-              'to linked clinical staff only.',
-              style: Monad.monoBodySm,
-            ),
-          ),
-        ]),
-      );
-    }
-    final acc = trends
-        .map((t) => (t['accuracy_pct'] as num?)?.toDouble())
-        .toList();
-    final rt = trends
-        .map((t) => (t['avg_response_time_ms'] as num?)?.toDouble())
-        .toList();
-    return Column(
-      children: [
-        TrendChart(
-            values: acc,
-            title: 'Accuracy trend (14d)',
-            subtitle: '% per active day'),
-        const SizedBox(height: 12),
-        TrendChart(
-            values: rt,
-            title: 'Response time trend (14d)',
-            subtitle: 'ms per active day'),
-      ],
-    );
-  }
 
   /// Reminder compliance log — today's events with escalation status.
   Widget _complianceLog() {
@@ -786,36 +708,4 @@ class _CaregiverDashboardScreenState extends State<CaregiverDashboardScreen> {
     );
   }
 
-  Widget _tile(
-      String title, String value, String subtitle, IconData icon, Color tint) {
-    return Card(
-      elevation: 0,
-      shape: Monad.cardShape,
-      child: Padding(
-        padding: const EdgeInsets.all(20),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Container(
-              decoration: BoxDecoration(
-                color: tint,
-                borderRadius: BorderRadius.circular(Monad.radiusMin),
-              ),
-              padding: const EdgeInsets.all(8),
-              child: Icon(icon, color: Monad.offBlack, size: 22),
-            ),
-            const SizedBox(height: 10),
-            Text(value,
-                style: Monad.headingSm.copyWith(fontSize: 32),
-                overflow: TextOverflow.ellipsis),
-            const SizedBox(height: 4),
-            Text(title.toUpperCase(),
-                style: Monad.monoCaption, overflow: TextOverflow.ellipsis),
-            Text(subtitle, style: Monad.monoCaption),
-          ],
-        ),
-      ),
-    );
-  }
 }
