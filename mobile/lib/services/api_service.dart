@@ -311,6 +311,7 @@ class ApiService {
       '${AppConfig.apiV1}/patients/$patientId/risk-screening',
       body: payload,
     );
+    if (data == null) return <String, dynamic>{};
     return Map<String, dynamic>.from(data as Map);
   }
 

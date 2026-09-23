@@ -240,5 +240,17 @@ void main() {
       expect(result['status'], 'ok');
       expect(api.authToken, 'new');
     });
+
+    test('empty 2xx body returns {} without throwing', () async {
+      final backend = _FakeBackend((method, uri, body) => (
+        status: 200,
+        json: null, // encodes to empty body ('')
+      ));
+      HttpOverrides.global = backend;
+      addTearDown(() => HttpOverrides.global = null);
+      final api = ApiService(baseUrl: 'http://fake.invalid')..authToken = 'tok-1';
+      final result = await api.submitRiskScreening(patientId: 'p1', payload: {'Age': 72});
+      expect(result, <String, dynamic>{});
+    });
   });
 }
