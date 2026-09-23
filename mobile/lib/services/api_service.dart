@@ -2,8 +2,8 @@
 ///
 /// Endpoint contract matches `backend/app/routes/*`:
 ///   - auth:      register, login, refresh, logout, me
-///   - patients:  me (own profile)
-///   - games:     sessions, complete, content packs, boards, routine board
+///   - patients:  me (own profile), risk-screening (submit + latest GET)
+///   - games:     sessions, complete (+ shadow_* fields), content packs, boards, routine board
 ///   - reminders: schedules, events acknowledge
 ///   - companion: chat/text (voice companion)
 ///   - speech:    asr + tts via the server provider chain (Sarvam/Bhashini/mock)
@@ -300,6 +300,39 @@ class ApiService {
     );
   }
 
+  /// POST /patients/{id}/risk-screening — experimental preliminary screening.
+  /// Server enforces staff/caregiver role, clinical tier, health_data consent;
+  /// 403 detail (health_data consent) surfaces in ApiException.message.
+  Future<Map<String, dynamic>> submitRiskScreening({
+    required String patientId,
+    required Map<String, dynamic> payload,
+  }) async {
+    final data = await postJson(
+      '${AppConfig.apiV1}/patients/$patientId/risk-screening',
+      body: payload,
+    );
+    return Map<String, dynamic>.from(data as Map);
+  }
+
+  /// GET /patients/{id}/risk-screening — latest persisted screening for
+  /// rehydration. Returns null when not assessed, unavailable to this role
+  /// (403), or the request fails: callers treat that as "no data yet".
+  Future<Map<String, dynamic>?> getRiskScreening(String patientId) async {
+    try {
+      final data = await getJson('${AppConfig.apiV1}/patients/$patientId/risk-screening');
+      if (data is! Map) return null;
+      final map = Map<String, dynamic>.from(data);
+      if (map['status'] == 'not_assessed') return null;
+      return map;
+    } on ApiException catch (e) {
+      developer.log(
+        'risk screening GET skipped: ${e.statusCode} ${e.message}',
+        name: 'ApiService',
+      );
+      return null;
+    }
+  }
+
   // =====================================================================
   // Games
   // =====================================================================
@@ -537,5 +570,57 @@ class ApiService {
   Future<List<Map<String, dynamic>>> auditLogs({int limit = 50}) async {
     final data = await getJson('${AppConfig.apiV1}/compliance/audit-logs?limit=$limit');
     return (data as List).cast<Map<String, dynamic>>();
+  }
+
+  /// Authed multipart upload → POST /reports/documents/upload.
+  /// `patient_id` rides as query param AND form field (FastAPI signature
+  /// declares query; field keeps the contract either way — see the web
+  /// dashboard). Rebuilds the MultipartRequest on refresh retry (a sent
+  /// request cannot be re-streamed).
+  Future<Map<String, dynamic>> uploadDocument({
+    required String patientId,
+    required Uint8List bytes,
+    required String filename,
+    String docType = 'prescription',
+    String? title,
+  }) async {
+    http.MultipartRequest build() {
+      final req = http.MultipartRequest(
+        'POST',
+        _uri('${AppConfig.apiV1}/reports/documents/upload',
+            {'patient_id': patientId}),
+      );
+      // package:http sets the multipart Content-Type (with boundary) itself.
+      final h = _headers()..remove('Content-Type');
+      req.headers.addAll(h);
+      req.fields['patient_id'] = patientId;
+      req.fields['doc_type'] = docType;
+      if (title != null && title.isNotEmpty) req.fields['title'] = title;
+      req.files.add(http.MultipartFile.fromBytes('file', bytes, filename: filename));
+      return req;
+    }
+
+    var streamed = await build().send();
+    var res = await http.Response.fromStream(streamed);
+    // One refresh attempt on 401, then retry the original request
+    // (mirrors _send; rebuild required — a sent request cannot re-stream).
+    if (res.statusCode == 401 && refreshToken != null) {
+      final refreshed = await _tryRefresh();
+      if (refreshed) {
+        streamed = await build().send();
+        res = await http.Response.fromStream(streamed);
+      }
+    }
+    if (res.statusCode == 401 && !_inUnauthorizedHandler) {
+      _inUnauthorizedHandler = true;
+      try {
+        await onUnauthorized?.call();
+      } finally {
+        _inUnauthorizedHandler = false;
+      }
+    }
+    final data = _decode(res);
+    if (data == null) return <String, dynamic>{};
+    return Map<String, dynamic>.from(data as Map);
   }
 }
