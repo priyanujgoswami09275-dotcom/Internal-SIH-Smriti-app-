@@ -71,12 +71,14 @@ class RagUploadScreen extends StatefulWidget {
   final Uint8List? testBytes;
   final String? testFilename;
   final Future<http.Response> Function(http.MultipartRequest)? sendForTest;
+  final VoidCallback? onConsentMissing;
   const RagUploadScreen({
     super.key,
     required this.patientId,
     this.testBytes,
     this.testFilename,
     this.sendForTest,
+    this.onConsentMissing,
   });
 
   @override
@@ -87,6 +89,12 @@ class _RagUploadScreenState extends State<RagUploadScreen> {
   bool _uploading = false;
   String? _result;
   String? _filePath;
+  bool _consentMissing = false;
+
+  /// Structural consent marker for the orchestrator's documents card
+  /// (Amendment 1: explicit state alongside the inline failure message).
+  @visibleForTesting
+  String? get lastOutcome => _consentMissing ? 'consent_missing' : null;
 
   void _pickFile() {
     // Web/desktop: file picker via HTML input (not implemented fully here);
@@ -140,12 +148,18 @@ class _RagUploadScreenState extends State<RagUploadScreen> {
         res = await http.Response.fromStream(streamed);
       }
       if (!mounted) return;
+      final consentMissing =
+          res.statusCode == 403 && res.body.contains('health_data');
       setState(() {
         _uploading = false;
+        if (consentMissing) _consentMissing = true;
         _result = res.statusCode >= 200 && res.statusCode < 300
             ? 'Uploaded successfully (HTTP ${res.statusCode}).'
             : formatRagUploadFailure(res.statusCode, res.body);
       });
+      // Structural consent state fires alongside the inline message
+      // (no silent failures: both the message AND the callback fire).
+      if (consentMissing) widget.onConsentMissing?.call();
     } catch (e) {
       if (!mounted) return;
       setState(() {

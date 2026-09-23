@@ -8,6 +8,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:eldercare_mobile/main.dart';
+import 'package:eldercare_mobile/screens/caregiver/sections/documents_card.dart';
 import 'package:eldercare_mobile/screens/caregiver_dashboard_screen.dart';
 import 'package:eldercare_mobile/screens/rag_upload_screen.dart';
 import 'package:eldercare_mobile/services/api_service.dart';
@@ -297,6 +298,94 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.text('Medical Documents'), findsWidgets);
+      expect(find.text('UPLOAD DOCUMENT'), findsOneWidget);
+    });
+  });
+
+  group('task 6 consent state', () {
+    testWidgets('consent 403 fires onConsentMissing + lastOutcome',
+        (tester) async {
+      SharedPreferences.setMockInitialValues({});
+      var consentFired = false;
+      late RagUploadScreen screen;
+      screen = RagUploadScreen(
+        patientId: 'p1',
+        testBytes: Uint8List.fromList(utf8.encode('x')),
+        testFilename: 'n.pdf',
+        onConsentMissing: () => consentFired = true,
+        sendForTest: (req) async => http.Response(
+          jsonEncode(
+              {'detail': "Active consent required for scope 'health_data'"}),
+          403,
+          headers: const {'Content-Type': 'application/json'},
+        ),
+      );
+      await tester.pumpWidget(MaterialApp(home: screen));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('UPLOAD ▸'));
+      await tester.pumpAndSettle();
+
+      // Structural consent state fires...
+      expect(consentFired, isTrue);
+      final state =
+          tester.state<State<RagUploadScreen>>(find.byType(RagUploadScreen));
+      expect((state as dynamic).lastOutcome, 'consent_missing');
+      // ...AND the formatted failure still renders inline (no silence).
+      expect(find.textContaining("scope 'health_data'"), findsOneWidget);
+      expect(find.textContaining('Upload failed'), findsOneWidget);
+      expect(screen, isNotNull);
+    });
+
+    testWidgets(
+        'DocumentsCard consentMissing=true renders exact consent copy + button',
+        (tester) async {
+      var tapped = false;
+      await tester.pumpWidget(MaterialApp(
+        home: Scaffold(
+          body: DocumentsCard(
+            patientId: 'p1',
+            consentMissing: true,
+            onUpload: () => tapped = true,
+          ),
+        ),
+      ));
+
+      expect(
+        find.text(
+            "health_data consent required — this patient has not granted consent for health data, so documents can't be uploaded until they do."),
+        findsOneWidget,
+      );
+      expect(find.text('Medical Documents'), findsOneWidget);
+      expect(find.text('UPLOAD DOCUMENT'), findsOneWidget);
+      expect(find.textContaining('They are embedded and searchable'),
+          findsNothing);
+
+      await tester.tap(find.text('UPLOAD DOCUMENT'));
+      expect(tapped, isTrue);
+    });
+
+    testWidgets('DocumentsCard consentMissing=false renders normal helper text',
+        (tester) async {
+      await tester.pumpWidget(const MaterialApp(
+        home: Scaffold(
+          body: DocumentsCard(
+            patientId: 'p1',
+            consentMissing: false,
+            onUpload: null,
+          ),
+        ),
+      ));
+
+      expect(find.textContaining('health_data consent required'), findsNothing);
+      expect(
+        find.text(
+          'Upload prescriptions, discharge summaries, care plans. '
+          'They are embedded and searchable in the clinical Q&A flow.',
+        ),
+        findsOneWidget,
+      );
+      expect(find.text('Medical Documents'), findsOneWidget);
       expect(find.text('UPLOAD DOCUMENT'), findsOneWidget);
     });
   });

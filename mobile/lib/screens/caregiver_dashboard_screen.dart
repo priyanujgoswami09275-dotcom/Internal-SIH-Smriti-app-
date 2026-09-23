@@ -20,6 +20,7 @@ import '../widgets/monad/monad_pill_button.dart';
 import '../widgets/risk_screening_card.dart';
 import 'caregiver/sections/alerts_card.dart';
 import 'caregiver/sections/compliance_log.dart';
+import 'caregiver/sections/documents_card.dart';
 import 'caregiver/sections/metrics_tiles.dart';
 import 'caregiver/sections/patient_switcher.dart';
 import 'caregiver/sections/schedules_card.dart';
@@ -47,6 +48,7 @@ class _CaregiverDashboardScreenState extends State<CaregiverDashboardScreen> {
   List<ReminderEventModel>? _events;
   List<ReminderScheduleModel>? _schedules;
   Map<String, dynamic>? _riskScreeningResult;
+  bool _consentMissing = false;
   bool _loading = true;
   String? _error;
 
@@ -96,6 +98,7 @@ class _CaregiverDashboardScreenState extends State<CaregiverDashboardScreen> {
   Future<void> _select(String patientId) async {
     setState(() {
       _loading = true;
+      _consentMissing = false; // never show the previous patient's consent state
       _riskScreeningResult = null; // never show the previous patient's score
     });
     try {
@@ -241,6 +244,22 @@ class _CaregiverDashboardScreenState extends State<CaregiverDashboardScreen> {
       ScaffoldMessenger.of(context)
           .showSnackBar(SnackBar(content: Text('Could not remove: $e')));
     }
+  }
+
+  /// Pushes the RAG upload screen for the selected patient; a consent 403
+  /// fires `onConsentMissing`, flipping the documents card to its tinted
+  /// health_data-consent-required state (server 403s surface inline there).
+  Future<void> _openUpload() async {
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => RagUploadScreen(
+          patientId: _selectedPatientId!,
+          onConsentMissing: () {
+            if (mounted) setState(() => _consentMissing = true);
+          },
+        ),
+      ),
+    );
   }
 
   @override
@@ -424,7 +443,11 @@ class _CaregiverDashboardScreenState extends State<CaregiverDashboardScreen> {
           const SizedBox(height: 24),
           _sectionHeader('Medical Documents'),
           const SizedBox(height: 12),
-          _documentsCard(),
+          DocumentsCard(
+            patientId: _selectedPatientId,
+            consentMissing: _consentMissing,
+            onUpload: _selectedPatientId == null ? null : _openUpload,
+          ),
           const SizedBox(height: 24),
           _sectionHeader('Audit trail'),
           const SizedBox(height: 12),
@@ -441,46 +464,7 @@ class _CaregiverDashboardScreenState extends State<CaregiverDashboardScreen> {
   bool get _showPatientSwitcher =>
       AuthSession.instance.user?.role == Role.ashaWorker;
 
-  /// RAG medical-document entry — staff-only by construction (this screen
-  /// never renders for patients). Pushes the upload screen for the selected
-  /// patient; server 403s (clinical-tier/consent) surface there with detail.
-  Widget _documentsCard() {
-    final patientId = _selectedPatientId;
-    return Card(
-      elevation: 0,
-      shape: Monad.cardShape,
-      child: Padding(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text('Medical Documents', style: Monad.subheading),
-            const SizedBox(height: 8),
-            const Text(
-              'Upload prescriptions, discharge summaries, care plans. '
-              'They are embedded and searchable in the clinical Q&A flow.',
-              style: Monad.monoBodySm,
-            ),
-            const SizedBox(height: 16),
-            MonadPillButton(
-              label: 'Upload Document',
-              variant: MonadPillVariant.secondary,
-              onPressed: patientId == null
-                  ? null
-                  : () {
-                      Navigator.of(context).push(
-                        MaterialPageRoute<void>(
-                          builder: (_) =>
-                              RagUploadScreen(patientId: patientId),
-                        ),
-                      );
-                    },
-            ),
-          ],
-        ),
-      ),
-    );
-  }
+  /// RAG medical-document entry moved to `caregiver/sections/documents_card.dart`.
 
   /// DPDP audit view — read-only; admin-only on the server. Other roles
   /// see the honest "admin-only" state rather than an error.
