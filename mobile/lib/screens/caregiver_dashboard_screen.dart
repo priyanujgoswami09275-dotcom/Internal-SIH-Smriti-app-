@@ -9,6 +9,7 @@
 library;
 
 import 'package:flutter/material.dart';
+import 'dart:developer' as developer;
 
 import '../models/shared_models.dart';
 import '../services/api_service.dart';
@@ -16,9 +17,11 @@ import '../services/auth_session.dart';
 import '../theme/monad_theme.dart';
 import '../widgets/dev_role_menu.dart';
 import '../widgets/monad/monad_pill_button.dart';
+import '../widgets/risk_screening_card.dart';
 import '../widgets/trend_chart.dart';
 import 'clinical_notes_screen.dart';
 import 'rag_upload_screen.dart';
+import 'risk_intake_screen.dart';
 
 class CaregiverDashboardScreen extends StatefulWidget {
   final String caregiverId;
@@ -38,6 +41,7 @@ class _CaregiverDashboardScreenState extends State<CaregiverDashboardScreen> {
   Map<String, dynamic>? _summary;
   List<ReminderEventModel>? _events;
   List<ReminderScheduleModel>? _schedules;
+  Map<String, dynamic>? _riskScreeningResult;
   bool _loading = true;
   String? _error;
 
@@ -85,7 +89,10 @@ class _CaregiverDashboardScreenState extends State<CaregiverDashboardScreen> {
 
   /// Loads everything the selected patient's views need. Live connection only.
   Future<void> _select(String patientId) async {
-    setState(() => _loading = true);
+    setState(() {
+      _loading = true;
+      _riskScreeningResult = null; // never show the previous patient's score
+    });
     try {
       final summary = await _api.patientSummary(patientId);
       if (!mounted) return;
@@ -110,6 +117,19 @@ class _CaregiverDashboardScreenState extends State<CaregiverDashboardScreen> {
         if (mounted) setState(() => _schedules = schedules);
       } on Exception {
         if (mounted) setState(() => _schedules = null);
+      }
+      // Risk screening rehydration — clinical view only; server 403s for
+      // basic tier / missing consent are swallowed by getRiskScreening.
+      if (summary['view'] == 'clinical') {
+        try {
+          final risk = await _api.getRiskScreening(patientId);
+          if (mounted && _selectedPatientId == patientId) {
+            setState(() => _riskScreeningResult = risk);
+          }
+        } on Exception catch (e) {
+          developer.log('risk screening load failed: $e',
+              name: 'CaregiverDashboard');
+        }
       }
     } on ApiException catch (e) {
       if (!mounted) return;
@@ -221,7 +241,7 @@ class _CaregiverDashboardScreenState extends State<CaregiverDashboardScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      drawer: const DevRoleMenu(),
+      drawer: DevRoleMenu.enabled ? const DevRoleMenu() : null,
       appBar: AppBar(
         title: const Text('Caregiver Dashboard / তত্ত্বাৱধায়ক'),        centerTitle: false,
         actions: [
@@ -332,6 +352,59 @@ class _CaregiverDashboardScreenState extends State<CaregiverDashboardScreen> {
             const SizedBox(height: 16),
           _metrics(summary),
           const SizedBox(height: 24),
+          if (summary['view'] == 'clinical') ...[
+            _sectionHeader('Risk screening'),
+            const SizedBox(height: 12),
+            RiskScreeningCard(result: _riskScreeningResult),
+            const SizedBox(height: 8),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: MonadPillButton(
+                label: 'Run Screening (32 inputs)',
+                variant: MonadPillVariant.secondary,
+                onPressed: () {
+                  final patientId = _selectedPatientId;
+                  if (patientId == null) return;
+                  Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => RiskIntakeScreen(
+                        patientId: patientId,
+                        patientName: (summary['patient_name'] as String?) ??
+                            'this patient',
+                        onResult: (r) {
+                          if (mounted) {
+                            setState(() => _riskScreeningResult = r);
+                          }
+                        },
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ),
+            const SizedBox(height: 24),
+          ] else ...[
+            Container(
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: Monad.gold.withValues(alpha: 0.35),
+                borderRadius: BorderRadius.circular(Monad.radiusMin),
+                border: Border.all(color: Monad.ash, width: 1),
+              ),
+              child: Row(children: [
+                const Icon(Icons.lock_outline, size: 22, color: Monad.graphite),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    'Screening needs clinical tier / health-data consent — '
+                    'available to linked clinical staff only.',
+                    style: Monad.monoBodySm,
+                  ),
+                ),
+              ]),
+            ),
+            const SizedBox(height: 24),
+          ],
           _sectionHeader('Trends'),
           const SizedBox(height: 12),
           _trends(summary), // hidden server-side for view=basic

@@ -368,10 +368,17 @@ class PatientHome extends StatelessWidget {
           ),
         ],
       ),
-      drawer: const DevRoleMenu(),
+      drawer: DevRoleMenu.enabled ? const DevRoleMenu() : null,
       body: ListView(
         padding: const EdgeInsets.all(20),
         children: [
+          Padding(
+            padding: const EdgeInsets.only(bottom: Monad.spacing16),
+            child: Text(
+              'Your caregiver can add your health documents.',
+              style: Monad.monoBodySm.copyWith(color: Monad.smoke),
+            ),
+          ),
           _homeButton(
             context,
             icon: Icons.extension,

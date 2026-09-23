@@ -7,13 +7,17 @@
 /// unless explicitly passed).
 library;
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../services/auth_session.dart';
 import '../theme/monad_theme.dart';
 
 class DevRoleMenu extends StatelessWidget {
-  static const enabled = bool.fromEnvironment('DEV_MENU');
+  /// Dev-only: never active in release (kDebugMode) and only when explicitly
+  /// enabled with --dart-define=DEV_MENU=true.
+  static bool get enabled =>
+      kDebugMode && const bool.fromEnvironment('DEV_MENU');
 
   const DevRoleMenu({super.key});
 
