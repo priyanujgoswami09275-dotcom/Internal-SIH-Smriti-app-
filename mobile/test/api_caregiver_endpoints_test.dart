@@ -8,7 +8,9 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:eldercare_mobile/screens/rag_upload_screen.dart';
 import 'package:eldercare_mobile/services/api_service.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 typedef _Handler = ({int status, Object? json}) Function(
@@ -18,6 +20,8 @@ class _FakeBackend extends HttpOverrides {
   _FakeBackend(this.handler);
 
   final _Handler handler;
+  final List<({String method, Uri uri, Map<String, String> headers})>
+      requests = [];
 
   @override
   HttpClient createHttpClient(SecurityContext? context) => _FakeClient(this);
@@ -79,6 +83,10 @@ class _FakeRequest extends Fake implements HttpClientRequest {
 
   @override
   Future<HttpClientResponse> close() async {
+    final snap = <String, String>{};
+    headers.forEach(
+        (name, values) => snap[name.toLowerCase()] = values.join(','));
+    backend.requests.add((method: method, uri: uri, headers: snap));
     final res = backend.handler(method, uri, _body.toString());
     return _FakeResponse(res.status, res.json);
   }
@@ -199,6 +207,44 @@ void main() {
             .having((e) => e.message, 'message', contains('health_data'))),
       );
     });
+
+    test('401 then refresh then retry with new Authorization header', () async {
+      var uploadHits = 0;
+      final backend = _FakeBackend((method, uri, body) {
+        if (uri.path.endsWith('/reports/documents/upload')) {
+          uploadHits++;
+          return uploadHits == 1
+              ? (status: 401, json: {'detail': 'token expired'})
+              : (status: 200, json: {'document_id': 'd2'});
+        }
+        if (uri.path.endsWith('/auth/refresh')) {
+          return (
+            status: 200,
+            json: {'access_token': 'new', 'refresh_token': 'r2'},
+          );
+        }
+        return (status: 404, json: {'detail': 'no'});
+      });
+      HttpOverrides.global = backend;
+      addTearDown(() => HttpOverrides.global = null);
+      final api = ApiService(baseUrl: 'http://fake.invalid')
+        ..authToken = 'old'
+        ..refreshToken = 'r1';
+      final data = await api.uploadDocument(
+        patientId: 'p1',
+        bytes: Uint8List.fromList(utf8.encode('hi')),
+        filename: 'note.pdf',
+      );
+      expect(data['document_id'], 'd2');
+      expect(uploadHits, 2);
+      expect(api.authToken, 'new');
+      final uploadAuths = backend.requests
+          .where((r) => r.uri.path.endsWith('/reports/documents/upload'))
+          .map((r) => r.headers['authorization'])
+          .toList();
+      expect(uploadAuths, ['Bearer old', 'Bearer new'],
+          reason: 'retry must carry the refreshed Authorization header');
+    });
   });
 
   group('submitRiskScreening', () {
@@ -251,6 +297,55 @@ void main() {
       final api = ApiService(baseUrl: 'http://fake.invalid')..authToken = 'tok-1';
       final result = await api.submitRiskScreening(patientId: 'p1', payload: {'Age': 72});
       expect(result, <String, dynamic>{});
+    });
+  });
+
+  group('RagUploadScreen live (non-sendForTest) path', () {
+    testWidgets('401 → ApiService refresh → retry succeeds (no raw send)',
+        (tester) async {
+      var uploadHits = 0;
+      var refreshHits = 0;
+      final backend = _FakeBackend((method, uri, body) {
+        if (uri.path.endsWith('/reports/documents/upload')) {
+          uploadHits++;
+          return uploadHits == 1
+              ? (status: 401, json: {'detail': 'token expired'})
+              : (status: 200, json: {'document_id': 'd2'});
+        }
+        if (uri.path.endsWith('/auth/refresh')) {
+          refreshHits++;
+          return (
+            status: 200,
+            json: {'access_token': 'new', 'refresh_token': 'r2'},
+          );
+        }
+        return (status: 404, json: {'detail': 'no'});
+      });
+      HttpOverrides.global = backend;
+      addTearDown(() => HttpOverrides.global = null);
+      ApiService.instance.authToken = 'old';
+      ApiService.instance.refreshToken = 'r1';
+      addTearDown(() {
+        ApiService.instance.authToken = null;
+        ApiService.instance.refreshToken = null;
+      });
+
+      await tester.pumpWidget(MaterialApp(
+        home: RagUploadScreen(
+          patientId: 'p1',
+          testBytes: Uint8List.fromList(utf8.encode('hi')),
+          testFilename: 'note.pdf',
+        ),
+      ));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('UPLOAD ▸'));
+      await tester.pumpAndSettle();
+
+      expect(refreshHits, 1,
+          reason: 'live upload path must go through ApiService refresh');
+      expect(uploadHits, 2);
+      expect(ApiService.instance.authToken, 'new');
+      expect(find.text('Uploaded successfully (HTTP 200).'), findsOneWidget);
     });
   });
 }

@@ -154,29 +154,51 @@ class _RagUploadScreenState extends State<RagUploadScreen> {
         bytes = _pickedBytes!;
         filename = _pickedFilename ?? 'document.pdf';
       }
-      final request = buildRagUploadRequest(
-        patientId: widget.patientId,
-        bytes: bytes,
-        filename: filename,
-        authToken: ApiService.instance.authToken,
-        baseUrl: AppConfig.apiBaseUrl,
-      );
-      final http.Response res;
       if (widget.sendForTest != null) {
-        res = await widget.sendForTest!(request);
+        final request = buildRagUploadRequest(
+          patientId: widget.patientId,
+          bytes: bytes,
+          filename: filename,
+          authToken: ApiService.instance.authToken,
+          baseUrl: AppConfig.apiBaseUrl,
+        );
+        final res = await widget.sendForTest!(request);
+        if (!mounted) return;
+        final consentMissing =
+            res.statusCode == 403 && res.body.contains('health_data');
+        setState(() {
+          _uploading = false;
+          if (consentMissing) _consentMissing = true;
+          _result = res.statusCode >= 200 && res.statusCode < 300
+              ? 'Uploaded successfully (HTTP ${res.statusCode}).'
+              : formatRagUploadFailure(res.statusCode, res.body);
+        });
+        // Structural consent state fires alongside the inline message
+        // (no silent failures: both the message AND the callback fire).
+        if (consentMissing) widget.onConsentMissing?.call();
       } else {
-        final streamed = await request.send();
-        res = await http.Response.fromStream(streamed);
+        await ApiService.instance.uploadDocument(
+          patientId: widget.patientId,
+          bytes: bytes,
+          filename: filename,
+          title: 'Medical Document',
+        );
+        if (!mounted) return;
+        setState(() {
+          _uploading = false;
+          _result = 'Uploaded successfully (HTTP 200).';
+        });
       }
+    } on ApiException catch (e) {
       if (!mounted) return;
       final consentMissing =
-          res.statusCode == 403 && res.body.contains('health_data');
+          e.statusCode == 403 && e.message.contains('health_data');
       setState(() {
         _uploading = false;
         if (consentMissing) _consentMissing = true;
-        _result = res.statusCode >= 200 && res.statusCode < 300
-            ? 'Uploaded successfully (HTTP ${res.statusCode}).'
-            : formatRagUploadFailure(res.statusCode, res.body);
+        _result = e.statusCode != null
+            ? formatRagUploadFailure(e.statusCode!, e.message)
+            : 'Upload failed: ${e.message}';
       });
       // Structural consent state fires alongside the inline message
       // (no silent failures: both the message AND the callback fire).
