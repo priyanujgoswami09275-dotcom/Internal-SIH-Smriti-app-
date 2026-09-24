@@ -109,6 +109,7 @@ class SessionSummaryResponse(BaseModel):
     avg_response_time_ms: float
     started_at: str
     completed_at: str
+    explanation: Optional[str] = None
 
 
 class GameHistoryItem(BaseModel):
@@ -184,15 +185,13 @@ class OddOneOutItem(BaseModel):
 
 
 class OddOneOutBoardResponse(BaseModel):
-    """Generated Odd-One-Out board. The answer stays server-side in
-    ``session.board_snapshot`` and is never serialized here."""
+    """Generated Odd-One-Out board without answer or explanation fields."""
     game_type: str
     difficulty_level: int
     items: list[OddOneOutItem]
     item_count: int
     target_seconds: int
     group_label: str
-    explanation: str
 
 
 class DifficultyEvaluationResponse(BaseModel):
@@ -285,7 +284,7 @@ async def record_action(
         # Server-truth scoring: correctness derives from the stored board
         # snapshot, never from client claims. Other games honor the client
         # verdict as before.
-        snapshot = session.board_snapshot or {}
+        snapshot = session.server_state or {}
         answer_item_id = snapshot.get("answer_item_id")
         if not answer_item_id:
             raise HTTPException(
@@ -699,18 +698,11 @@ async def generate_odd_one_out_board(
     board = odd_one_out_service.generate_odd_one_out_board(
         difficulty_level, items=params.get("items"),
     )
-    # Reassign — don't mutate — so SQLAlchemy persists the snapshot on commit.
-    session.board_snapshot = dict(board)
+    public_board = odd_one_out_service.public_odd_one_out_board(board)
+    session.board_snapshot = public_board
+    session.server_state = odd_one_out_service.odd_one_out_server_state(board)
     await db.commit()
-    return OddOneOutBoardResponse(
-        game_type=board["game_type"],
-        difficulty_level=board["difficulty_level"],
-        items=board["items"],
-        item_count=board["item_count"],
-        target_seconds=board["target_seconds"],
-        group_label=board["group_label"],
-        explanation=board["explanation"],
-    )
+    return OddOneOutBoardResponse(**public_board)
 
 
 @router.post("/difficulty/evaluate", response_model=DifficultyEvaluationResponse)

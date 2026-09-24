@@ -75,7 +75,40 @@ class GameSession(Base):
     avg_response_time_ms = Column(Float, nullable=True)
     raw_event_log = Column(JSON, nullable=True)
     board_snapshot = Column(JSON, nullable=True)
+    server_state = Column(JSON, nullable=True)
+    completion_idempotency_key = Column(String(200), nullable=True)
+    completion_result = Column(JSON, nullable=True)
     created_at = Column(DateTime, default=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "completion_idempotency_key",
+            name="uq_game_sessions_completion_idempotency_key",
+        ),
+    )
+
+
+class GameAction(Base):
+    __tablename__ = "game_actions"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    session_id = Column(UUID(as_uuid=True), ForeignKey("game_sessions.id"), nullable=False)
+    idempotency_key = Column(String(200), nullable=False)
+    action_type = Column(String(100), nullable=False)
+    action_data = Column(JSON, nullable=False)
+    is_correct = Column(Boolean, nullable=True)
+    response_time_ms = Column(Integer, nullable=True)
+    server_fields = Column(JSON, nullable=True)
+    created_at = Column(DateTime, default=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "session_id",
+            "idempotency_key",
+            name="uq_game_actions_session_idempotency_key",
+        ),
+    )
+
 
 class DifficultyAdjustmentLog(Base):
     __tablename__ = "difficulty_adjustment_logs"

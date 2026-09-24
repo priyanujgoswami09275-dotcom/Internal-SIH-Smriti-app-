@@ -100,7 +100,7 @@ async def test_odd_board_withholds_answer_and_stores_snapshot(
     body = resp.json()
     assert set(body) == {
         "game_type", "difficulty_level", "items", "item_count",
-        "target_seconds", "group_label", "explanation",
+        "target_seconds", "group_label",
     }
     expected_items, expected_seconds = ODD_LEVELS[level]
     assert body["game_type"] == "odd_one_out"
@@ -111,11 +111,14 @@ async def test_odd_board_withholds_answer_and_stores_snapshot(
     for entry in body["items"]:
         assert {"item_id", "name"} <= set(entry)
     assert isinstance(body["group_label"], str) and body["group_label"]
-    assert isinstance(body["explanation"], str) and body["explanation"]
+    assert "answer_item_id" not in body
+    assert "explanation" not in body
 
     stored = await _snapshot(db_session, session_id)
     assert stored.board_snapshot is not None
-    answer = stored.board_snapshot["answer_item_id"]
+    assert "answer_item_id" not in stored.board_snapshot
+    assert "explanation" not in stored.board_snapshot
+    answer = stored.server_state["answer_item_id"]
     assert answer in [i["item_id"] for i in body["items"]]
 
 
@@ -156,7 +159,7 @@ async def test_select_odd_item_scored_from_server_answer(client, db_session):
         headers=headers,
     )
     assert resp.status_code == 200, resp.text
-    answer = (await _snapshot(db_session, session_id)).board_snapshot["answer_item_id"]
+    answer = (await _snapshot(db_session, session_id)).server_state["answer_item_id"]
     wrong = next(
         i["item_id"] for i in resp.json()["items"] if i["item_id"] != answer)
 
@@ -259,7 +262,7 @@ async def test_four_games_three_levels_session_flow(
             headers=headers,
         )
         assert resp.status_code == 200, resp.text
-        answer = (await _snapshot(db_session, session_id)).board_snapshot["answer_item_id"]
+        answer = (await _snapshot(db_session, session_id)).server_state["answer_item_id"]
         payload = {"action_type": "select_odd_item",
                    "action_data": {"selected_item_id": answer},
                    "response_time_ms": 1000}
@@ -316,7 +319,7 @@ async def test_pooled_stats_contribution_proven_per_game(client, db_session):
         f"{GAMES}/odd-one-out/board",
         params={"session_id": odd_sid, "difficulty_level": 1}, headers=headers)
     assert resp.status_code == 200, resp.text
-    answer = (await _snapshot(db_session, odd_sid)).board_snapshot["answer_item_id"]
+    answer = (await _snapshot(db_session, odd_sid)).server_state["answer_item_id"]
     wrong = next(
         i["item_id"] for i in resp.json()["items"] if i["item_id"] != answer)
     resp = await client.post(
@@ -385,7 +388,7 @@ async def test_repeat_complete_stable(client, db_session):
         params={"session_id": session_id, "difficulty_level": 1},
         headers=headers,
     )
-    answer = (await _snapshot(db_session, session_id)).board_snapshot["answer_item_id"]
+    answer = (await _snapshot(db_session, session_id)).server_state["answer_item_id"]
     resp = await client.post(
         f"{GAMES}/sessions/{session_id}/actions",
         json={"action_type": "select_odd_item",
@@ -405,4 +408,4 @@ async def test_repeat_complete_stable(client, db_session):
     assert first["total_attempts"] == 1
     stored = await _snapshot(db_session, session_id)
     assert (stored.attempts, stored.correct_count, stored.incorrect_count) == (1, 1, 0)
-    assert stored.board_snapshot["answer_item_id"] == answer
+    assert stored.server_state["answer_item_id"] == answer

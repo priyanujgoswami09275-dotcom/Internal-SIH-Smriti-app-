@@ -14,6 +14,7 @@ from app.models.all_models import (
     GameSession,
     GameTypeEnum,
 )
+from app.services import odd_one_out_service
 
 
 def iso_utc(value: Optional[datetime]) -> Optional[str]:
@@ -178,7 +179,7 @@ async def complete_game_session(
     await db.commit()
     await db.refresh(session)
 
-    return {
+    result = {
         "session_id": session.id,
         "patient_id": session.patient_id,
         "game_type": session.game_type.value,
@@ -191,6 +192,11 @@ async def complete_game_session(
         "started_at": session.started_at.isoformat(),
         "completed_at": session.completed_at.isoformat(),
     }
+    if session.game_type == GameTypeEnum.ODD_ONE_OUT:
+        result["explanation"] = odd_one_out_service.odd_one_out_explanation(
+            session.server_state
+        )
+    return result
 
 
 async def get_session_summary(db: AsyncSession, session_id: UUID) -> Dict[str, Any]:
