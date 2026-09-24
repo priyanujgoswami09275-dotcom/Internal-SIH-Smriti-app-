@@ -140,6 +140,7 @@ class _OddOneOutScreenState extends State<OddOneOutScreen> {
       final sessionId = await _api.startGame(
         gameType: 'odd_one_out',
         difficultyLevel: _difficulty,
+        patientId: widget.patientId,
       );
       final raw = await _api.getJson(
         oddOneOutBoardPath,

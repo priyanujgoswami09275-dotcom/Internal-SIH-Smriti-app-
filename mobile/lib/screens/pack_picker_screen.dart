@@ -6,12 +6,20 @@ import 'package:flutter/material.dart';
 import '../data/local_content_packs.dart';
 import '../models/shared_models.dart';
 import '../services/api_service.dart';
+import '../services/offline_sync_service.dart';
 import '../theme/monad_theme.dart';
 import '../widgets/monad/monad_pill_button.dart';
 import 'match_it_screen.dart';
 
 class PackPickerScreen extends StatefulWidget {
-  const PackPickerScreen({super.key});
+  final String patientId;
+  final OfflineSyncService? sync;
+
+  const PackPickerScreen({
+    super.key,
+    required this.patientId,
+    this.sync,
+  });
 
   @override
   State<PackPickerScreen> createState() => _PackPickerScreenState();
@@ -56,6 +64,8 @@ class _PackPickerScreenState extends State<PackPickerScreen> {
     Navigator.of(context).push(
       MaterialPageRoute<void>(
         builder: (_) => MatchItScreen(
+          patientId: widget.patientId,
+          sync: widget.sync,
           packId: pack.id,
           packName: pack.name,
           difficultyLevel: _difficulty,

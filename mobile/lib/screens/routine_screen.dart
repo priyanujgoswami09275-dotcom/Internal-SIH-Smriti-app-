@@ -38,13 +38,17 @@ class _NERPalette {
 class RoutineScreen extends StatefulWidget {
   final String patientId;
   final int difficultyLevel;
+  final String? routineId;
   final String languageCode;
+  final OfflineSyncService? sync;
 
   const RoutineScreen({
     super.key,
     required this.patientId,
     required this.difficultyLevel,
+    this.routineId,
     this.languageCode = 'english',
+    this.sync,
   });
 
   @override
@@ -53,6 +57,8 @@ class RoutineScreen extends StatefulWidget {
 
 class _RoutineScreenState extends State<RoutineScreen> {
   final ApiService _api = ApiService.instance;
+  late final OfflineSyncService _sync =
+      widget.sync ?? OfflineSyncService.instance;
   final RoutineService _logic = RoutineService();
   final GameAnalyticsEngine _engine = GameAnalyticsEngine.instance;
 
@@ -96,6 +102,8 @@ class _RoutineScreenState extends State<RoutineScreen> {
       final sessionId = await _api.startGame(
         gameType: 'routine_sequencing',
         difficultyLevel: _difficulty,
+        patientId: widget.patientId,
+        routineId: widget.routineId,
       );
       final board = await _api.routineBoard(
         patientId: widget.patientId,
@@ -275,7 +283,7 @@ class _RoutineScreenState extends State<RoutineScreen> {
       }
     } on Exception catch (e) {
       debugPrint('Could not complete session online: $e');
-      await OfflineSyncService.instance.enqueueGameSession(
+      await _sync.enqueueGameSession(
         patientId: widget.patientId,
         session: GameSessionModel(
           id: finalState.sessionId,
@@ -290,6 +298,7 @@ class _RoutineScreenState extends State<RoutineScreen> {
           completedAt: DateTime.now(),
         ),
         actions: List<GameAction>.from(_bufferedActions),
+        routineId: widget.routineId,
       );
     }
 

@@ -25,7 +25,6 @@ import '../games/level_config.dart';
 import '../models/game_models.dart';
 import '../models/shared_models.dart';
 import '../services/api_service.dart';
-import '../services/auth_session.dart';
 import '../services/match_it_service.dart';
 import '../services/offline_sync_service.dart';
 import '../theme/monad_theme.dart';
@@ -40,15 +39,19 @@ class _NERPalette {
 }
 
 class MatchItScreen extends StatefulWidget {
+  final String patientId;
   final String packId;
   final String packName;
   final int difficultyLevel;
+  final OfflineSyncService? sync;
 
   const MatchItScreen({
     super.key,
+    required this.patientId,
     required this.packId,
     required this.packName,
     required this.difficultyLevel,
+    this.sync,
   });
 
   @override
@@ -57,6 +60,8 @@ class MatchItScreen extends StatefulWidget {
 
 class _MatchItScreenState extends State<MatchItScreen> {
   final ApiService _api = ApiService.instance;
+  late final OfflineSyncService _sync =
+      widget.sync ?? OfflineSyncService.instance;
   final MatchItService _logic = MatchItService();
   final GameAnalyticsEngine _engine = GameAnalyticsEngine.instance;
 
@@ -105,6 +110,7 @@ class _MatchItScreenState extends State<MatchItScreen> {
         gameType: 'match_it',
         difficultyLevel: _difficulty,
         contentPackId: widget.packId,
+        patientId: widget.patientId,
       );
       final board = await _api.matchItBoard(
         packId: widget.packId,
@@ -285,7 +291,7 @@ class _MatchItScreenState extends State<MatchItScreen> {
     // ---- Adaptive engine: build the structured performance report ----
     final session = CognitiveGameSession(
       sessionId: sessionId,
-      patientId: AuthSession.instance.user?.id ?? 'demo_patient',
+      patientId: widget.patientId,
       gameType: 'match_it',
       difficultyLevel: _difficulty,
       timeTakenInSeconds:
@@ -321,11 +327,11 @@ class _MatchItScreenState extends State<MatchItScreen> {
       }
     } on Exception catch (e) {
       debugPrint('Could not complete session online: $e');
-      await OfflineSyncService.instance.enqueueGameSession(
-        patientId: AuthSession.instance.user?.id ?? '',
+      await _sync.enqueueGameSession(
+        patientId: widget.patientId,
         session: GameSessionModel(
           id: sessionId,
-          patientId: AuthSession.instance.user?.id ?? '',
+          patientId: widget.patientId,
           gameType: GameType.matchIt,
           difficultyLevel: _difficulty,
           attempts: finalState.attempts,
@@ -336,6 +342,7 @@ class _MatchItScreenState extends State<MatchItScreen> {
           completedAt: DateTime.now(),
         ),
         actions: List<GameAction>.from(_bufferedActions),
+        contentPackId: widget.packId,
       );
     }
 

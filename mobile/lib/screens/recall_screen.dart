@@ -15,7 +15,6 @@ import '../games/level_config.dart';
 import '../models/game_models.dart';
 import '../models/shared_models.dart';
 import '../services/api_service.dart';
-import '../services/auth_session.dart';
 import '../services/offline_sync_service.dart';
 import '../services/recall_service.dart';
 import '../theme/monad_theme.dart';
@@ -85,6 +84,7 @@ class _RecallScreenState extends State<RecallScreen> {
       final sessionId = await _api.startGame(
         gameType: 'number_recall',
         difficultyLevel: _difficulty,
+        patientId: widget.patientId,
       );
       final board = await _api.recallBoard(
         difficultyLevel: _difficulty,
@@ -233,7 +233,7 @@ class _RecallScreenState extends State<RecallScreen> {
     // ---- Adaptive engine: build the structured performance report ----
     final session = CognitiveGameSession(
       sessionId: sessionId,
-      patientId: AuthSession.instance.user?.id ?? 'demo_patient',
+      patientId: widget.patientId,
       gameType: 'number_recall',
       difficultyLevel: _difficulty,
       timeTakenInSeconds:
@@ -270,10 +270,10 @@ class _RecallScreenState extends State<RecallScreen> {
     } on Exception catch (e) {
       debugPrint('Could not complete session online: $e');
       await OfflineSyncService.instance.enqueueGameSession(
-        patientId: AuthSession.instance.user?.id ?? '',
+        patientId: widget.patientId,
         session: GameSessionModel(
           id: sessionId,
-          patientId: AuthSession.instance.user?.id ?? '',
+          patientId: widget.patientId,
           gameType: GameType.numberRecall,
           difficultyLevel: _difficulty,
           attempts: finalState.attempts,

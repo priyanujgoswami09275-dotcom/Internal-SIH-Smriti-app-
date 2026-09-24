@@ -399,7 +399,9 @@ class PatientHome extends StatelessWidget {
             title: 'Play Memory Match',
             subtitle: 'Train your memory with NER themes',
             onTap: () => Navigator.of(context).push(
-              MaterialPageRoute<void>(builder: (_) => const PackPickerScreen()),
+              MaterialPageRoute<void>(
+                builder: (_) => PackPickerScreen(patientId: patientId),
+              ),
             ),
           ),
           _homeButton(
