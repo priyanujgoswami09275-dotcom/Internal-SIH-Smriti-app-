@@ -19,7 +19,7 @@ class MetricsTiles extends StatelessWidget {
       if (isClinical)
         _tile(
           'Cognitive accuracy',
-          '${((summary['accuracy_pct'] as num? ?? 0) as double).toStringAsFixed(0)}%',
+          '${(summary['accuracy_pct'] as num? ?? 0).toDouble().toStringAsFixed(0)}%',
           '$games games (7d)',
           Icons.psychology,
           Monad.tintSky,
