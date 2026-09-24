@@ -64,7 +64,12 @@ async def ingest_medical_document(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_staff),
 ):
-    """Ingest, chunk, and embed medical reports or prescriptions for RAG."""
+    """Ingest, chunk, and embed medical reports or prescriptions for RAG.
+
+    Fail-closed on auditing: the document and its DPDP write audit row commit
+    in one transaction inside ``RAGService.ingest_document``, so a document is
+    never stored without its audit row.
+    """
     await ensure_clinical_access(db, current_user, req.patient_id)
     await ensure_consent(db, req.patient_id, "health_data")
     doc = await RAGService.ingest_document(

@@ -475,3 +475,41 @@ async def test_ingest_rolls_back_document_and_audit_when_chunk_add_fails(
     audits = (await db_session.execute(select(AuditLog))).scalars().all()
     assert not documents
     assert not audits
+
+
+@pytest.mark.asyncio
+async def test_ingest_is_fail_closed_when_the_audit_cannot_be_written(
+    db_session, monkeypatch
+):
+    """An audited write that cannot be audited must not be stored.
+
+    The document and its DPDP audit row share one transaction, so a failing
+    audit add aborts the whole ingest — this is deliberately NOT the
+    best-effort behaviour of ComplianceService.log_write_access.
+    """
+    from app.services.rag_service import RAGService
+
+    original_add = db_session.add
+
+    def fail_audit_add(instance):
+        if isinstance(instance, AuditLog):
+            raise RuntimeError("audit store unavailable")
+        original_add(instance)
+
+    monkeypatch.setattr(db_session, "add", fail_audit_add)
+
+    with pytest.raises(RuntimeError, match="audit store unavailable"):
+        await RAGService.ingest_document(
+            db=db_session,
+            patient_id=uuid.uuid4(),
+            uploaded_by=uuid.uuid4(),
+            file_ref="failclosed.txt",
+            doc_type="report",
+            extracted_text="Donepezil 5 mg at bedtime.",
+        )
+
+    await db_session.rollback()
+    documents = (await db_session.execute(select(MedicalDocument))).scalars().all()
+    audits = (await db_session.execute(select(AuditLog))).scalars().all()
+    assert not documents, "document must not persist without its audit row"
+    assert not audits

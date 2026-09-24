@@ -260,6 +260,11 @@ class ComplianceService:
         Never raises and never rolls back the audited work: a failed audit
         flush leaves the session in pending-rollback, so it is restored and
         the write itself still completes.
+
+        Scope: use this for low-risk, recoverable writes (reminders, alerts,
+        sync materialization). Do NOT use it where the write itself must never
+        outlive its audit — document ingestion adds its ``AuditLog`` inside the
+        ingest transaction instead, so an unauditable document is not stored.
         """
         try:
             rid = uuid.UUID(str(resource_id))

@@ -129,6 +129,13 @@ class RAGService:
 
         ``extracted_text`` is stored AES-256 encrypted at rest; chunking and
         embedding use the plaintext in memory before it is discarded.
+
+        The document, its chunks, and its DPDP ``write`` audit row are added to
+        one session and committed together, so this ingest is FAIL-CLOSED: if
+        the audit row cannot be written the document is not stored either. That
+        is deliberately stricter than ``ComplianceService.log_write_access``,
+        which is best-effort and is used by the lower-risk write paths
+        (reminders, alerts, sync materialization).
         """
         doc = MedicalDocument(
             patient_id=patient_id,
