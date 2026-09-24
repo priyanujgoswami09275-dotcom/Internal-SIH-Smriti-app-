@@ -27,7 +27,7 @@ async def _staff_with_patient(client, role="clinician"):
     assert login.status_code == 200, login.text
     h = {"Authorization": f"Bearer {login.json()['access_token']}"}
     prof = await create_consented_patient(client, "List Patient")
-    return h, prof["id"]
+    return h, prof["id"], user["id"]
 
 
 async def _upload_text(client, headers, pid, name="notes.txt"):
@@ -44,7 +44,7 @@ async def _upload_text(client, headers, pid, name="notes.txt"):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("role", ["clinician", "asha_worker", "admin"])
 async def test_list_returns_metadata_newest_first(client, role):
-    h, pid = await _staff_with_patient(client, role)
+    h, pid, _ = await _staff_with_patient(client, role)
     await _upload_text(client, h, pid, "older.txt")
     await asyncio.sleep(1.1)
     await _upload_text(client, h, pid, "newer.txt")
@@ -52,13 +52,25 @@ async def test_list_returns_metadata_newest_first(client, role):
     r = await client.get(f"{REPORTS}/patients/{pid}/documents", headers=h)
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["count"] == 2
+    document_keys = {
+        "document_id", "title", "file_name", "doc_type",
+        "embedding_status", "created_at",
+    }
+    assert set(body) == {"documents", "count"}
+    assert body["count"] == len(body["documents"]) == 2
+    assert all(set(document) == document_keys for document in body["documents"])
     first = body["documents"][0]
+    second = body["documents"][1]
+    assert UUID(first["document_id"])
+    assert UUID(second["document_id"])
+    assert first["document_id"] != second["document_id"]
     assert first["file_name"] == "newer.txt"
-    assert first["title"] == "List title"
-    assert first["doc_type"] == "prescription"
-    assert first["embedding_status"] in ("pending", "processing", "completed", "failed")
-    assert first["created_at"]
+    assert second["file_name"] == "older.txt"
+    for document in body["documents"]:
+        assert document["title"] == "List title"
+        assert document["doc_type"] == "prescription"
+        assert document["embedding_status"] in ("pending", "processing", "completed", "failed")
+        assert isinstance(document["created_at"], str)
     # Metadata only — encrypted PHI must never be echoed.
     assert "extracted_text" not in first
     assert "embedding" not in first
@@ -66,7 +78,7 @@ async def test_list_returns_metadata_newest_first(client, role):
 
 @pytest.mark.asyncio
 async def test_list_empty_is_not_an_error(client):
-    h, pid = await _staff_with_patient(client)
+    h, pid, _ = await _staff_with_patient(client)
     r = await client.get(f"{REPORTS}/patients/{pid}/documents", headers=h)
     assert r.status_code == 200
     assert r.json() == {"documents": [], "count": 0}
@@ -74,13 +86,30 @@ async def test_list_empty_is_not_an_error(client):
 
 @pytest.mark.asyncio
 async def test_list_writes_read_audit(client, db_session):
-    h, pid = await _staff_with_patient(client)
+    h, pid, staff_id = await _staff_with_patient(client)
     await _upload_text(client, h, pid)
+    before = (await db_session.execute(select(AuditLog).where(
+        AuditLog.user_id == UUID(staff_id),
+        AuditLog.resource_id == UUID(pid),
+        AuditLog.resource_type == "medical_document",
+        AuditLog.action == "read",
+    ))).scalars().all()
     r = await client.get(f"{REPORTS}/patients/{pid}/documents", headers=h)
     assert r.status_code == 200
     rows = (await db_session.execute(select(AuditLog).where(
-        AuditLog.resource_type == "medical_document", AuditLog.action == "read"))).scalars().all()
-    assert rows, "listing documents must write a DPDP read audit"
+        AuditLog.user_id == UUID(staff_id),
+        AuditLog.resource_id == UUID(pid),
+        AuditLog.resource_type == "medical_document",
+        AuditLog.action == "read",
+    ))).scalars().all()
+    before_ids = {row.id for row in before}
+    new_rows = [row for row in rows if row.id not in before_ids]
+    assert len(new_rows) == 1
+    row = new_rows[0]
+    assert row.user_id == UUID(staff_id)
+    assert row.resource_id == UUID(pid)
+    assert row.resource_type == "medical_document"
+    assert (row.action.value if hasattr(row.action, "value") else str(row.action)) == "read"
 
 
 @pytest.mark.asyncio
