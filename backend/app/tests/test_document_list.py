@@ -254,3 +254,104 @@ async def test_list_without_health_data_consent_is_403(client):
     r = await client.get(f"{REPORTS}/patients/{prof['id']}/documents", headers=h)
     assert r.status_code == 403
     assert "health_data" in r.json()["detail"]
+
+
+# --- RAG ask route gates (POST /reports/documents/answer) ---------------------
+# The ask route is the mobile Q&A surface, so it must carry the same
+# require_staff -> clinical tier -> health_data consent -> read-audit chain
+# as the list route. Only its authentication was covered before.
+
+
+async def _family_headers_for(client, db_session, patient_profile):
+    reg = await client.post(f"{AUTH}/register", json={
+        "phone": "+919000000003", "password": "Passw0rd123",
+        "role": "family_caregiver", "preferred_language": "english"})
+    assert reg.status_code == 201, reg.text
+    fam = reg.json()
+    fam_login = await client.post(f"{AUTH}/login", json={
+        "phone": fam["phone"], "password": "Passw0rd123"})
+    fh = {"Authorization": f"Bearer {fam_login.json()['access_token']}"}
+    owner_login = await client.post(f"{AUTH}/login", json={
+        "phone": (await db_session.execute(
+            select(User.phone).where(User.id == UUID(patient_profile["user_id"]))
+        )).scalar_one(), "password": "Passw0rd123"})
+    oh = {"Authorization": f"Bearer {owner_login.json()['access_token']}"}
+    link = await client.post(f"{PATIENTS}/{patient_profile['id']}/caregivers",
+        headers=oh, json={"caregiver_id": fam["id"], "relationship_type": "family"})
+    assert link.status_code == 201, link.text
+    return fh
+
+
+async def _ask(client, headers, pid, question="What medication was prescribed?"):
+    return await client.post(f"{REPORTS}/documents/answer", headers=headers,
+        json={"patient_id": pid, "question": question})
+
+
+@pytest.mark.asyncio
+async def test_answer_clinical_staff_is_allowed(client):
+    h, pid, _ = await _staff_with_patient(client, "clinician")
+    r = await _ask(client, h, pid)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert "answer" in body
+    assert "disclaimer" in body
+
+
+@pytest.mark.asyncio
+async def test_answer_family_caregiver_basic_tier_is_403(client, db_session):
+    from app.tests.conftest import create_consented_patient
+    prof = await create_consented_patient(client, "Family Ask Patient")
+    fh = await _family_headers_for(client, db_session, prof)
+    r = await _ask(client, fh, prof["id"])
+    assert r.status_code == 403
+    assert r.json()["detail"] == "Clinical permission tier required for this resource"
+
+
+@pytest.mark.asyncio
+async def test_answer_patient_role_is_403(client, db_session):
+    from app.tests.conftest import create_consented_patient
+    prof = await create_consented_patient(client, "Self Ask Patient")
+    login = await client.post(f"{AUTH}/login", json={
+        "phone": (await db_session.execute(
+            select(User.phone).where(User.id == UUID(prof["user_id"]))
+        )).scalar_one(), "password": "Passw0rd123"})
+    h = {"Authorization": f"Bearer {login.json()['access_token']}"}
+    r = await _ask(client, h, prof["id"])
+    assert r.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_answer_without_health_data_consent_is_403(client):
+    from app.tests.conftest import provision_staff_user
+    user = await provision_staff_user(role="clinician")
+    login = await client.post(f"{AUTH}/login", json={
+        "phone": user["phone"], "password": "Passw0rd123"})
+    h = {"Authorization": f"Bearer {login.json()['access_token']}"}
+    reg = await client.post(f"{AUTH}/register", json={
+        "phone": "+919000000004", "password": "Passw0rd123",
+        "role": "patient", "preferred_language": "english"})
+    pl = await client.post(f"{AUTH}/login", json={
+        "phone": reg.json()["phone"], "password": "Passw0rd123"})
+    ph = {"Authorization": f"Bearer {pl.json()['access_token']}"}
+    prof = (await client.post(f"{PATIENTS}", headers=ph, json={"name": "Ask No Consent"})).json()
+    r = await _ask(client, h, prof["id"])
+    assert r.status_code == 403
+    assert "health_data" in r.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_answer_writes_read_audit(client, db_session):
+    h, pid, staff_id = await _staff_with_patient(client, "clinician")
+    before = (await db_session.execute(select(AuditLog).where(
+        AuditLog.user_id == UUID(staff_id)))).scalars().all()
+    before_ids = {row.id for row in before}
+    r = await _ask(client, h, pid)
+    assert r.status_code == 200, r.text
+    rows = (await db_session.execute(select(AuditLog).where(
+        AuditLog.user_id == UUID(staff_id),
+        AuditLog.resource_id == UUID(pid),
+        AuditLog.resource_type == "medical_document",
+        AuditLog.action == "read",
+    ))).scalars().all()
+    new_rows = [row for row in rows if row.id not in before_ids]
+    assert len(new_rows) == 1, "asking a question must write a DPDP read audit"
