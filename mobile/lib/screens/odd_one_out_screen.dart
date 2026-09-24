@@ -72,6 +72,7 @@ class _OddOneOutScreenState extends State<OddOneOutScreen> {
   bool _ready = true; // ready panel (level picker) before each run
   bool _noCache = false; // offline with no compatible cached board
   bool _completing = false;
+  bool _actionInProgress = false;
 
   /// Server-resolved tile states (never derived locally).
   final Set<String> _wrongIds = {};
@@ -114,6 +115,7 @@ class _OddOneOutScreenState extends State<OddOneOutScreen> {
       _offline = false;
       _noCache = false;
       _completing = false;
+      _actionInProgress = false;
       _board = null;
       _sessionId = null;
       _wrongIds.clear();
@@ -174,8 +176,7 @@ class _OddOneOutScreenState extends State<OddOneOutScreen> {
     }
   }
 
-  Future<void> _saveBoardCache(
-      int level, Map<String, dynamic> raw) async {
+  Future<void> _saveBoardCache(int level, Map<String, dynamic> raw) async {
     try {
       final prefs = await SharedPreferences.getInstance();
       Map<String, dynamic> all = {};
@@ -224,7 +225,9 @@ class _OddOneOutScreenState extends State<OddOneOutScreen> {
     final board = _board;
     final sessionId = _sessionId;
     if (board == null || sessionId == null) return;
-    if (_loading || _ready || _completing || _noCache) return;
+    if (_loading || _ready || _completing || _noCache || _actionInProgress) {
+      return;
+    }
     if (_correctId != null) return; // round already resolved
     if (_wrongIds.contains(item.itemId)) return;
     if (_selectedIds.contains(item.itemId)) return;
@@ -233,60 +236,51 @@ class _OddOneOutScreenState extends State<OddOneOutScreen> {
     final responseTimeMs =
         _lastTapAt != null ? now.difference(_lastTapAt!).inMilliseconds : 0;
     _lastTapAt = now;
+    final actionIndex = _bufferedActions.length;
+    final action = GameAction(
+      id: _nextActionId(item.itemId, now),
+      sessionId: sessionId,
+      actionType: 'select_odd_item',
+      actionData: {'selected_item_id': item.itemId},
+      responseTimeMs: responseTimeMs,
+      timestamp: now,
+    );
+    final idempotencyKey = ApiService.actionIdempotencyKey(
+      sessionId: sessionId,
+      actionIndex: actionIndex,
+      actionId: action.id,
+    );
+    _bufferedActions.add(action);
 
     if (_offline) {
-      // Informational pick: buffered with isCorrect null; the server
-      // scores the replay after sync. Never judged locally.
       setState(() => _selectedIds.add(item.itemId));
-      _bufferedActions.add(GameAction(
-        id: _nextActionId(item.itemId, now),
-        sessionId: sessionId,
-        actionType: 'select_odd_item',
-        actionData: {'selected_item_id': item.itemId},
-        responseTimeMs: responseTimeMs,
-        timestamp: now,
-      ));
       return;
     }
 
+    setState(() => _actionInProgress = true);
     bool? verdict;
     try {
       final data = await _api.postJson(
         '${AppConfig.apiV1}/games/sessions/$sessionId/actions',
         body: {
           'action_type': 'select_odd_item',
-          'action_data': {'selected_item_id': item.itemId},
+          'action_data': action.actionData,
           'response_time_ms': responseTimeMs,
+          'idempotency_key': idempotencyKey,
         },
       );
       verdict = _verdictFrom(data);
     } on Exception {
-      // Connectivity dropped mid-round: keep the pick as informational.
       if (!mounted) return;
       setState(() {
+        _actionInProgress = false;
         _offline = true;
         _selectedIds.add(item.itemId);
       });
-      _bufferedActions.add(GameAction(
-        id: _nextActionId(item.itemId, now),
-        sessionId: sessionId,
-        actionType: 'select_odd_item',
-        actionData: {'selected_item_id': item.itemId},
-        responseTimeMs: responseTimeMs,
-        timestamp: now,
-      ));
       return;
     }
     if (!mounted) return;
-    _bufferedActions.add(GameAction(
-      id: _nextActionId(item.itemId, now),
-      sessionId: sessionId,
-      actionType: 'select_odd_item',
-      actionData: {'selected_item_id': item.itemId},
-      isCorrect: verdict,
-      responseTimeMs: responseTimeMs,
-      timestamp: now,
-    ));
+    setState(() => _actionInProgress = false);
     if (verdict == true) {
       setState(() => _correctId = item.itemId);
       GameVisuals.positiveFeedback();
@@ -295,7 +289,6 @@ class _OddOneOutScreenState extends State<OddOneOutScreen> {
       setState(() => _wrongIds.add(item.itemId));
       GameVisuals.selectionFeedback();
     } else {
-      // Server gave no verdict: informational, round continues.
       setState(() => _selectedIds.add(item.itemId));
     }
   }
@@ -305,6 +298,32 @@ class _OddOneOutScreenState extends State<OddOneOutScreen> {
   String _nextActionId(String itemId, DateTime now) {
     _actionSeq++;
     return 'act_${now.millisecondsSinceEpoch}_${_actionSeq}_$itemId';
+  }
+
+  List<String> _expectedActionIds() => [
+        for (var index = 0; index < _bufferedActions.length; index++)
+          ApiService.actionIdempotencyKey(
+            sessionId: _bufferedActions[index].sessionId,
+            actionIndex: index,
+            actionId: _bufferedActions[index].id,
+          ),
+      ];
+
+  Future<void> _ensureActionsDurable() async {
+    final expectedActionIds = _expectedActionIds();
+    for (var index = 0; index < _bufferedActions.length; index++) {
+      final action = _bufferedActions[index];
+      await _api.postJson(
+        '${AppConfig.apiV1}/games/sessions/${action.sessionId}/actions',
+        body: {
+          'action_type': action.actionType,
+          'action_data': action.actionData,
+          if (action.responseTimeMs != null)
+            'response_time_ms': action.responseTimeMs,
+          'idempotency_key': expectedActionIds[index],
+        },
+      );
+    }
   }
 
   /// Server correctness, parsed defensively; null means informational.
@@ -375,7 +394,12 @@ class _OddOneOutScreenState extends State<OddOneOutScreen> {
     GameSessionSummary? summary;
     try {
       if (!_offline) {
-        summary = await _api.completeGame(sessionId);
+        await _ensureActionsDurable();
+        summary = await _api.completeGame(
+          sessionId,
+          idempotencyKey: ApiService.completionIdempotencyKey(sessionId),
+          expectedActionIds: _expectedActionIds(),
+        );
         _bufferedActions.clear(); // server holds the authoritative record
       } else {
         throw ApiException('offline session');
@@ -506,7 +530,8 @@ class _OddOneOutScreenState extends State<OddOneOutScreen> {
   /// Pre-start panel: level picker + Start (mirrors Recall).
   Widget _readyPanel() {
     final items = LevelConfig.current.oddOneOutItems(_difficulty);
-    final target = LevelConfig.current.targetSeconds('odd_one_out', _difficulty);
+    final target =
+        LevelConfig.current.targetSeconds('odd_one_out', _difficulty);
     return ListView(
       padding: const EdgeInsets.all(20),
       children: [
@@ -537,9 +562,7 @@ class _OddOneOutScreenState extends State<OddOneOutScreen> {
                 label: Text('Medium'),
                 icon: Icon(Icons.sentiment_neutral)),
             ButtonSegment(
-                value: 3,
-                label: Text('Hard'),
-                icon: Icon(Icons.psychology)),
+                value: 3, label: Text('Hard'), icon: Icon(Icons.psychology)),
           ],
           selected: {_difficulty},
           onSelectionChanged: (s) {
@@ -602,8 +625,10 @@ class _OddOneOutScreenState extends State<OddOneOutScreen> {
             children: [
               // Server's level (display-only): the board is scoring truth.
               Text('Level ${board.difficultyLevel}', style: Monad.monoBody),
-              Text('Time $_elapsedSeconds'
-                  's of ${board.targetSeconds}s', style: Monad.monoLabel),
+              Text(
+                  'Time $_elapsedSeconds'
+                  's of ${board.targetSeconds}s',
+                  style: Monad.monoLabel),
             ],
           ),
         ),
@@ -687,8 +712,7 @@ class _OddOneOutScreenState extends State<OddOneOutScreen> {
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
               if (correct)
-                const Icon(Icons.check_circle,
-                    color: Monad.offBlack, size: 24)
+                const Icon(Icons.check_circle, color: Monad.offBlack, size: 24)
               else if (wrong)
                 const Icon(Icons.close, color: Monad.offBlack, size: 24),
               GameVisuals.face(

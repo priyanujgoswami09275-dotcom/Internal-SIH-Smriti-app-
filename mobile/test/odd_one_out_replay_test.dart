@@ -58,6 +58,33 @@ class FakeReplayApi extends ApiService {
       if (failBoard) throw ApiException('board down');
       return {'board': 'fresh'};
     }
+    if (path.contains('/content-packs/') && path.endsWith('/board')) {
+      calls.add('board:$path');
+      boardQueries.add(query);
+      boardSessionId = query?['session_id'];
+      if (failBoard) throw ApiException('board down');
+      return {
+        'pack_id': 'festivals_ner',
+        'pack_name': 'Festivals',
+        'difficulty_level': 1,
+        'pair_count': 1,
+        'total_cards': 2,
+        'cards': [
+          {
+            'card_id': 1,
+            'item_id': 'bihu',
+            'name_en': 'Bihu',
+            'name_as': 'Bihu',
+          },
+          {
+            'card_id': 2,
+            'item_id': 'bihu',
+            'name_en': 'Bihu',
+            'name_as': 'Bihu',
+          },
+        ],
+      };
+    }
     throw ApiException('unknown path $path');
   }
 
@@ -86,6 +113,7 @@ class FakeReplayApi extends ApiService {
     String sessionId, {
     String? idempotencyKey,
     DateTime? completedAt,
+    List<String> expectedActionIds = const [],
   }) async {
     calls.add('complete:$sessionId');
     return GameSessionSummary(
@@ -117,7 +145,7 @@ SyncQueueItem _gameItem({
     payload: {
       'game_type': gameType,
       'difficulty_level': difficulty,
-      'content_pack_id': null,
+      'content_pack_id': gameType == 'match_it' ? 'festivals_ner' : null,
       'started_at': DateTime(2026, 9, 22, 10, 0, 0).toIso8601String(),
       'completed_at': DateTime(2026, 9, 22, 10, 1, 0).toIso8601String(),
       'actions': actions.map((a) => a.toJson()).toList(),
@@ -177,7 +205,7 @@ void main() {
     expect(await db.pendingSyncItems(), isEmpty);
   });
 
-  test('match_it replay performs no board fetch', () async {
+  test('match_it replay binds the server board before actions', () async {
     final db = AppDatabase.forTesting(NativeDatabase.memory());
     addTearDown(db.close);
     final api = FakeReplayApi();
@@ -189,8 +217,8 @@ void main() {
         GameAction(
           id: 'act_1_flip',
           sessionId: 'offline_1',
-          actionType: 'flip',
-          actionData: {'card': 3},
+          actionType: 'flip_card',
+          actionData: {'card_id': 1},
           isCorrect: true,
           responseTimeMs: 500,
           timestamp: DateTime(2026, 9, 22, 10, 0, 5),
@@ -202,10 +230,12 @@ void main() {
 
     expect(api.calls, [
       'startGame:match_it:1',
-      'record:flip:server-new-1',
+      'board:${AppConfig.apiV1}/games/content-packs/festivals_ner/board',
+      'record:flip_card:server-new-1',
       'complete:server-new-1',
     ]);
-    expect(api.boardQueries, isEmpty);
+    expect(api.boardSessionId, 'server-new-1');
+    expect(api.boardQueries.single?['session_id'], 'server-new-1');
   });
 
   test('board fetch failure leaves the item failed/retryable', () async {

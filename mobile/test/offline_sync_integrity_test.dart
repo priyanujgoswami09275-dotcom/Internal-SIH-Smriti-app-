@@ -78,6 +78,31 @@ class _Transport {
     if (request.method == 'GET' && path.endsWith('/odd-one-out/board')) {
       return _StubResponse.json(200, {'board': 'fresh'});
     }
+    if (request.method == 'GET' &&
+        path.contains('/content-packs/') &&
+        path.endsWith('/board')) {
+      return _StubResponse.json(200, {
+        'pack_id': 'festivals_ner',
+        'pack_name': 'Festivals',
+        'difficulty_level': 1,
+        'pair_count': 1,
+        'total_cards': 2,
+        'cards': [
+          {
+            'card_id': 1,
+            'item_id': 'bihu',
+            'name_en': 'Bihu',
+            'name_as': 'Bihu',
+          },
+          {
+            'card_id': 2,
+            'item_id': 'bihu',
+            'name_en': 'Bihu',
+            'name_as': 'Bihu',
+          },
+        ],
+      });
+    }
     if (request.method == 'POST' && path.endsWith('/actions')) {
       final body = request.json;
       final key = body['idempotency_key'] as String?;
@@ -321,7 +346,7 @@ SyncQueueItem _gameItem({
   String gameType = 'match_it',
   String patientId = 'patient-original',
   int difficulty = 2,
-  String? contentPackId,
+  String? contentPackId = 'festivals_ner',
   String? routineId,
   DateTime? startedAt,
   DateTime? completedAt,
@@ -335,8 +360,8 @@ SyncQueueItem _gameItem({
         GameAction(
           id: 'action-1',
           sessionId: 'offline-1',
-          actionType: 'flip',
-          actionData: {'card': 1},
+          actionType: 'flip_card',
+          actionData: {'card_id': 1},
           isCorrect: true,
           responseTimeMs: 500,
           timestamp: DateTime.utc(2026, 9, 22, 10, 0, 5),
@@ -536,12 +561,13 @@ void main() {
     await fixture.sync.enqueueGameSession(
       patientId: 'patient-original',
       session: session,
+      contentPackId: 'festivals_ner',
       actions: [
         GameAction(
           id: 'legit-action',
           sessionId: 'offline-legitimate',
-          actionType: 'flip',
-          actionData: {'card': 1},
+          actionType: 'flip_card',
+          actionData: {'card_id': 1},
           isCorrect: true,
           responseTimeMs: 500,
           timestamp: DateTime.utc(2026, 9, 22, 11, 0, 5),

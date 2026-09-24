@@ -74,6 +74,7 @@ class _MatchItScreenState extends State<MatchItScreen> {
 
   /// Buffered actions for this session (drives the offline sync path).
   final List<GameAction> _bufferedActions = [];
+  Future<void> _actionSendTail = Future<void>.value();
 
   @override
   void initState() {
@@ -106,6 +107,7 @@ class _MatchItScreenState extends State<MatchItScreen> {
       final board = await _api.matchItBoard(
         packId: widget.packId,
         difficultyLevel: widget.difficultyLevel,
+        sessionId: sessionId,
       );
       if (!mounted) return;
       setState(() {
@@ -137,21 +139,50 @@ class _MatchItScreenState extends State<MatchItScreen> {
   // ------------------------------------------------------------------
 
   void _bufferAndSend(GameAction action) {
+    final actionIndex = _bufferedActions.length;
     _bufferedActions.add(action);
-    if (_offline) return; // stays buffered; flushed via sync queue on complete
-    // ponytail: fire-and-forget, accept per-move undercount on flaky networks;
-    // full replay only when the session itself must be queued offline.
-    unawaited(
-      _api
-          .recordGameAction(
-            sessionId: action.sessionId,
-            actionType: action.actionType,
-            actionData: action.actionData,
-            isCorrect: action.isCorrect,
-            responseTimeMs: action.responseTimeMs,
-          )
-          .catchError((_) => false),
+    if (_offline) return;
+    final idempotencyKey = ApiService.actionIdempotencyKey(
+      sessionId: action.sessionId,
+      actionIndex: actionIndex,
+      actionId: action.id,
     );
+    _actionSendTail = _actionSendTail.then((_) async {
+      try {
+        await _api.recordGameAction(
+          sessionId: action.sessionId,
+          actionType: action.actionType,
+          actionData: action.actionData,
+          isCorrect: action.isCorrect,
+          responseTimeMs: action.responseTimeMs,
+          idempotencyKey: idempotencyKey,
+        );
+      } catch (_) {}
+    });
+  }
+
+  List<String> _expectedActionIds() => [
+        for (var index = 0; index < _bufferedActions.length; index++)
+          ApiService.actionIdempotencyKey(
+            sessionId: _bufferedActions[index].sessionId,
+            actionIndex: index,
+            actionId: _bufferedActions[index].id,
+          ),
+      ];
+
+  Future<void> _ensureActionsDurable() async {
+    await _actionSendTail;
+    for (var index = 0; index < _bufferedActions.length; index++) {
+      final action = _bufferedActions[index];
+      await _api.recordGameAction(
+        sessionId: action.sessionId,
+        actionType: action.actionType,
+        actionData: action.actionData,
+        isCorrect: action.isCorrect,
+        responseTimeMs: action.responseTimeMs,
+        idempotencyKey: _expectedActionIds()[index],
+      );
+    }
   }
 
   void _armStuckTimer() {
@@ -217,8 +248,7 @@ class _MatchItScreenState extends State<MatchItScreen> {
         id: 'act_${DateTime.now().millisecondsSinceEpoch}_${card.id}',
         sessionId: sessionId,
         actionType: 'flip_card',
-        actionData:
-            _logic.getCardFlipActionData(card.id, card, resolved ? isCorrect : null),
+        actionData: _logic.getCardFlipActionData(card.id, card),
         isCorrect: isCorrect,
         responseTimeMs: resolved ? next.responseTimesMs.last : null,
         timestamp: DateTime.now(),
@@ -273,7 +303,12 @@ class _MatchItScreenState extends State<MatchItScreen> {
     GameSessionSummary? summary;
     try {
       if (!_offline) {
-        summary = await _api.completeGame(sessionId);
+        await _ensureActionsDurable();
+        summary = await _api.completeGame(
+          sessionId,
+          idempotencyKey: ApiService.completionIdempotencyKey(sessionId),
+          expectedActionIds: _expectedActionIds(),
+        );
         _bufferedActions.clear(); // server holds the authoritative record
       } else {
         throw ApiException('offline session');
@@ -304,14 +339,19 @@ class _MatchItScreenState extends State<MatchItScreen> {
       barrierDismissible: false,
       builder: (context) => AlertDialog(
         backgroundColor: Monad.parchment,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(Monad.radiusCard), side: const BorderSide(color: Monad.ash)),
+        shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(Monad.radiusCard),
+            side: const BorderSide(color: Monad.ash)),
         title: Text('Game completed', style: Monad.subheading),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            _resultRow('Accuracy', '${finalState.accuracyPct.toStringAsFixed(1)}%'),
-            _resultRow('Pairs matched', '${finalState.matchedPairs}/${finalState.totalPairs}'),
-            _resultRow('Average response', '${finalState.avgResponseTimeMs.toStringAsFixed(0)} ms'),
+            _resultRow(
+                'Accuracy', '${finalState.accuracyPct.toStringAsFixed(1)}%'),
+            _resultRow('Pairs matched',
+                '${finalState.matchedPairs}/${finalState.totalPairs}'),
+            _resultRow('Average response',
+                '${finalState.avgResponseTimeMs.toStringAsFixed(0)} ms'),
             if (summary == null) ...[
               const SizedBox(height: 12),
               Text(
@@ -355,6 +395,7 @@ class _MatchItScreenState extends State<MatchItScreen> {
     _flipReset?.cancel();
     _stuckTimer?.cancel();
     _bufferedActions.clear();
+    _actionSendTail = Future<void>.value();
     setState(() {
       _game = null;
       _sessionId = null;
@@ -435,8 +476,7 @@ class _MatchItScreenState extends State<MatchItScreen> {
                         padding: const EdgeInsets.all(16),
                         // Columns per spec grids: L1 2x2, L2 4x2, L3 4x3.
                         // 2 columns keeps L1 touch targets huge (>=120dp).
-                        gridDelegate:
-                            SliverGridDelegateWithFixedCrossAxisCount(
+                        gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
                           crossAxisCount: game.totalPairs <= 2 ? 2 : 4,
                           crossAxisSpacing: 12,
                           mainAxisSpacing: 12,
@@ -445,8 +485,8 @@ class _MatchItScreenState extends State<MatchItScreen> {
                         itemCount: game.cards.length,
                         itemBuilder: (context, index) => _CardView(
                           card: game.cards[index],
-                          hinting: _hinting &&
-                              _isHintCard(game, game.cards[index]),
+                          hinting:
+                              _hinting && _isHintCard(game, game.cards[index]),
                           onTap: () => _onCardTap(game.cards[index]),
                         ),
                       ),
@@ -487,13 +527,10 @@ class _CardView extends StatelessWidget {
     final revealed = card.isFlipped || card.isMatched;
     // Stable per-pair tint so matching pairs share a hue family; state is
     // still conveyed by border + art + label, never color alone.
-    final tint =
-        Monad.faceTints[card.pairId.hashCode % Monad.faceTints.length];
+    final tint = Monad.faceTints[card.pairId.hashCode % Monad.faceTints.length];
     return Semantics(
       button: true,
-      label: revealed
-          ? card.labelEn
-          : 'Card ${card.id}',
+      label: revealed ? card.labelEn : 'Card ${card.id}',
       child: GestureDetector(
         onTap: card.isMatched ? null : onTap,
         child: AnimatedContainer(

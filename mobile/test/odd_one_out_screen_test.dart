@@ -143,6 +143,7 @@ class FakeApiService extends ApiService {
     String sessionId, {
     String? idempotencyKey,
     DateTime? completedAt,
+    List<String> expectedActionIds = const [],
   }) async {
     completeCalls++;
     final summary = completeSummary;
@@ -236,10 +237,7 @@ Future<void> _tapStart(WidgetTester tester) async {
 Finder _tiles() => find.byWidgetPredicate(
       (w) =>
           w.key is ValueKey &&
-          (w.key as ValueKey)
-              .value
-              .toString()
-              .startsWith('ooo_tile_'),
+          (w.key as ValueKey).value.toString().startsWith('ooo_tile_'),
     );
 
 void main() {
@@ -281,10 +279,9 @@ void main() {
       final board = OddOneOutBoard.fromServerJson(_boardJson());
       expect(board.gameType, 'odd_one_out');
       expect(board.difficultyLevel, 1);
-      expect(board.items.map((i) => i.itemId),
-          ['kaji_nemu', 'ou_tenga', 'dhol']);
-      expect(board.items.map((i) => i.name),
-          ['Kaji Nemu', 'Ou Tenga', 'Dhol']);
+      expect(
+          board.items.map((i) => i.itemId), ['kaji_nemu', 'ou_tenga', 'dhol']);
+      expect(board.items.map((i) => i.name), ['Kaji Nemu', 'Ou Tenga', 'Dhol']);
       expect(board.itemCount, 3);
       expect(board.targetSeconds, 45);
       expect(board.groupLabel, 'Fruits');
@@ -296,8 +293,7 @@ void main() {
       final board = OddOneOutBoard.fromServerJson(raw);
       // The model has no answer surface: serializing it cannot leak one.
       expect(jsonEncode(board.toJson()), isNot(contains('answer_item_id')));
-      expect(board.toJson().keys,
-          isNot(contains('answer_item_id')));
+      expect(board.toJson().keys, isNot(contains('answer_item_id')));
     });
 
     test('cache round-trip preserves items and labels', () {
@@ -311,8 +307,7 @@ void main() {
   });
 
   group('GameSessionSummary server-truth fields', () {
-    test('ignores non-summary keys (endpoint returns summary fields only)',
-        () {
+    test('ignores non-summary keys (endpoint returns summary fields only)', () {
       final summary = GameSessionSummary.fromJson({
         'session_id': 's1',
         'game_type': 'odd_one_out',
@@ -424,12 +419,20 @@ void main() {
       await tester.tap(find.text('Dhol'));
       await tester.pumpAndSettle();
       // Server verdict posted with the brief's action shape.
-      expect(api.postedActions, hasLength(1));
-      expect(api.postedActions.single['action_type'], 'select_odd_item');
+      expect(api.postedActions, hasLength(2));
       expect(
-        (api.postedActions.single['action_data']
-            as Map)['selected_item_id'],
-        'dhol',
+        api.postedActions
+            .every((body) => body['action_type'] == 'select_odd_item'),
+        isTrue,
+      );
+      expect(
+        api.postedActions.every((body) =>
+            (body['action_data'] as Map)['selected_item_id'] == 'dhol'),
+        isTrue,
+      );
+      expect(
+        api.postedActions.map((body) => body['idempotency_key']).toSet(),
+        hasLength(1),
       );
       expect(api.completeCalls, 1);
       // Resolved correct state + server-truth labels in the result view.
@@ -471,8 +474,7 @@ void main() {
       expect(find.text('Correct!'), findsOneWidget);
     });
 
-    testWidgets('real action echo envelope resolves incorrect',
-        (tester) async {
+    testWidgets('real action echo envelope resolves incorrect', (tester) async {
       final api = FakeApiService()
         ..boardJson = _boardJson()
         ..completeSummary = _summary();
@@ -540,8 +542,7 @@ void main() {
 
     testWidgets('server-level mismatch adopts the server level',
         (tester) async {
-      final api = FakeApiService()
-        ..boardJson = _boardJson(difficultyLevel: 2);
+      final api = FakeApiService()..boardJson = _boardJson(difficultyLevel: 2);
       await _pumpScreen(tester,
           api: api, sync: FakeSync(), initialDifficulty: 1);
       await _tapStart(tester);
@@ -549,26 +550,21 @@ void main() {
       expect(find.text('Level 2'), findsOneWidget);
     });
 
-    testWidgets('all three config levels render 3/4/6 tiles',
-        (tester) async {
+    testWidgets('all three config levels render 3/4/6 tiles', (tester) async {
       for (final entry in {1: 3, 2: 4, 3: 6}.entries) {
         final api = FakeApiService()
-          ..boardJson = _nItemBoard(entry.value,
-              difficultyLevel: entry.key);
+          ..boardJson = _nItemBoard(entry.value, difficultyLevel: entry.key);
         // Dispose the previous screen: same-type pumpWidget would reuse it.
         await tester.pumpWidget(const SizedBox());
         await _pumpScreen(tester,
-            api: api,
-            sync: FakeSync(),
-            initialDifficulty: entry.key);
+            api: api, sync: FakeSync(), initialDifficulty: entry.key);
         await _tapStart(tester);
         expect(_tiles(), findsNWidgets(entry.value),
             reason: 'level ${entry.key}');
       }
     });
 
-    testWidgets('disposing mid-play cancels timers cleanly',
-        (tester) async {
+    testWidgets('disposing mid-play cancels timers cleanly', (tester) async {
       final api = FakeApiService()..boardJson = _boardJson();
       await _pumpScreen(tester, api: api, sync: FakeSync());
       await _tapStart(tester);
@@ -608,18 +604,17 @@ void main() {
       expect(session.gameType, GameType.oddOneOut);
       expect(session.difficultyLevel, 1);
       expect(sync.enqueuedActions.single, hasLength(2));
-      final ids =
-          sync.enqueuedActions.single.map((a) => a.id).toSet();
+      final ids = sync.enqueuedActions.single.map((a) => a.id).toSet();
       // Unique even for taps landing in the same millisecond.
       expect(ids, hasLength(2));
-      final action = sync.enqueuedActions.single.firstWhere(
-          (a) => a.actionData['selected_item_id'] == 'dhol');
+      final action = sync.enqueuedActions.single
+          .firstWhere((a) => a.actionData['selected_item_id'] == 'dhol');
       expect(action.actionType, 'select_odd_item');
       expect(action.isCorrect, isNull); // informational, server scores later
       expect(action.id, startsWith('act_'));
       expect(
-        action.timestamp.isBefore(DateTime.now().add(
-            const Duration(seconds: 1))),
+        action.timestamp
+            .isBefore(DateTime.now().add(const Duration(seconds: 1))),
         isTrue,
       );
       expect(find.text('Game completed'), findsOneWidget);

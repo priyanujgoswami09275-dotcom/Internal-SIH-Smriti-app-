@@ -45,7 +45,8 @@ class OfflineSyncService {
   /// Lightweight connectivity probe (no auth required).
   Future<bool> probeOnline() async {
     try {
-      await api.getJson('${AppConfig.apiV1}/language/status', includeAuth: false);
+      await api.getJson('${AppConfig.apiV1}/language/status',
+          includeAuth: false);
       return true;
     } catch (_) {
       return false;
@@ -246,7 +247,8 @@ class OfflineSyncService {
     final sessions = await db.getUnsyncedSessions();
     final actions = await db.getUnsyncedActions();
     for (final session in sessions) {
-      final sessionActions = actions.where((a) => a.sessionId == session.id).toList();
+      final sessionActions =
+          actions.where((a) => a.sessionId == session.id).toList();
       await enqueueGameSession(
         patientId: patientId,
         session: session,
@@ -347,7 +349,27 @@ class OfflineSyncService {
       idempotencyKey: idempotencyKey,
     );
     _throwIfCancelled(generation);
-    if (gameType == 'odd_one_out') {
+    if (gameType == 'match_it') {
+      if (contentPackId == null || contentPackId.isEmpty) {
+        throw ApiException('Cannot replay Match It without a content pack');
+      }
+      await api.matchItBoard(
+        packId: contentPackId,
+        difficultyLevel: difficultyLevel,
+        sessionId: sessionId,
+      );
+    } else if (gameType == 'routine_sequencing') {
+      await api.routineBoard(
+        patientId: patientId,
+        difficultyLevel: difficultyLevel,
+        sessionId: sessionId,
+      );
+    } else if (gameType == 'number_recall') {
+      await api.recallBoard(
+        difficultyLevel: difficultyLevel,
+        sessionId: sessionId,
+      );
+    } else if (gameType == 'odd_one_out') {
       await api.getJson(
         '${AppConfig.apiV1}/games/odd-one-out/board',
         query: {
@@ -355,8 +377,8 @@ class OfflineSyncService {
           'difficulty_level': '$difficultyLevel',
         },
       );
-      _throwIfCancelled(generation);
     }
+    _throwIfCancelled(generation);
     final rawActions = payload['actions'];
     final actions = <Map<String, dynamic>>[];
     if (rawActions is List) {
@@ -366,14 +388,22 @@ class OfflineSyncService {
         }
       }
     }
+    final expectedActionIds = <String>[];
     for (var index = 0; index < actions.length; index++) {
       final action = actions[index];
       final rawActionData = action['action_data'];
       final actionData = rawActionData is Map
           ? Map<String, dynamic>.from(rawActionData)
           : <String, dynamic>{};
-      final actionId = action['id'] is String ? action['id'] as String : '$index';
+      final actionId =
+          action['id'] is String ? action['id'] as String : '$index';
       final responseTime = action['response_time_ms'];
+      final actionIdempotencyKey = ApiService.actionIdempotencyKey(
+        sessionId: sessionId,
+        actionIndex: index,
+        actionId: actionId,
+      );
+      expectedActionIds.add(actionIdempotencyKey);
       await api.recordGameAction(
         sessionId: sessionId,
         actionType: action['action_type'] is String
@@ -382,13 +412,14 @@ class OfflineSyncService {
         actionData: actionData,
         isCorrect: action['is_correct'] as bool?,
         responseTimeMs: responseTime is num ? responseTime.toInt() : null,
-        idempotencyKey: '$idempotencyKey:action:$index:$actionId',
+        idempotencyKey: actionIdempotencyKey,
       );
       _throwIfCancelled(generation);
     }
     await api.completeGame(
       sessionId,
-      idempotencyKey: idempotencyKey,
+      idempotencyKey: ApiService.completionIdempotencyKey(sessionId),
+      expectedActionIds: expectedActionIds,
       completedAt: completedAt,
     );
     _throwIfCancelled(generation);

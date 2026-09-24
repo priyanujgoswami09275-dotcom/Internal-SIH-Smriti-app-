@@ -52,6 +52,7 @@ class _RecallScreenState extends State<RecallScreen> {
 
   /// Buffered actions for this session (drives the offline sync path).
   final List<GameAction> _bufferedActions = [];
+  Future<void> _actionSendTail = Future<void>.value();
 
   @override
   void initState() {
@@ -85,7 +86,10 @@ class _RecallScreenState extends State<RecallScreen> {
         gameType: 'number_recall',
         difficultyLevel: _difficulty,
       );
-      final board = await _api.recallBoard(difficultyLevel: _difficulty);
+      final board = await _api.recallBoard(
+        difficultyLevel: _difficulty,
+        sessionId: sessionId,
+      );
       if (!mounted) return;
       setState(() {
         _sessionId = sessionId;
@@ -131,8 +135,8 @@ class _RecallScreenState extends State<RecallScreen> {
       actionData: {'sequence_length': game.board.sequence.length},
       timestamp: DateTime.now(),
     ));
-    final step = Duration(
-        seconds: game.board.showSecondsPerItem.clamp(1, 10).toInt());
+    final step =
+        Duration(seconds: game.board.showSecondsPerItem.clamp(1, 10).toInt());
     _memorizeTimer?.cancel();
     _memorizeTimer = Timer.periodic(step, (_) {
       if (!mounted) return;
@@ -152,21 +156,50 @@ class _RecallScreenState extends State<RecallScreen> {
   }
 
   void _bufferAndSend(GameAction action) {
+    final actionIndex = _bufferedActions.length;
     _bufferedActions.add(action);
-    if (_offline) return; // stays buffered; flushed via sync queue on complete
-    // Fire-and-forget, mirroring the other games: accept per-tap undercount
-    // on flaky networks; full replay only for queued offline sessions.
-    unawaited(
-      _api
-          .recordGameAction(
-            sessionId: action.sessionId,
-            actionType: action.actionType,
-            actionData: action.actionData,
-            isCorrect: action.isCorrect,
-            responseTimeMs: action.responseTimeMs,
-          )
-          .catchError((_) => false),
+    if (_offline) return;
+    final idempotencyKey = ApiService.actionIdempotencyKey(
+      sessionId: action.sessionId,
+      actionIndex: actionIndex,
+      actionId: action.id,
     );
+    _actionSendTail = _actionSendTail.then((_) async {
+      try {
+        await _api.recordGameAction(
+          sessionId: action.sessionId,
+          actionType: action.actionType,
+          actionData: action.actionData,
+          isCorrect: action.isCorrect,
+          responseTimeMs: action.responseTimeMs,
+          idempotencyKey: idempotencyKey,
+        );
+      } catch (_) {}
+    });
+  }
+
+  List<String> _expectedActionIds() => [
+        for (var index = 0; index < _bufferedActions.length; index++)
+          ApiService.actionIdempotencyKey(
+            sessionId: _bufferedActions[index].sessionId,
+            actionIndex: index,
+            actionId: _bufferedActions[index].id,
+          ),
+      ];
+
+  Future<void> _ensureActionsDurable() async {
+    await _actionSendTail;
+    for (var index = 0; index < _bufferedActions.length; index++) {
+      final action = _bufferedActions[index];
+      await _api.recordGameAction(
+        sessionId: action.sessionId,
+        actionType: action.actionType,
+        actionData: action.actionData,
+        isCorrect: action.isCorrect,
+        responseTimeMs: action.responseTimeMs,
+        idempotencyKey: _expectedActionIds()[index],
+      );
+    }
   }
 
   void _onDigitTap(int digit) {
@@ -185,7 +218,6 @@ class _RecallScreenState extends State<RecallScreen> {
       actionData: {
         'position': position,
         'digit': digit,
-        'expected': game.board.sequence[position],
       },
       isCorrect: correct,
       responseTimeMs: next.responseTimesMs.last,
@@ -221,7 +253,12 @@ class _RecallScreenState extends State<RecallScreen> {
     GameSessionSummary? summary;
     try {
       if (!_offline) {
-        summary = await _api.completeGame(sessionId);
+        await _ensureActionsDurable();
+        summary = await _api.completeGame(
+          sessionId,
+          idempotencyKey: ApiService.completionIdempotencyKey(sessionId),
+          expectedActionIds: _expectedActionIds(),
+        );
         _bufferedActions.clear(); // server holds the authoritative record
       } else {
         throw ApiException('offline session');
@@ -259,8 +296,8 @@ class _RecallScreenState extends State<RecallScreen> {
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            _resultRow('Accuracy',
-                '${finalState.accuracyPct.toStringAsFixed(1)}%'),
+            _resultRow(
+                'Accuracy', '${finalState.accuracyPct.toStringAsFixed(1)}%'),
             _resultRow('Digits correct',
                 '${finalState.correctCount}/${finalState.board.sequence.length}'),
             _resultRow('Average response',
@@ -307,6 +344,7 @@ class _RecallScreenState extends State<RecallScreen> {
   void _restart() {
     _memorizeTimer?.cancel();
     _bufferedActions.clear();
+    _actionSendTail = Future<void>.value();
     _prepare(autoStart: true);
   }
 
@@ -351,9 +389,7 @@ class _RecallScreenState extends State<RecallScreen> {
                 label: Text('Medium'),
                 icon: Icon(Icons.sentiment_neutral)),
             ButtonSegment(
-                value: 3,
-                label: Text('Hard'),
-                icon: Icon(Icons.psychology)),
+                value: 3, label: Text('Hard'), icon: Icon(Icons.psychology)),
           ],
           selected: {_difficulty},
           onSelectionChanged: (s) {

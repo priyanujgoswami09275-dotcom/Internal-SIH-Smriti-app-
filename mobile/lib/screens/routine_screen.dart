@@ -30,7 +30,8 @@ import '../theme/monad_theme.dart';
 
 /// Monad palette (DESIGN.md tokens).
 class _NERPalette {
-  static Color get headerBg => Monad.tintGold; // ≤25% gold tint, never full fill
+  static Color get headerBg =>
+      Monad.tintGold; // ≤25% gold tint, never full fill
   static const textDark = Monad.offBlack;
 }
 
@@ -66,6 +67,7 @@ class _RoutineScreenState extends State<RoutineScreen> {
 
   /// Buffered actions for this session (drives the offline sync path).
   final List<GameAction> _bufferedActions = [];
+  Future<void> _actionSendTail = Future<void>.value();
 
   @override
   void initState() {
@@ -96,6 +98,7 @@ class _RoutineScreenState extends State<RoutineScreen> {
       final board = await _api.routineBoard(
         patientId: widget.patientId,
         difficultyLevel: widget.difficultyLevel,
+        sessionId: sessionId,
       );
       if (!mounted) return;
       setState(() {
@@ -123,22 +126,51 @@ class _RoutineScreenState extends State<RoutineScreen> {
   // ------------------------------------------------------------------
 
   void _bufferAndSend(GameAction action) {
+    final actionIndex = _bufferedActions.length;
     _bufferedActions.add(action);
     final offline = _game?.sessionId.startsWith('offline_') ?? false;
-    if (offline) return; // stays buffered; flushed via sync queue on complete
-    // ponytail: fire-and-forget, accept per-move undercount on flaky networks;
-    // full replay only when the session itself must be queued offline.
-    unawaited(
-      _api
-          .recordGameAction(
-            sessionId: action.sessionId,
-            actionType: action.actionType,
-            actionData: action.actionData,
-            isCorrect: action.isCorrect,
-            responseTimeMs: action.responseTimeMs,
-          )
-          .catchError((_) => false),
+    if (offline) return;
+    final idempotencyKey = ApiService.actionIdempotencyKey(
+      sessionId: action.sessionId,
+      actionIndex: actionIndex,
+      actionId: action.id,
     );
+    _actionSendTail = _actionSendTail.then((_) async {
+      try {
+        await _api.recordGameAction(
+          sessionId: action.sessionId,
+          actionType: action.actionType,
+          actionData: action.actionData,
+          isCorrect: action.isCorrect,
+          responseTimeMs: action.responseTimeMs,
+          idempotencyKey: idempotencyKey,
+        );
+      } catch (_) {}
+    });
+  }
+
+  List<String> _expectedActionIds() => [
+        for (var index = 0; index < _bufferedActions.length; index++)
+          ApiService.actionIdempotencyKey(
+            sessionId: _bufferedActions[index].sessionId,
+            actionIndex: index,
+            actionId: _bufferedActions[index].id,
+          ),
+      ];
+
+  Future<void> _ensureActionsDurable() async {
+    await _actionSendTail;
+    for (var index = 0; index < _bufferedActions.length; index++) {
+      final action = _bufferedActions[index];
+      await _api.recordGameAction(
+        sessionId: action.sessionId,
+        actionType: action.actionType,
+        actionData: action.actionData,
+        isCorrect: action.isCorrect,
+        responseTimeMs: action.responseTimeMs,
+        idempotencyKey: _expectedActionIds()[index],
+      );
+    }
   }
 
   void _armStuckTimer() {
@@ -154,7 +186,8 @@ class _RoutineScreenState extends State<RoutineScreen> {
       }
       // Adaptive rule: >=15s stuck (or excessive errors) -> subtle hint.
       // L3 grants fewer free hints (max 1) per the difficulty spec.
-      final hintBudgetLeft = widget.difficultyLevel >= 3 ? _hintsUsed < 1 : true;
+      final hintBudgetLeft =
+          widget.difficultyLevel >= 3 ? _hintsUsed < 1 : true;
       if (!_hinting &&
           hintBudgetLeft &&
           _engine.shouldHintNow(
@@ -224,7 +257,13 @@ class _RoutineScreenState extends State<RoutineScreen> {
     GameSessionSummary? summary;
     try {
       if (!finalState.sessionId.startsWith('offline_')) {
-        summary = await _api.completeGame(finalState.sessionId);
+        await _ensureActionsDurable();
+        summary = await _api.completeGame(
+          finalState.sessionId,
+          idempotencyKey:
+              ApiService.completionIdempotencyKey(finalState.sessionId),
+          expectedActionIds: _expectedActionIds(),
+        );
         _bufferedActions.clear(); // server holds the authoritative record
       } else {
         throw ApiException('offline session');
@@ -276,7 +315,9 @@ class _RoutineScreenState extends State<RoutineScreen> {
       barrierDismissible: false,
       builder: (context) => AlertDialog(
         backgroundColor: Monad.parchment,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(Monad.radiusCard), side: const BorderSide(color: Monad.ash)),
+        shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(Monad.radiusCard),
+            side: const BorderSide(color: Monad.ash)),
         title: Text('Routine completed', style: Monad.subheading),
         content: Column(
           mainAxisSize: MainAxisSize.min,
@@ -284,7 +325,8 @@ class _RoutineScreenState extends State<RoutineScreen> {
             Text('Accuracy: ${validation.accuracyPct.toStringAsFixed(1)}%',
                 style: Monad.monoLabel),
             const SizedBox(height: 8),
-            Text('${validation.correctCount} of ${validation.totalCount} steps placed correctly',
+            Text(
+                '${validation.correctCount} of ${validation.totalCount} steps placed correctly',
                 style: Monad.monoBody),
             if (summary == null) ...[
               const SizedBox(height: 12),
@@ -322,9 +364,12 @@ class _RoutineScreenState extends State<RoutineScreen> {
                     child: Column(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
-                        const Icon(Icons.cloud_off, size: 64, color: Monad.smoke),
+                        const Icon(Icons.cloud_off,
+                            size: 64, color: Monad.smoke),
                         const SizedBox(height: 12),
-                        Text(_error!, textAlign: TextAlign.center, style: Monad.monoBodyLg),
+                        Text(_error!,
+                            textAlign: TextAlign.center,
+                            style: Monad.monoBodyLg),
                         const SizedBox(height: 16),
                         ElevatedButton(
                           onPressed: _startGame,
@@ -350,7 +395,8 @@ class _RoutineScreenState extends State<RoutineScreen> {
                                   onPressed: () =>
                                       Navigator.of(context).maybePop(),
                                   icon: const Icon(Icons.home, size: 22),
-                                  label: Text(GameLabels.of('en', 'common.home')),
+                                  label:
+                                      Text(GameLabels.of('en', 'common.home')),
                                   style: Monad.ghostPill(),
                                 ),
                               ],
@@ -385,22 +431,26 @@ class _RoutineScreenState extends State<RoutineScreen> {
       child: Row(
         children: [
           Container(
-            width: 44, height: 44,
+            width: 44,
+            height: 44,
             decoration: BoxDecoration(
               color: const Color(0xFFFFF0D8),
               borderRadius: BorderRadius.circular(12),
               border: Border.all(color: const Color(0xFFE8C880)),
             ),
-            child: const Icon(Icons.lightbulb_outline, color: Color(0xFFD4A030), size: 22),
+            child: const Icon(Icons.lightbulb_outline,
+                color: Color(0xFFD4A030), size: 22),
           ),
           const SizedBox(width: 14),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('Arrange your day', style: Monad.monoLabel.copyWith(fontSize: 16)),
+                Text('Arrange your day',
+                    style: Monad.monoLabel.copyWith(fontSize: 16)),
                 const SizedBox(height: 2),
-                Text('Tap activities in the order you do them each day', style: Monad.monoBodySm),
+                Text('Tap activities in the order you do them each day',
+                    style: Monad.monoBodySm),
               ],
             ),
           ),
@@ -480,7 +530,8 @@ class _RoutineScreenState extends State<RoutineScreen> {
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
                     if (step.icon != null)
-                      Icon(_iconFor(step.icon!), size: 34, color: Monad.offBlack),
+                      Icon(_iconFor(step.icon!),
+                          size: 34, color: Monad.offBlack),
                     const SizedBox(height: 6),
                     Text(
                       step.getTitle(widget.languageCode),
