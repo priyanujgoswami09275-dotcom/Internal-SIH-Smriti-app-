@@ -124,6 +124,8 @@ class RagUploadScreen extends StatefulWidget {
   /// instead of the platform `FilePicker` call (no MethodChannel in tests).
   @visibleForTesting
   final Future<({Uint8List bytes, String filename})?> Function()? pickForTest;
+  @visibleForTesting
+  final Future<PlatformFile?> Function()? platformPickForTest;
   const RagUploadScreen({
     super.key,
     required this.patientId,
@@ -132,6 +134,7 @@ class RagUploadScreen extends StatefulWidget {
     this.sendForTest,
     this.onConsentMissing,
     this.pickForTest,
+    this.platformPickForTest,
   });
 
   @override
@@ -155,7 +158,9 @@ class _RagUploadScreenState extends State<RagUploadScreen> {
     try {
       final picked = widget.pickForTest != null
           ? await widget.pickForTest!()
-          : await _pickWithFilePicker();
+          : widget.platformPickForTest != null
+              ? await _readPlatformFile(await widget.platformPickForTest!())
+              : await _pickWithFilePicker();
       if (picked == null || !mounted) return;
       final problem = validateDocumentFile(
         filename: picked.filename,
@@ -190,6 +195,11 @@ class _RagUploadScreenState extends State<RagUploadScreen> {
     } catch (e) {
       throw _DocumentPickerError('Could not select file: $e');
     }
+    return _readPlatformFile(f);
+  }
+
+  Future<({Uint8List bytes, String filename})?> _readPlatformFile(
+      PlatformFile? f) async {
     if (f == null) return null;
 
     final int? reportedSize;
