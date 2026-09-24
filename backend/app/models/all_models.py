@@ -195,11 +195,20 @@ class SyncQueue(Base):
     resource_type = Column(SQLEnum(SyncResourceTypeEnum, values_callable=enum_values), nullable=False)
     operation = Column(SQLEnum(SyncOperationEnum, values_callable=enum_values), nullable=False)
     resource_id = Column(UUID(as_uuid=True), nullable=False)
+    idempotency_key = Column(String(36), nullable=False, default=lambda: str(uuid.uuid4()))
     payload = Column(JSON, nullable=False)
     created_at = Column(DateTime, default=func.now(), nullable=False)
     synced_at = Column(DateTime, nullable=True)
     retry_count = Column(Integer, default=0, nullable=False)
     last_error = Column(String(500), nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "patient_id",
+            "idempotency_key",
+            name="uq_sync_queue_patient_idempotency_key",
+        ),
+    )
 
 class SymptomEntrySourceEnum(str, Enum):
     MANUAL_CAREGIVER = "manual_caregiver"
