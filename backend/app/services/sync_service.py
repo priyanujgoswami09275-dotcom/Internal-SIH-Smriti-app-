@@ -30,7 +30,7 @@ from app.models.all_models import (
     SyncOperationEnum,
     SyncQueue,
 )
-from app.services.compliance_service import EncryptionService
+from app.services.compliance_service import ComplianceService, EncryptionService
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +107,7 @@ async def consume_sync_queue(
     rows = result.scalars().all()
 
     counts = {"materialized": 0, "acked": 0, "errors": 0}
+    materialized_audits = []
     for item in rows:
         try:
             if (
@@ -118,9 +119,10 @@ async def consume_sync_queue(
                 notes = payload.get("note") or payload.get("notes") or ""
                 if not entered_by or not notes:
                     raise ValueError("offline_symptom payload needs entered_by and note")
+                actor_id = UUID(str(entered_by))
                 symptom = SymptomLog(
                     patient_id=item.patient_id,
-                    entered_by=UUID(str(entered_by)),
+                    entered_by=actor_id,
                     entry_source=(
                         SymptomEntrySourceEnum(payload["source"])
                         if payload.get("source")
@@ -135,6 +137,8 @@ async def consume_sync_queue(
                     ),
                 )
                 db.add(symptom)
+                await db.flush()
+                materialized_audits.append((actor_id, str(symptom.id)))
                 counts["materialized"] += 1
             else:
                 # Replay-through-live-endpoint flows: acknowledge at the outbox.
@@ -149,6 +153,17 @@ async def consume_sync_queue(
             # Do NOT set synced_at — failure stays pending and retryable
     if rows:
         await db.commit()
+    for actor_id, symptom_id in materialized_audits:
+        await ComplianceService.log_write_access(
+            db,
+            actor_id,
+            "symptom_log",
+            symptom_id,
+            details={
+                "resource_type": "offline_symptom",
+                "operation": "sync_materialize",
+            },
+        )
     return counts
 
 

@@ -1,3 +1,5 @@
+import uuid
+
 import pytest
 from sqlalchemy import select
 
@@ -8,8 +10,10 @@ from app.models.all_models import (
     AuditLog,
     CaregiverPatientLink,
     PatientProfile,
+    SymptomLog,
 )
 from app.models.user import RoleEnum, User
+from app.services.sync_service import consume_sync_queue, process_sync_batch
 
 
 async def _linked_family_actor(db, permission_tier):
@@ -73,3 +77,57 @@ async def test_export_fails_closed_when_audit_cannot_be_written(
     assert response.json() == {
         "detail": "Export audit unavailable; patient data withheld"
     }
+
+
+@pytest.mark.asyncio
+async def test_sync_materialization_writes_symptom_audit(db_session):
+    owner = User(password_hash="x", role=RoleEnum.PATIENT)
+    entered_by = User(password_hash="x", role=RoleEnum.ASHA_WORKER)
+    db_session.add_all([owner, entered_by])
+    await db_session.flush()
+    patient = PatientProfile(user_id=owner.id, name="Sync Audit")
+    db_session.add(patient)
+    await db_session.flush()
+    note = "sensitive clinical note"
+    await process_sync_batch(
+        db_session,
+        patient.id,
+        [
+            {
+                "resource_type": "offline_symptom",
+                "operation": "create",
+                "resource_id": str(uuid.uuid4()),
+                "payload": {
+                    "entered_by": str(entered_by.id),
+                    "notes": note,
+                    "source": "manual_asha",
+                    "severity": 2,
+                },
+            }
+        ],
+    )
+
+    counts = await consume_sync_queue(db_session, patient_id=patient.id)
+
+    assert counts == {"materialized": 1, "acked": 0, "errors": 0}
+    symptom = (
+        await db_session.execute(
+            select(SymptomLog).where(SymptomLog.patient_id == patient.id)
+        )
+    ).scalar_one()
+    audit = (
+        await db_session.execute(
+            select(AuditLog).where(
+                AuditLog.user_id == entered_by.id,
+                AuditLog.resource_type == "symptom_log",
+            )
+        )
+    ).scalar_one()
+    assert symptom.entered_by == entered_by.id
+    assert audit.action == AuditActionEnum.WRITE
+    assert audit.resource_id == symptom.id
+    assert audit.details == {
+        "resource_type": "offline_symptom",
+        "operation": "sync_materialize",
+    }
+    assert note not in str(audit.details)
