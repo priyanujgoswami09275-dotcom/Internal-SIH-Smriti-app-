@@ -175,8 +175,7 @@ class MatchItService {
     if (cardIndex < 0) return null;
 
     final card = currentState.cards[cardIndex];
-    if (card.isFlipped || card.isMatched)
-      return null; // Already flipped or matched
+    if (card.isFlipped || card.isMatched) return null; // Already flipped or matched
 
     // Flip the card
     final now = DateTime.now();
