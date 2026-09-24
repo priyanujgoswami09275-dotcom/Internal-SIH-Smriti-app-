@@ -164,6 +164,7 @@ class ComplianceService:
         )).scalar_one_or_none()
         if record is None:
             raise HTTPException(status_code=404, detail="Consent record not found")
+        scope = record.scope
         try:
             if record.revoked_at is None:
                 record.revoked_at = datetime.now(timezone.utc)
@@ -178,8 +179,8 @@ class ComplianceService:
             logger.exception(
                 "Consent revoke failed for patient_id=%s consent_id=%s scope=%s",
                 patient_id,
-                record.id,
-                record.scope,
+                consent_id,
+                scope,
             )
             raise HTTPException(status_code=503, detail="Consent persistence or audit unavailable")
         return record
