@@ -67,7 +67,7 @@ class ComplianceService:
             raise HTTPException(status_code=422, detail="Unsupported processing scope")
 
     @staticmethod
-    async def record_consent(
+    async def grant_consent(
         db: AsyncSession,
         patient_id: uuid.UUID,
         consent_type: ConsentTypeEnum,
@@ -98,8 +98,32 @@ class ComplianceService:
                 raise RuntimeError("Mutation audit unavailable")
         except Exception:
             await db.rollback()
+            logger.exception(
+                "Consent grant failed for patient_id=%s consent_id=%s scope=%s",
+                patient_id,
+                record.id,
+                scope,
+            )
             raise HTTPException(status_code=503, detail="Consent persistence or audit unavailable")
         return record
+
+    @staticmethod
+    async def record_consent(
+        db: AsyncSession,
+        patient_id: uuid.UUID,
+        consent_type: ConsentTypeEnum,
+        scope: str,
+        actor: User,
+        guardian_id: Optional[uuid.UUID] = None,
+    ) -> ConsentRecord:
+        return await ComplianceService.grant_consent(
+            db=db,
+            patient_id=patient_id,
+            consent_type=consent_type,
+            scope=scope,
+            actor=actor,
+            guardian_id=guardian_id,
+        )
 
     @staticmethod
     async def verify_consent(
@@ -151,6 +175,12 @@ class ComplianceService:
                 raise RuntimeError("Mutation audit unavailable")
         except Exception:
             await db.rollback()
+            logger.exception(
+                "Consent revoke failed for patient_id=%s consent_id=%s scope=%s",
+                patient_id,
+                record.id,
+                record.scope,
+            )
             raise HTTPException(status_code=503, detail="Consent persistence or audit unavailable")
         return record
 
