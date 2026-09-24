@@ -251,15 +251,22 @@ class _HomeShellState extends State<HomeShell> {
   @override
   Widget build(BuildContext context) {
     final user = AuthSession.instance.user;
-    final isStaff = user != null && user.role != Role.patient;
 
     if (_resolvingProfile) {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
 
-    // Staff see the caregiver dashboard surface.
-    if (isStaff) {
-      return CaregiverDashboardScreen(caregiverId: user.id);
+    // Explicit staff-role switch: family caregiver, ASHA worker, clinician,
+    // and admin all land on the caregiver dashboard. The basic-vs-clinical
+    // tier split is server-driven via summary['view']; admin additionally
+    // gets the T7 audit-trail AppBar entry. Patient (or null) falls through
+    // to the profile-setup / PatientHome path below.
+    final role = user?.role;
+    if (role == Role.familyCaregiver ||
+        role == Role.ashaWorker ||
+        role == Role.clinician ||
+        role == Role.admin) {
+      return CaregiverDashboardScreen(caregiverId: user!.id);
     }
 
     // Patient without a profile yet: prompt to create one.
