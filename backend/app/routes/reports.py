@@ -4,12 +4,13 @@ import uuid
 from typing import List, Dict, Any, Optional
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from pydantic import BaseModel, field_validator
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import require_role
 from app.database import get_db
 from app.deps import ensure_clinical_access, ensure_consent
-from app.models.all_models import DocumentTypeEnum, User
+from app.models.all_models import DocumentTypeEnum, MedicalDocument, User
 from app.services.compliance_service import ComplianceService
 from app.services.document_extraction import MAX_UPLOAD_BYTES, extract_document_text
 from app.services.rag_service import RAGService
@@ -178,6 +179,45 @@ async def answer_medical_question(
         llm=LLMClient(),
     )
     return result
+
+
+@router.get("/patients/{patient_id}/documents")
+async def list_patient_documents(
+    patient_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_staff),
+):
+    """List a patient's ingested medical documents (metadata only).
+
+    Same gates as the read/query paths — clinical tier, health_data consent,
+    DPDP read audit. Never returns extracted_text (encrypted at rest).
+    """
+    await ensure_clinical_access(db, current_user, patient_id)
+    await ensure_consent(db, patient_id, "health_data")
+    await ComplianceService.log_read_access(db, current_user.id, "medical_document", str(patient_id))
+
+    res = await db.execute(
+        select(MedicalDocument)
+        .where(MedicalDocument.patient_id == patient_id)
+        .order_by(MedicalDocument.created_at.desc())
+        .limit(50)
+    )
+    documents = [
+        {
+            "document_id": str(doc.id),
+            "title": doc.title,
+            "file_name": doc.file_ref,
+            "doc_type": doc.doc_type.value if hasattr(doc.doc_type, "value") else str(doc.doc_type),
+            "embedding_status": (
+                doc.embedding_status.value
+                if hasattr(doc.embedding_status, "value")
+                else str(doc.embedding_status)
+            ),
+            "created_at": doc.created_at.isoformat() if doc.created_at else None,
+        }
+        for doc in res.scalars().all()
+    ]
+    return {"documents": documents, "count": len(documents)}
 
 
 @router.get("/patients/{patient_id}/latest")
