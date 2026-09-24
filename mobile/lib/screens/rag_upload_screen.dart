@@ -86,9 +86,24 @@ String formatDocumentUploadError(ApiException e) {
         return formatRagUploadFailure(403, e.message);
       }
       return "Your account can't add health documents. "
-          'A health worker — ASHA worker, clinician, or admin — can.';
+          'A health worker — ASHA worker, clinician, or admin — can. '
+          '${e.message}';
   }
   return 'Upload failed: ${e.message}';
+}
+
+String _documentUploadDetail(int statusCode, String body) {
+  var detail = body;
+  try {
+    final data = jsonDecode(body);
+    if (data is Map && data['detail'] != null) {
+      detail = data['detail'].toString();
+    }
+  } on FormatException {
+    return detail;
+  }
+  if (detail.trim().isEmpty) detail = 'HTTP $statusCode';
+  return detail;
 }
 
 class RagUploadScreen extends StatefulWidget {
@@ -206,21 +221,18 @@ class _RagUploadScreenState extends State<RagUploadScreen> {
         );
         final res = await widget.sendForTest!(request);
         if (!mounted) return;
+        final detail = _documentUploadDetail(res.statusCode, res.body);
         final consentMissing =
-            res.statusCode == 403 && res.body.contains('health_data');
+            res.statusCode == 403 && detail.contains('health_data');
         setState(() {
           _uploading = false;
           if (consentMissing) _consentMissing = true;
           if (res.statusCode >= 200 && res.statusCode < 300) {
             _result = 'Uploaded successfully (HTTP ${res.statusCode}).';
-          } else if (res.statusCode == 401) {
-            _result = 'Session expired — sign in again.';
-          } else if (res.statusCode == 413) {
-            _result = 'That file is over the 10 MB limit — choose a smaller file.';
-          } else if (res.statusCode == 429) {
-            _result = 'Rate limit reached — wait a minute and try again.';
           } else {
-            _result = formatRagUploadFailure(res.statusCode, res.body);
+            _result = formatDocumentUploadError(
+              ApiException(detail, statusCode: res.statusCode),
+            );
           }
         });
         // Structural consent state fires alongside the inline message

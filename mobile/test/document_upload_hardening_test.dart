@@ -143,6 +143,33 @@ void main() {
     expect(find.textContaining('Rate limit reached'), findsOneWidget);
   });
 
+  testWidgets('sendForTest 403 tier shows health-worker copy without consent wording',
+      (tester) async {
+    var consentFired = false;
+    await tester.pumpWidget(MaterialApp(
+      home: RagUploadScreen(
+        patientId: 'p1',
+        testBytes: Uint8List.fromList(utf8.encode('hi')),
+        testFilename: 'note.txt',
+        onConsentMissing: () => consentFired = true,
+        sendForTest: (req) async => http.Response(
+          jsonEncode({
+            'detail': 'Clinical permission tier required for this resource',
+          }),
+          403,
+          headers: const {'Content-Type': 'application/json'},
+        ),
+      ),
+    ));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('UPLOAD ▸'));
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining("can't add health documents"), findsOneWidget);
+    expect(find.textContaining('consent required'), findsNothing);
+    expect(consentFired, isFalse);
+  });
+
   for (final role in const ['asha_worker', 'clinician', 'admin']) {
     testWidgets('$role can upload a PDF and a .txt through the same path',
         (tester) async {
