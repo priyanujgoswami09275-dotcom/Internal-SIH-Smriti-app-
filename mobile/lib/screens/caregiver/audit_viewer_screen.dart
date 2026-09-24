@@ -13,8 +13,13 @@ class AuditViewerScreen extends StatefulWidget {
 }
 
 class _AuditViewerScreenState extends State<AuditViewerScreen> {
-  late final Future<List<Map<String, dynamic>>> _logs =
-      ApiService.instance.auditLogs(limit: 50);
+  late final Future<List<Map<String, dynamic>>> _logs;
+
+  @override
+  void initState() {
+    super.initState();
+    _logs = ApiService.instance.auditLogs(limit: 50);
+  }
 
   @override
   Widget build(BuildContext context) {
