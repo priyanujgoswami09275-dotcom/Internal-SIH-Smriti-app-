@@ -316,7 +316,8 @@ class ApiService {
   }
 
   /// GET /patients/{id}/risk-screening — latest persisted screening for
-  /// rehydration. Returns null when not assessed, unavailable to this role
+  /// rehydration. Returns null when not assessed (404 or not_assessed —
+  /// the GET endpoint may not be deployed yet), unavailable to this role
   /// (403), or the request fails: callers treat that as "no data yet".
   Future<Map<String, dynamic>?> getRiskScreening(String patientId) async {
     try {
@@ -326,6 +327,12 @@ class ApiService {
       if (map['status'] == 'not_assessed') return null;
       return map;
     } on ApiException catch (e) {
+      if (e.statusCode == 404) {
+        // GATE: backend GET /risk-screening ships separately from this
+        // branch — 404 means "no prior result", never a hard dependency.
+        // Remove this special case once that endpoint lands.
+        return null;
+      }
       developer.log(
         'risk screening GET skipped: ${e.statusCode} ${e.message}',
         name: 'ApiService',

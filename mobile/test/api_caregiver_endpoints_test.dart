@@ -300,6 +300,35 @@ void main() {
     });
   });
 
+  group('getRiskScreening', () {
+    test('404 → null (no prior result; GET endpoint not deployed yet)', () async {
+      final backend = _FakeBackend((method, uri, body) {
+        expect(method, 'GET');
+        expect(uri.path, '/api/v1/patients/p1/risk-screening');
+        return (status: 404, json: {'detail': 'Not Found'});
+      });
+      HttpOverrides.global = backend;
+      addTearDown(() => HttpOverrides.global = null);
+      final api = ApiService(baseUrl: 'http://fake.invalid')..authToken = 'tok-1';
+      final result = await api.getRiskScreening('p1');
+      expect(result, isNull,
+          reason: '404 must be treated as no prior result, never an error');
+    });
+
+    test('200 screening payload is returned for rehydration', () async {
+      final backend = _FakeBackend((method, uri, body) => (
+        status: 200,
+        json: {'status': 'ok', 'risk_score': 41, 'tier': 'moderate_risk'},
+      ));
+      HttpOverrides.global = backend;
+      addTearDown(() => HttpOverrides.global = null);
+      final api = ApiService(baseUrl: 'http://fake.invalid')..authToken = 'tok-1';
+      final result = await api.getRiskScreening('p1');
+      expect(result?['risk_score'], 41);
+      expect(result?['tier'], 'moderate_risk');
+    });
+  });
+
   group('RagUploadScreen live (non-sendForTest) path', () {
     testWidgets('401 → ApiService refresh → retry succeeds (no raw send)',
         (tester) async {

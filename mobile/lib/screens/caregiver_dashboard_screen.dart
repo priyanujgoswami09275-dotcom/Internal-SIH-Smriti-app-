@@ -128,8 +128,9 @@ class _CaregiverDashboardScreenState extends State<CaregiverDashboardScreen> {
       } on Exception {
         if (mounted) setState(() => _schedules = null);
       }
-      // Risk screening rehydration — clinical view only; server 403s for
-      // basic tier / missing consent are swallowed by getRiskScreening.
+      // Risk screening rehydration — clinical view only; 404 (endpoint
+      // not deployed yet), 403, and request failures are swallowed by
+      // getRiskScreening (treated as no prior result).
       if (summary['view'] == 'clinical') {
         try {
           final risk = await _api.getRiskScreening(patientId);
