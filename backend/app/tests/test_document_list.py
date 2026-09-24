@@ -5,12 +5,18 @@ DPDP read audit, metadata only (never extracted_text).
 """
 import asyncio
 import io
+from datetime import datetime, timedelta
 from uuid import UUID
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, text
 
-from app.models.all_models import AuditLog
+from app.models.all_models import (
+    AuditLog,
+    DocumentTypeEnum,
+    EmbeddingStatusEnum,
+    MedicalDocument,
+)
 from app.models.user import User
 
 AUTH = "/api/v1/auth"
@@ -74,6 +80,80 @@ async def test_list_returns_metadata_newest_first(client, role):
     # Metadata only — encrypted PHI must never be echoed.
     assert "extracted_text" not in first
     assert "embedding" not in first
+
+
+@pytest.mark.asyncio
+async def test_list_uses_id_tie_breaker_for_same_created_at(client, db_session):
+    h, pid, staff_id = await _staff_with_patient(client)
+    created_at = datetime(2026, 9, 24, 10, 0, 0)
+    lower_id = UUID("a0000000-0000-0000-0000-000000000001")
+    higher_id = UUID("ffffffff-ffff-ffff-ffff-ffffffffffff")
+    await db_session.execute(
+        text("""
+            INSERT INTO medical_documents
+                (id, patient_id, uploaded_by, title, file_ref, doc_type,
+                 embedding_status, extracted_text, created_at)
+            VALUES
+                (:id, :patient_id, :uploaded_by, :title, :file_ref,
+                 :doc_type, :embedding_status, NULL, :created_at)
+        """),
+        [
+            {
+                "id": lower_id.hex,
+                "patient_id": UUID(pid).hex,
+                "uploaded_by": UUID(staff_id).hex,
+                "title": "Lower id",
+                "file_ref": "lower.txt",
+                "doc_type": DocumentTypeEnum.REPORT.value,
+                "embedding_status": EmbeddingStatusEnum.COMPLETED.value,
+                "created_at": created_at,
+            },
+            {
+                "id": higher_id.hex,
+                "patient_id": UUID(pid).hex,
+                "uploaded_by": UUID(staff_id).hex,
+                "title": "Higher id",
+                "file_ref": "higher.txt",
+                "doc_type": DocumentTypeEnum.REPORT.value,
+                "embedding_status": EmbeddingStatusEnum.COMPLETED.value,
+                "created_at": created_at,
+            },
+        ],
+    )
+    await db_session.commit()
+
+    r = await client.get(f"{REPORTS}/patients/{pid}/documents", headers=h)
+    assert r.status_code == 200, r.text
+    assert [row["document_id"] for row in r.json()["documents"]] == [
+        str(higher_id), str(lower_id)
+    ]
+
+
+@pytest.mark.asyncio
+async def test_list_caps_results_at_fifty(client, db_session):
+    h, pid, staff_id = await _staff_with_patient(client)
+    created_at = datetime(2026, 9, 24, 10, 0, 0)
+    db_session.add_all([
+        MedicalDocument(
+            patient_id=UUID(pid),
+            uploaded_by=UUID(staff_id),
+            title=f"Document {i}",
+            file_ref=f"document-{i}.txt",
+            doc_type=DocumentTypeEnum.REPORT,
+            embedding_status=EmbeddingStatusEnum.COMPLETED,
+            created_at=created_at - timedelta(seconds=i),
+        )
+        for i in range(51)
+    ])
+    await db_session.commit()
+
+    r = await client.get(f"{REPORTS}/patients/{pid}/documents", headers=h)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["count"] == len(body["documents"]) == 50
+    assert [row["file_name"] for row in body["documents"]] == [
+        f"document-{i}.txt" for i in range(50)
+    ]
 
 
 @pytest.mark.asyncio

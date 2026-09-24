@@ -199,7 +199,7 @@ async def list_patient_documents(
     res = await db.execute(
         select(MedicalDocument)
         .where(MedicalDocument.patient_id == patient_id)
-        .order_by(MedicalDocument.created_at.desc())
+        .order_by(MedicalDocument.created_at.desc(), MedicalDocument.id.desc())
         .limit(50)
     )
     documents = [
