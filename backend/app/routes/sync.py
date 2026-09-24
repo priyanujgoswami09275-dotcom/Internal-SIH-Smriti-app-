@@ -74,6 +74,8 @@ async def sync_batch(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=f"Invalid operation: {item.operation}",
             )
+        if item.resource_type == SyncResourceTypeEnum.OFFLINE_SYMPTOM.value:
+            item.payload = {**item.payload, "entered_by": str(current_user.id)}
 
     result = await process_sync_batch(
         db,

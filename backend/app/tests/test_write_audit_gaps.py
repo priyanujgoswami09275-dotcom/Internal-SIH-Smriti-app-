@@ -131,3 +131,50 @@ async def test_sync_materialization_writes_symptom_audit(db_session):
         "operation": "sync_materialize",
     }
     assert note not in str(audit.details)
+
+
+@pytest.mark.asyncio
+async def test_sync_api_overwrites_spoofed_symptom_author(client, db_session):
+    patient, authenticated_actor = await _linked_family_actor(db_session, "basic")
+    spoofed_actor = User(password_hash="x", role=RoleEnum.ASHA_WORKER)
+    db_session.add(spoofed_actor)
+    await db_session.commit()
+
+    response = await client.post(
+        "/api/v1/sync",
+        json={
+            "patient_id": str(patient.id),
+            "items": [
+                {
+                    "resource_type": "offline_symptom",
+                    "operation": "create",
+                    "resource_id": str(uuid.uuid4()),
+                    "payload": {
+                        "entered_by": str(spoofed_actor.id),
+                        "notes": "sensitive symptom note",
+                        "severity": 2,
+                    },
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    counts = await consume_sync_queue(db_session, patient_id=patient.id)
+    assert counts == {"materialized": 1, "acked": 0, "errors": 0}
+    symptom = (
+        await db_session.execute(
+            select(SymptomLog).where(SymptomLog.patient_id == patient.id)
+        )
+    ).scalar_one()
+    audits = (
+        await db_session.execute(
+            select(AuditLog).where(AuditLog.resource_type == "symptom_log")
+        )
+    ).scalars().all()
+
+    assert len(audits) == 1
+    assert audits[0].user_id == authenticated_actor.id
+    assert audits[0].action == AuditActionEnum.WRITE
+    assert symptom.entered_by == authenticated_actor.id
+    assert all(audit.user_id != spoofed_actor.id for audit in audits)
