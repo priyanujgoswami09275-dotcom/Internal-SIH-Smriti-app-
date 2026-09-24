@@ -17,18 +17,17 @@ import '../services/auth_session.dart';
 import '../theme/monad_theme.dart';
 import '../widgets/dev_role_menu.dart';
 import '../widgets/monad/monad_pill_button.dart';
-import '../widgets/risk_screening_card.dart';
 import 'caregiver/audit_viewer_screen.dart';
 import 'caregiver/sections/alerts_card.dart';
 import 'caregiver/sections/compliance_log.dart';
 import 'caregiver/sections/documents_card.dart';
 import 'caregiver/sections/metrics_tiles.dart';
 import 'caregiver/sections/patient_switcher.dart';
+import 'caregiver/sections/risk_screening_section.dart';
 import 'caregiver/sections/schedules_card.dart';
 import 'caregiver/sections/trends_section.dart';
 import 'clinical_notes_screen.dart';
 import 'rag_upload_screen.dart';
-import 'risk_intake_screen.dart';
 
 class CaregiverDashboardScreen extends StatefulWidget {
   final String caregiverId;
@@ -49,6 +48,7 @@ class _CaregiverDashboardScreenState extends State<CaregiverDashboardScreen> {
   List<ReminderEventModel>? _events;
   List<ReminderScheduleModel>? _schedules;
   Map<String, dynamic>? _riskScreeningResult;
+  bool _screeningConsentMissing = false;
   bool _consentMissing = false;
   bool _loading = true;
   String? _error;
@@ -101,6 +101,7 @@ class _CaregiverDashboardScreenState extends State<CaregiverDashboardScreen> {
       _loading = true;
       _consentMissing = false; // never show the previous patient's consent state
       _riskScreeningResult = null; // never show the previous patient's score
+      _screeningConsentMissing = false; // never show the previous patient's screening consent state
     });
     try {
       final summary = await _api.patientSummary(patientId);
@@ -387,59 +388,17 @@ class _CaregiverDashboardScreenState extends State<CaregiverDashboardScreen> {
             const SizedBox(height: 16),
           MetricsTiles(summary: summary),
           const SizedBox(height: 24),
-          if (summary['view'] == 'clinical') ...[
-            _sectionHeader('Risk screening'),
-            const SizedBox(height: 12),
-            RiskScreeningCard(result: _riskScreeningResult),
-            const SizedBox(height: 8),
-            Align(
-              alignment: Alignment.centerLeft,
-              child: MonadPillButton(
-                label: 'Run Screening (32 inputs)',
-                variant: MonadPillVariant.secondary,
-                onPressed: () {
-                  final patientId = _selectedPatientId;
-                  if (patientId == null) return;
-                  Navigator.of(context).push(
-                    MaterialPageRoute(
-                      builder: (_) => RiskIntakeScreen(
-                        patientId: patientId,
-                        patientName: (summary['patient_name'] as String?) ??
-                            'this patient',
-                        onResult: (r) {
-                          if (mounted) {
-                            setState(() => _riskScreeningResult = r);
-                          }
-                        },
-                      ),
-                    ),
-                  );
-                },
-              ),
-            ),
-            const SizedBox(height: 24),
-          ] else ...[
-            Container(
-              padding: const EdgeInsets.all(14),
-              decoration: BoxDecoration(
-                color: Monad.gold.withValues(alpha: 0.35),
-                borderRadius: BorderRadius.circular(Monad.radiusMin),
-                border: Border.all(color: Monad.ash, width: 1),
-              ),
-              child: Row(children: [
-                const Icon(Icons.lock_outline, size: 22, color: Monad.graphite),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Text(
-                    'Screening needs clinical tier / health-data consent — '
-                    'available to linked clinical staff only.',
-                    style: Monad.monoBodySm,
-                  ),
-                ),
-              ]),
-            ),
-            const SizedBox(height: 24),
-          ],
+          RiskScreeningSection(
+            isClinical: summary['view'] == 'clinical',
+            patientId: _selectedPatientId!,
+            patientName: (summary['patient_name'] as String?) ?? 'this patient',
+            result: _riskScreeningResult,
+            consentMissing: _screeningConsentMissing,
+            onResult: (r) => setState(() => _riskScreeningResult = r),
+            onConsentMissing: () {
+              if (mounted) setState(() => _screeningConsentMissing = true);
+            },
+          ),
           _sectionHeader('Trends'),
           const SizedBox(height: 12),
           TrendsSection(summary: summary), // hidden server-side for view=basic
