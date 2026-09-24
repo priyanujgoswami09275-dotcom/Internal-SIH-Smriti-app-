@@ -28,6 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from app.models.all_models import MedicalDocument, DocumentChunk, EmbeddingStatusEnum
+from app.models.compliance import AuditActionEnum, AuditLog
 from app.services.compliance_service import EncryptionService
 from app.services.embedding_provider import get_embedding_provider
 from app.services.llm_client import LLMClient
@@ -139,8 +140,17 @@ class RAGService:
             embedding_status=EmbeddingStatusEnum.PENDING,
         )
         db.add(doc)
-        await db.commit()
-        await db.refresh(doc)
+        await db.flush()
+        db.add(
+            AuditLog(
+                user_id=uploaded_by,
+                action=AuditActionEnum.WRITE,
+                resource_type="medical_document",
+                resource_id=doc.id,
+                ip_address="127.0.0.1",
+                details={},
+            )
+        )
 
         chunks = RAGService.chunk_text(
             extracted_text, chunk_size=chunk_size, overlap=chunk_overlap

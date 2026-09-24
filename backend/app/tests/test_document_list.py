@@ -5,6 +5,7 @@ DPDP read audit, metadata only (never extracted_text).
 """
 import asyncio
 import io
+import uuid
 from datetime import datetime, timedelta
 from uuid import UUID
 
@@ -13,6 +14,7 @@ from sqlalchemy import select, text
 
 from app.models.all_models import (
     AuditLog,
+    DocumentChunk,
     DocumentTypeEnum,
     EmbeddingStatusEnum,
     MedicalDocument,
@@ -438,3 +440,35 @@ async def test_upload_writes_write_audit(client, db_session):
     assert len(new_rows) == 1, "uploading a document must write a DPDP write audit"
     row = new_rows[0]
     assert UUID(str(row.resource_id)) == UUID(doc_id)
+
+
+@pytest.mark.asyncio
+async def test_ingest_rolls_back_document_and_audit_when_chunk_add_fails(
+    db_session, monkeypatch
+):
+    from app.services.rag_service import RAGService
+
+    original_add = db_session.add
+
+    def fail_chunk_add(instance):
+        if isinstance(instance, DocumentChunk):
+            raise RuntimeError("chunk insert failed")
+        original_add(instance)
+
+    monkeypatch.setattr(db_session, "add", fail_chunk_add)
+
+    with pytest.raises(RuntimeError, match="chunk insert failed"):
+        await RAGService.ingest_document(
+            db=db_session,
+            patient_id=uuid.uuid4(),
+            uploaded_by=uuid.uuid4(),
+            file_ref="atomic.txt",
+            doc_type="report",
+            extracted_text="document body",
+        )
+
+    await db_session.rollback()
+    documents = (await db_session.execute(select(MedicalDocument))).scalars().all()
+    audits = (await db_session.execute(select(AuditLog))).scalars().all()
+    assert not documents
+    assert not audits
