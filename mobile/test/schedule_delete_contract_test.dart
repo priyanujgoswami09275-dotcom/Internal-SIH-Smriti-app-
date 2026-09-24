@@ -18,9 +18,26 @@ import 'dart:io';
 
 import 'package:eldercare_mobile/screens/caregiver_dashboard_screen.dart';
 import 'package:eldercare_mobile/services/api_service.dart';
+import 'package:eldercare_mobile/services/auth_session.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
+/// Mirrors `_seedUser` from `clinical_notes_sync_test.dart` — seeds a real
+/// AuthSession user so the dashboard's admin gate can see the role.
+Future<void> _seedUser({required String id, required String role}) async {
+  SharedPreferences.setMockInitialValues({
+    'auth.access': 'test-access',
+    'auth.refresh': 'test-refresh',
+    'auth.user': jsonEncode({
+      'id': id,
+      'phone': '+910000000001',
+      'role': role,
+      'preferred_language': 'english',
+    }),
+  });
+  await AuthSession.instance.restore();
+}
 
 /// Handler result: HTTP status + JSON-encodable body (null = empty body).
 typedef _Handler = ({int status, Object? json}) Function(
@@ -200,9 +217,10 @@ void main() {
   });
 
   group('2.6-mobile audit-trail keys', () {
-    testWidgets('audit row shows user_id + timestamp, never bare "system"',
+    testWidgets(
+        'audit row behind admin AppBar push: user_id + timestamp, never "system"',
         (tester) async {
-      SharedPreferences.setMockInitialValues({});
+      await _seedUser(id: 'admin-1', role: 'admin');
       final backend = _FakeBackend((method, uri, body) {
         final p = uri.path;
         if (p == '/api/v1/dashboard/caregivers/cg1/patients') {
@@ -256,14 +274,18 @@ void main() {
 
       HttpOverrides.global = backend;
       addTearDown(() => HttpOverrides.global = null);
-      // Tall test surface so the lazily-built ListView lays out all the
-      // way down to the audit card — no scrolling needed.
       addTearDown(tester.view.resetPhysicalSize);
       tester.view.physicalSize = const Size(800, 4000);
       tester.view.devicePixelRatio = 1.0;
       await tester.pumpWidget(
         const MaterialApp(home: CaregiverDashboardScreen(caregiverId: 'cg1')),
       );
+      await tester.pumpAndSettle();
+
+      // Audit is no longer an inline dashboard card…
+      expect(find.text('by u1 · t1'), findsNothing);
+      // …it lives behind the admin-only AppBar action.
+      await tester.tap(find.byTooltip('Compliance audit trail (admin)'));
       await tester.pumpAndSettle();
 
       // Row built from user_id/timestamp renders the real actor + time…
