@@ -10,6 +10,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/shared_models.dart';
 import 'api_service.dart';
+import 'offline_sync_service.dart';
 
 enum AuthStatus { restoring, unauthenticated, authenticated }
 
@@ -50,11 +51,13 @@ class AuthSession extends ChangeNotifier {
       ApiService.instance.authToken = access;
       ApiService.instance.refreshToken = refresh;
       _status = AuthStatus.authenticated;
+      OfflineSyncService.instance.setActiveAccount(_user?.id);
       notifyListeners();
       return;
     }
 
     _status = AuthStatus.unauthenticated;
+    OfflineSyncService.instance.resetForLogout();
     notifyListeners();
   }
 
@@ -87,6 +90,7 @@ class AuthSession extends ChangeNotifier {
     ApiService.instance.refreshToken = tokens.refreshToken;
     _user = await ApiService.instance.me();
     _status = AuthStatus.authenticated;
+    OfflineSyncService.instance.setActiveAccount(_user?.id);
 
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_kAccess, tokens.accessToken);
@@ -107,6 +111,7 @@ class AuthSession extends ChangeNotifier {
   }
 
   Future<void> logout() async {
+    OfflineSyncService.instance.resetForLogout();
     try {
       await ApiService.instance.logout();
     } catch (_) {
@@ -121,6 +126,5 @@ class AuthSession extends ChangeNotifier {
     ApiService.instance.refreshToken = null;
     _status = AuthStatus.unauthenticated;
     notifyListeners();
-    // Stopped in logout callers; OfflineSyncService is started from HomeShell.
   }
 }

@@ -230,9 +230,16 @@ class _HomeShellState extends State<HomeShell> {
   @override
   void initState() {
     super.initState();
+    OfflineSyncService.instance.setActiveAccount(AuthSession.instance.user?.id);
     OfflineSyncService.instance.start();
     OfflineSyncService.instance.syncNow();
     _resolveIdentity();
+  }
+
+  @override
+  void dispose() {
+    OfflineSyncService.instance.stop();
+    super.dispose();
   }
 
   Future<void> _resolveIdentity() async {
