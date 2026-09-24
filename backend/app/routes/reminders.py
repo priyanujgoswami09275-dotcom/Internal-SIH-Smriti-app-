@@ -85,6 +85,10 @@ async def create_schedule(
         cadence=request.cadence,
         created_by=current_user.id,
     )
+    await ComplianceService.log_write_access(
+        db, current_user.id, "reminder_schedule", str(schedule.id),
+        details={"patient_id": str(schedule.patient_id), "is_active": schedule.is_active},
+    )
     return schedule
 
 
@@ -115,6 +119,10 @@ async def deactivate_schedule(
     success = await ReminderService.deactivate_schedule(db, schedule_id)
     if not success:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Schedule not found")
+    await ComplianceService.log_write_access(
+        db, current_user.id, "reminder_schedule", str(schedule.id),
+        details={"patient_id": str(schedule.patient_id), "is_active": False},
+    )
     return {"status": "deactivated"}
 
 
@@ -170,6 +178,10 @@ async def acknowledge_event(
     )
     if not event:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found")
+    await ComplianceService.log_write_access(
+        db, current_user.id, "reminder_event", str(event.id),
+        details={"patient_id": str(event.patient_id), "status": event.status.value},
+    )
     return event
 
 

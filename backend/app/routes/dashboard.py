@@ -86,5 +86,9 @@ async def acknowledge_alert(
     alert.acknowledged_at = datetime.now(timezone.utc)
     alert.acknowledged_by = current_user.id
     await db.commit()
+    await ComplianceService.log_write_access(
+        db, current_user.id, "alert", str(alert_id),
+        details={"patient_id": str(alert.patient_id), "acknowledged": True},
+    )
 
     return {"message": "Alert acknowledged successfully", "alert_id": str(alert_id)}
