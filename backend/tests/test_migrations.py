@@ -42,7 +42,7 @@ def test_risk_screening_migration_is_additive_and_cascades():
 
 def test_shadow_migration_preserves_legacy_rows_and_round_trips():
     script = ScriptDirectory(str(MIGRATIONS))
-    assert script.get_heads() == ["0011_sync_idempotency"]
+    assert script.get_heads() == ["0012_game_integrity"]
     revision = script.get_revision("0009_shadow_difficulty")
     assert revision.down_revision == "0008_risk_screening"
     engine = sa.create_engine("sqlite://")
@@ -68,7 +68,7 @@ def test_odd_one_out_migration_additive_and_round_trips():
     import json
 
     script = ScriptDirectory(str(MIGRATIONS))
-    assert script.get_heads() == ["0011_sync_idempotency"]
+    assert script.get_heads() == ["0012_game_integrity"]
     revision = script.get_revision("0010_odd_one_out")
     assert revision.revision == "0010_odd_one_out"
     assert revision.down_revision == "0009_shadow_difficulty"
