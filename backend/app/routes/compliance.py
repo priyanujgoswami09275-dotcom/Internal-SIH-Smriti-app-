@@ -131,10 +131,10 @@ async def export_patient_data(
     patient = await ensure_patient_access(db, current_user, patient_id)
     tier = await get_permission_tier(db, current_user, patient)
     audit = await ComplianceService.log_read_access(db, current_user.id, "data_export", patient_id)
-    if audit is None and tier == "clinical":
+    if audit is None:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Export audit unavailable; screening data withheld",
+            detail="Export audit unavailable; patient data withheld",
         )
     export = await ComplianceService.export_patient_data(db, patient_id)
     if tier != "clinical":
