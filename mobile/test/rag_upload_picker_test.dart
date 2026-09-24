@@ -142,4 +142,79 @@ void main() {
     expect(find.textContaining('10 MB'), findsOneWidget);
     expect(hitBackend, isFalse);
   });
+
+  testWidgets('invalid test bytes are rejected by upload before sender',
+      (tester) async {
+    var hitBackend = false;
+    await tester.pumpWidget(MaterialApp(
+      home: RagUploadScreen(
+        patientId: 'p1',
+        testBytes: Uint8List.fromList(utf8.encode('binary-ish')),
+        testFilename: 'scan.png',
+        sendForTest: (req) async {
+          hitBackend = true;
+          return http.Response('', 200);
+        },
+      ),
+    ));
+    await tester.pumpAndSettle();
+
+    final uploadBtn = find.widgetWithText(FilledButton, 'UPLOAD ▸');
+    expect(tester.widget<FilledButton>(uploadBtn).onPressed, isNotNull);
+    await tester.tap(uploadBtn);
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining("isn't supported"), findsOneWidget);
+    expect(hitBackend, isFalse);
+  });
+
+  testWidgets('invalid pick leaves previous filename and bytes intact',
+      (tester) async {
+    var pickCount = 0;
+    http.MultipartRequest? captured;
+    await tester.pumpWidget(MaterialApp(
+      home: RagUploadScreen(
+        patientId: 'p1',
+        pickForTest: () async {
+          pickCount++;
+          if (pickCount == 1) {
+            return (
+              bytes: Uint8List.fromList(utf8.encode('valid contents')),
+              filename: 'valid.txt',
+            );
+          }
+          return (
+            bytes: Uint8List.fromList(utf8.encode('replacement')),
+            filename: 'invalid.png',
+          );
+        },
+        sendForTest: (req) async {
+          captured = req;
+          return http.Response('', 200);
+        },
+      ),
+    ));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('SELECT FILE'));
+    await tester.pumpAndSettle();
+    expect(find.text('valid.txt'), findsOneWidget);
+
+    await tester.tap(find.text('SELECT FILE'));
+    await tester.pumpAndSettle();
+    expect(find.text('valid.txt'), findsOneWidget);
+    expect(find.text('invalid.png'), findsNothing);
+    expect(find.textContaining("isn't supported"), findsOneWidget);
+
+    final uploadBtn = find.widgetWithText(FilledButton, 'UPLOAD ▸');
+    expect(tester.widget<FilledButton>(uploadBtn).onPressed, isNotNull);
+    await tester.tap(uploadBtn);
+    await tester.pumpAndSettle();
+
+    expect(captured, isNotNull);
+    final request = captured!;
+    expect(request.files.single.filename, 'valid.txt');
+    final sentBytes = await request.files.single.finalize().toBytes();
+    expect(sentBytes, utf8.encode('valid contents'));
+  });
 }

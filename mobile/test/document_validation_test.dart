@@ -3,13 +3,28 @@ import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   group('validateDocumentFile', () {
-    for (final name in const ['note.pdf', 'notes.TXT', 'plan.md', 'log.text', 'rows.csv']) {
+    for (final name in const [
+      'note.pdf',
+      'notes.TXT',
+      'plan.md',
+      'log.text',
+      'rows.csv',
+      'note.docx.pdf',
+    ]) {
       test('accepts $name', () {
         expect(validateDocumentFile(filename: name, byteLength: 1024), isNull);
       });
     }
 
-    for (final name in const ['scan.png', 'sheet.xlsx', 'note.doc', 'note.docx', 'noext']) {
+    for (final name in const [
+      'scan.png',
+      'sheet.xlsx',
+      'note.doc',
+      'note.docx',
+      'noext',
+      'note.',
+      'note.pdf.docx',
+    ]) {
       test('rejects $name with a type message', () {
         final msg = validateDocumentFile(filename: name, byteLength: 1024);
         expect(msg, isNotNull);
