@@ -5,12 +5,13 @@ Used by Match It, Daily Routine Sequencing, Number Recall, and Odd-One-Out to
 log accuracy metrics, response times, and raw event history.
 """
 from typing import List, Dict, Any, Optional
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 from weakref import WeakKeyDictionary
 import asyncio
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from app.models.all_models import (
     GameAction,
     GameSession,
@@ -48,31 +49,62 @@ def iso_utc(value: Optional[datetime]) -> Optional[str]:
     return value.astimezone(timezone.utc).isoformat()
 
 
-async def start_game_session(
+_GAME_TIMESTAMP_MAX_AGE = timedelta(days=730)
+_GAME_TIMESTAMP_MAX_FUTURE = timedelta(minutes=5)
+
+
+def _naive_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value
+    return value.astimezone(timezone.utc).replace(tzinfo=None)
+
+
+def _normalize_game_timestamp(value: Optional[datetime]) -> Optional[datetime]:
+    if value is None:
+        return None
+    normalized = _naive_utc(value)
+    now = _naive_utc(datetime.now(timezone.utc))
+    earliest = now - _GAME_TIMESTAMP_MAX_AGE
+    latest = now + _GAME_TIMESTAMP_MAX_FUTURE
+    return min(max(normalized, earliest), latest)
+
+
+async def _start_game_session(
     db: AsyncSession,
     patient_id: UUID,
     game_type: GameTypeEnum,
     difficulty_level: int,
     content_pack_id: Optional[str] = None,
     routine_id: Optional[str] = None,
-) -> GameSession:
-    """Create a new game session.
+    idempotency_key: Optional[str] = None,
+    started_at: Optional[datetime] = None,
+    completed_at: Optional[datetime] = None,
+) -> tuple[GameSession, bool]:
+    normalized_started = _normalize_game_timestamp(started_at)
+    if normalized_started is None:
+        normalized_started = _naive_utc(datetime.now(timezone.utc))
+    normalized_completed = _normalize_game_timestamp(completed_at)
+    if normalized_completed is not None and normalized_completed < normalized_started:
+        normalized_completed = normalized_started
 
-    Args:
-        patient_id: Patient playing the game.
-        game_type: Match It, Routine Sequencing, etc.
-        difficulty_level: 1, 2, 3 (scaled by game type).
-        content_pack_id: For Match It (festivals, fruits, heritage, etc.).
-        routine_id: For Routine Sequencing (custom or default).
+    if idempotency_key:
+        existing_result = await db.execute(
+            select(GameSession).where(
+                GameSession.patient_id == patient_id,
+                GameSession.idempotency_key == idempotency_key,
+            )
+        )
+        existing = existing_result.scalar_one_or_none()
+        if existing is not None:
+            return existing, True
 
-    Returns:
-        New GameSession record with started_at timestamp.
-    """
     session = GameSession(
         patient_id=patient_id,
         game_type=game_type,
         difficulty_level=difficulty_level,
-        started_at=datetime.now(timezone.utc),
+        idempotency_key=idempotency_key,
+        started_at=normalized_started,
+        replay_completed_at=normalized_completed,
         content_pack_id=content_pack_id,
         routine_id=routine_id,
         correct_count=0,
@@ -81,9 +113,72 @@ async def start_game_session(
         raw_event_log=[],
     )
     db.add(session)
-    await db.flush()
+    try:
+        await db.flush()
+    except IntegrityError:
+        await db.rollback()
+        if idempotency_key:
+            existing_result = await db.execute(
+                select(GameSession).where(
+                    GameSession.patient_id == patient_id,
+                    GameSession.idempotency_key == idempotency_key,
+                )
+            )
+            existing = existing_result.scalar_one_or_none()
+            if existing is not None:
+                return existing, True
+        raise
     await db.refresh(session)
+    return session, False
+
+
+async def start_game_session(
+    db: AsyncSession,
+    patient_id: UUID,
+    game_type: GameTypeEnum,
+    difficulty_level: int,
+    content_pack_id: Optional[str] = None,
+    routine_id: Optional[str] = None,
+    idempotency_key: Optional[str] = None,
+    started_at: Optional[datetime] = None,
+    completed_at: Optional[datetime] = None,
+) -> GameSession:
+    session, _ = await _start_game_session(
+        db,
+        patient_id=patient_id,
+        game_type=game_type,
+        difficulty_level=difficulty_level,
+        content_pack_id=content_pack_id,
+        routine_id=routine_id,
+        idempotency_key=idempotency_key,
+        started_at=started_at,
+        completed_at=completed_at,
+    )
     return session
+
+
+async def start_game_session_with_replay(
+    db: AsyncSession,
+    patient_id: UUID,
+    game_type: GameTypeEnum,
+    difficulty_level: int,
+    content_pack_id: Optional[str] = None,
+    routine_id: Optional[str] = None,
+    idempotency_key: Optional[str] = None,
+    started_at: Optional[datetime] = None,
+    completed_at: Optional[datetime] = None,
+) -> tuple[GameSession, bool]:
+    return await _start_game_session(
+        db,
+        patient_id=patient_id,
+        game_type=game_type,
+        difficulty_level=difficulty_level,
+        content_pack_id=content_pack_id,
+        routine_id=routine_id,
+        idempotency_key=idempotency_key,
+        started_at=started_at,
+        completed_at=completed_at,
+    )
 
 
 class GameActionValidationError(ValueError):
@@ -352,6 +447,7 @@ async def complete_game_session(
     *,
     idempotency_key: Optional[str] = None,
     expected_action_ids: Optional[List[str]] = None,
+    completed_at: Optional[datetime] = None,
 ) -> tuple[Dict[str, Any], bool]:
     """Finalize only after expected actions are durable; replay is a no-op."""
     async with _session_lock(session_id):
@@ -423,7 +519,15 @@ async def complete_game_session(
             else 0.0
         )
 
-        session.completed_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        completion_timestamp = _normalize_game_timestamp(completed_at)
+        if completion_timestamp is None:
+            completion_timestamp = _normalize_game_timestamp(session.replay_completed_at)
+        if completion_timestamp is None:
+            completion_timestamp = _naive_utc(datetime.now(timezone.utc))
+        started_timestamp = _naive_utc(session.started_at)
+        if completion_timestamp < started_timestamp:
+            completion_timestamp = started_timestamp
+        session.completed_at = completion_timestamp
         session.attempts = total_attempts
         session.correct_count = correct_count
         session.incorrect_count = incorrect_count

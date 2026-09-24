@@ -13,11 +13,24 @@ def upgrade() -> None:
     )
     op.add_column(
         "game_sessions",
+        sa.Column("idempotency_key", sa.String(length=200), nullable=True),
+    )
+    op.add_column(
+        "game_sessions",
+        sa.Column("replay_completed_at", sa.DateTime(), nullable=True),
+    )
+    op.add_column(
+        "game_sessions",
         sa.Column("completion_idempotency_key", sa.String(length=200), nullable=True),
     )
     op.add_column(
         "game_sessions",
         sa.Column("completion_result", sa.JSON(), nullable=True),
+    )
+    op.create_unique_constraint(
+        "uq_game_sessions_patient_idempotency_key",
+        "game_sessions",
+        ["patient_id", "idempotency_key"],
     )
     op.create_unique_constraint(
         "uq_game_sessions_completion_idempotency_key",
@@ -56,10 +69,17 @@ def upgrade() -> None:
 def downgrade() -> None:
     op.drop_table("game_actions")
     op.drop_constraint(
+        "uq_game_sessions_patient_idempotency_key",
+        "game_sessions",
+        type_="unique",
+    )
+    op.drop_constraint(
         "uq_game_sessions_completion_idempotency_key",
         "game_sessions",
         type_="unique",
     )
     op.drop_column("game_sessions", "completion_result")
     op.drop_column("game_sessions", "completion_idempotency_key")
+    op.drop_column("game_sessions", "replay_completed_at")
+    op.drop_column("game_sessions", "idempotency_key")
     op.drop_column("game_sessions", "server_state")

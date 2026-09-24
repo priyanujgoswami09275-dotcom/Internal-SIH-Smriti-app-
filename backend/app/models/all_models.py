@@ -66,8 +66,10 @@ class GameSession(Base):
     difficulty_level = Column(Integer, nullable=False, default=1)
     content_pack_id = Column(String(100), nullable=True)
     routine_id = Column(String(100), nullable=True)
+    idempotency_key = Column(String(200), nullable=True)
     started_at = Column(DateTime, default=func.now(), nullable=False)
     completed_at = Column(DateTime, nullable=True)
+    replay_completed_at = Column(DateTime, nullable=True)
     attempts = Column(Integer, nullable=False, default=0)
     correct_count = Column(Integer, nullable=False, default=0)
     incorrect_count = Column(Integer, nullable=False, default=0)
@@ -81,6 +83,11 @@ class GameSession(Base):
     created_at = Column(DateTime, default=func.now(), nullable=False)
 
     __table_args__ = (
+        UniqueConstraint(
+            "patient_id",
+            "idempotency_key",
+            name="uq_game_sessions_patient_idempotency_key",
+        ),
         UniqueConstraint(
             "completion_idempotency_key",
             name="uq_game_sessions_completion_idempotency_key",

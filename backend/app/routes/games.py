@@ -15,6 +15,7 @@ Endpoints:
    GET /games/odd-one-out/board — generate Odd-One-Out board (server-held answer)
 """
 from typing import Optional
+from datetime import datetime
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -117,6 +118,9 @@ class StartGameRequest(BaseModel):
     difficulty_level: int = 1
     content_pack_id: Optional[str] = None  # For Match It
     routine_id: Optional[str] = None  # For Routine Sequencing
+    idempotency_key: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
 
 
 class RecordActionRequest(BaseModel):
@@ -131,6 +135,7 @@ class RecordActionRequest(BaseModel):
 class CompleteGameRequest(BaseModel):
     idempotency_key: Optional[str] = Field(default=None, min_length=1, max_length=200)
     expected_action_ids: list[str] = Field(default_factory=list, max_length=1000)
+    completed_at: Optional[datetime] = None
 
 
 class SessionSummaryResponse(BaseModel):
@@ -283,13 +288,16 @@ async def start_game(
             detail=f"Invalid game_type '{request.game_type}'. Must be one of: "
             + ", ".join(e.value for e in GameTypeEnum),
         )
-    session = await game_service.start_game_session(
+    session, idempotent_replay = await game_service.start_game_session_with_replay(
         db,
         patient_id=patient_id,
         game_type=game_type,
         difficulty_level=request.difficulty_level,
         content_pack_id=request.content_pack_id,
         routine_id=request.routine_id,
+        idempotency_key=request.idempotency_key,
+        started_at=request.started_at,
+        completed_at=request.completed_at,
     )
     # Snapshot values, then commit: start_game_session only flushes, and reading
     # ORM attributes after commit requires expire_on_commit=False.
@@ -300,6 +308,7 @@ async def start_game(
     return {
         "session_id": session_id,
         "started_at": started_at,
+        "idempotent_replay": idempotent_replay,
     }
 
 
@@ -367,6 +376,7 @@ async def complete_game(
             session_id=sid,
             idempotency_key=completion_request.idempotency_key,
             expected_action_ids=completion_request.expected_action_ids,
+            completed_at=completion_request.completed_at,
         )
     except game_service.GameActionBarrierError as exc:
         raise HTTPException(status_code=409, detail=str(exc))

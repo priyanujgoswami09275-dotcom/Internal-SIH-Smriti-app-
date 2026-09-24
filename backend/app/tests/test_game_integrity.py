@@ -1,6 +1,6 @@
 import asyncio
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import func, select
@@ -705,3 +705,113 @@ async def test_concurrent_action_appends_persist_every_event(db_session):
     await game_service.complete_game_session(db_session, session_id=session_id)
     await db_session.refresh(session)
     assert len(session.raw_event_log) == 2
+
+
+@pytest.mark.asyncio
+async def test_start_idempotency_key_replays_existing_session(client, db_session):
+    headers, patient_id = await _patient_context(client)
+    payload = {
+        "game_type": "number_recall",
+        "difficulty_level": 1,
+        "idempotency_key": "offline-start-key",
+    }
+
+    first = await client.post(f"{GAMES}/sessions", json=payload, headers=headers)
+    second = await client.post(f"{GAMES}/sessions", json=payload, headers=headers)
+
+    assert first.status_code == 200, first.text
+    assert second.status_code == 200, second.text
+    assert first.json()["idempotent_replay"] is False
+    assert second.json()["idempotent_replay"] is True
+    assert first.json()["session_id"] == second.json()["session_id"]
+    assert first.json()["started_at"] == second.json()["started_at"]
+
+    count = await db_session.scalar(
+        select(func.count())
+        .select_from(GameSession)
+        .where(GameSession.patient_id == uuid.UUID(patient_id))
+    )
+    assert count == 1
+
+
+@pytest.mark.asyncio
+async def test_replay_preserves_original_timestamps(client, db_session):
+    headers, _patient_id = await _patient_context(client)
+    now = datetime.now(timezone.utc)
+    original_started = now - timedelta(minutes=10)
+    original_completed = now - timedelta(minutes=5)
+
+    response = await client.post(
+        f"{GAMES}/sessions",
+        json={
+            "game_type": "number_recall",
+            "difficulty_level": 1,
+            "idempotency_key": "offline-timestamp-key",
+            "started_at": original_started.isoformat(),
+            "completed_at": original_completed.isoformat(),
+        },
+        headers=headers,
+    )
+
+    assert response.status_code == 200, response.text
+    session_id = response.json()["session_id"]
+    expected_started = original_started.replace(tzinfo=None).isoformat()
+    expected_completed = original_completed.replace(tzinfo=None).isoformat()
+    assert response.json()["started_at"] == expected_started
+
+    stored = await db_session.get(GameSession, uuid.UUID(session_id))
+    await db_session.refresh(stored)
+    assert stored.started_at.isoformat() == expected_started
+
+    completed = await _complete(
+        client,
+        headers,
+        session_id,
+        idempotency_key="offline-timestamp-completion",
+    )
+
+    assert completed.status_code == 200, completed.text
+    assert completed.json()["completed_at"] == expected_completed
+
+
+@pytest.mark.asyncio
+async def test_start_ignores_client_supplied_patient_identity(client, db_session):
+    headers, patient_id = await _patient_context(client)
+    supplied_id = str(uuid.uuid4())
+
+    response = await client.post(
+        f"{GAMES}/sessions",
+        json={
+            "game_type": "number_recall",
+            "difficulty_level": 1,
+            "patient_id": supplied_id,
+            "user_id": supplied_id,
+        },
+        headers=headers,
+    )
+
+    assert response.status_code == 200, response.text
+    stored = await db_session.get(
+        GameSession, uuid.UUID(response.json()["session_id"])
+    )
+    await db_session.refresh(stored)
+    assert stored.patient_id == uuid.UUID(patient_id)
+
+
+@pytest.mark.asyncio
+async def test_start_without_idempotency_key_remains_supported(client, db_session):
+    headers, patient_id = await _patient_context(client)
+
+    response = await client.post(
+        f"{GAMES}/sessions",
+        json={"game_type": "number_recall", "difficulty_level": 1},
+        headers=headers,
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["idempotent_replay"] is False
+    stored = await db_session.get(
+        GameSession, uuid.UUID(response.json()["session_id"])
+    )
+    await db_session.refresh(stored)
+    assert stored.patient_id == uuid.UUID(patient_id)
