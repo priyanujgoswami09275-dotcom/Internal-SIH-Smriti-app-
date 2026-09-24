@@ -120,3 +120,32 @@ def test_default_provider_is_console():
 def test_unknown_provider_falls_back_to_console(monkeypatch):
     monkeypatch.setattr(settings, "NOTIFICATION_PROVIDER", "sms")
     assert isinstance(get_notification_provider(), ConsoleNotificationProvider)
+
+
+@pytest.mark.asyncio
+async def test_delivery_audit_failure_is_logged_not_swallowed(caplog):
+    """An audit insert failure must be recorded at ERROR level.
+
+    The notification still must not raise, but losing the audit row silently
+    is a compliance gap, so the exception is logged with a traceback.
+    """
+    import logging
+
+    from app.services.notification_service import FCMNotificationProvider
+
+    class _BrokenSession:
+        async def execute(self, *args, **kwargs):
+            raise RuntimeError("audit table unavailable")
+
+    provider = FCMNotificationProvider(db=_BrokenSession())
+    caplog.set_level(logging.ERROR, logger="app.services.notification_service")
+
+    await provider._audit(
+        provider="fcm", kind="alert", event_id=uuid.uuid4(),
+        recipient=uuid.uuid4(), address="token", status="FAILED",
+    )
+
+    errors = [r for r in caplog.records if r.levelname == "ERROR"]
+    assert errors, "delivery-audit failure must be logged at error level"
+    assert any("audit failed" in r.getMessage() for r in errors)
+    assert any(r.exc_info for r in errors), "log should carry the traceback"

@@ -140,7 +140,13 @@ class FCMNotificationProvider(NotificationProvider):
                     },
                 )
             except Exception:
-                pass  # audit failure must not break notification flow
+                # Delivery must not break on an audit failure, but the failure
+                # is a real compliance gap — record it at error level (with
+                # traceback) instead of dropping it silently.
+                logger.exception(
+                    "Notification-delivery audit failed (provider=%s kind=%s recipient=%s status=%s)",
+                    provider, kind, recipient, status,
+                )
 
     async def send_alert(self, *, patient_id: UUID, alert_id: UUID, severity: str, trigger: str, summary: str, recipients: List[Dict[str, Any]]) -> None:
         token = await self._resolve_token(patient_id)
