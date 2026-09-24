@@ -194,9 +194,11 @@ void main() {
     await tester.tap(find.text('ASK ▸'));
     await tester.pumpAndSettle();
 
-    expect(find.textContaining('Donepezil 5 mg'), findsOneWidget);
-    expect(find.textContaining('[1] Discharge summary'), findsOneWidget);
-    expect(find.textContaining('Not medical advice'), findsOneWidget);
+    expect(find.text('Donepezil 5 mg at bedtime [1].'), findsOneWidget);
+    expect(
+        find.text('[1] Discharge summary · similarity 0.82'), findsOneWidget);
+    expect(find.text('Not medical advice — consult the treating clinician.'),
+        findsOneWidget);
   });
 
   testWidgets('"no relevant records" is an answer, not an error',
@@ -213,7 +215,12 @@ void main() {
     await tester.tap(find.text('ASK ▸'));
     await tester.pumpAndSettle();
 
-    expect(find.textContaining('No relevant records'), findsOneWidget);
+    expect(
+        find.text(
+            'No relevant records found for this patient to answer the question.'),
+        findsOneWidget);
+    expect(find.text('Answer'), findsOneWidget);
+    expect(find.textContaining('Could not get an answer:'), findsNothing);
   });
 
   testWidgets('empty question is refused client-side', (tester) async {

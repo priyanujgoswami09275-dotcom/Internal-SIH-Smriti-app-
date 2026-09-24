@@ -195,8 +195,8 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Discharge summary'), findsOneWidget);
-    expect(find.textContaining('discharge.txt'), findsOneWidget);
-    expect(find.textContaining('completed'), findsOneWidget);
+    expect(find.text('discharge.txt · 24 Sep 2026'), findsOneWidget);
+    expect(find.text('prescription · completed'), findsOneWidget);
     expect(find.text('UPLOAD DOCUMENT'), findsOneWidget);
     expect(find.text('ASK ABOUT DOCUMENTS ▸'), findsOneWidget);
   });
@@ -216,6 +216,7 @@ void main() {
 
   testWidgets('403 clinical tier renders the health-worker lock copy',
       (tester) async {
+    var consentFired = false;
     final backend = _FakeBackend((method, uri, body) => (
           status: 403,
           json: {
@@ -225,11 +226,16 @@ void main() {
     HttpOverrides.global = backend;
     addTearDown(() => HttpOverrides.global = null);
 
-    await tester
-        .pumpWidget(const MaterialApp(home: DocumentsScreen(patientId: 'p1')));
+    await tester.pumpWidget(MaterialApp(
+      home: DocumentsScreen(
+        patientId: 'p1',
+        onConsentMissing: () => consentFired = true,
+      ),
+    ));
     await tester.pumpAndSettle();
 
     expect(find.textContaining('Health worker only'), findsOneWidget);
+    expect(consentFired, isFalse);
     expect(find.text('UPLOAD DOCUMENT'), findsNothing);
     expect(find.text('ASK ABOUT DOCUMENTS ▸'), findsNothing);
   });
@@ -267,6 +273,86 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.textContaining("You're offline"), findsOneWidget);
+    expect(find.text('RETRY ▸'), findsOneWidget);
+  });
+
+  testWidgets('retry reloads after a failed request and succeeds',
+      (tester) async {
+    var listRequests = 0;
+    final backend = _FakeBackend((method, uri, body) {
+      if (uri.path == '/api/v1/reports/patients/p1/documents') {
+        listRequests++;
+        if (listRequests == 1) {
+          return (status: 500, json: {'detail': 'temporary failure'});
+        }
+        return (status: 200, json: twoDocs);
+      }
+      return (status: 404, json: {'detail': 'not found'});
+    });
+    HttpOverrides.global = backend;
+    addTearDown(() => HttpOverrides.global = null);
+
+    await tester
+        .pumpWidget(const MaterialApp(home: DocumentsScreen(patientId: 'p1')));
+    await tester.pumpAndSettle();
+
+    expect(listRequests, 1);
+    expect(find.text('Could not load documents: temporary failure'),
+        findsOneWidget);
+    expect(find.text('RETRY ▸'), findsOneWidget);
+
+    await tester.tap(find.text('RETRY ▸'));
+    await tester.pumpAndSettle();
+
+    expect(listRequests, 2);
+    expect(find.text('Discharge summary'), findsOneWidget);
+    expect(find.textContaining('Could not load documents'), findsNothing);
+  });
+
+  testWidgets('returning from upload reloads the document list',
+      (tester) async {
+    var listRequests = 0;
+    final backend = _FakeBackend((method, uri, body) {
+      if (uri.path == '/api/v1/reports/patients/p1/documents') {
+        listRequests++;
+        return (status: 200, json: twoDocs);
+      }
+      return (status: 404, json: {'detail': 'not found'});
+    });
+    HttpOverrides.global = backend;
+    addTearDown(() => HttpOverrides.global = null);
+
+    await tester
+        .pumpWidget(const MaterialApp(home: DocumentsScreen(patientId: 'p1')));
+    await tester.pumpAndSettle();
+    expect(listRequests, 1);
+
+    await tester.tap(find.text('UPLOAD DOCUMENT'));
+    await tester.pumpAndSettle();
+    expect(
+        find.text('Upload prescriptions, discharge summaries, or care plans.'),
+        findsOneWidget);
+
+    await tester.pageBack();
+    await tester.pumpAndSettle();
+
+    expect(listRequests, 2);
+  });
+
+  testWidgets('500 detail shows the server message and Retry', (tester) async {
+    final backend = _FakeBackend((method, uri, body) => (
+          status: 500,
+          json: {'detail': 'server exploded'},
+        ));
+    HttpOverrides.global = backend;
+    addTearDown(() => HttpOverrides.global = null);
+
+    await tester
+        .pumpWidget(const MaterialApp(home: DocumentsScreen(patientId: 'p1')));
+    await tester.pumpAndSettle();
+
+    expect(
+        find.text('Could not load documents: server exploded'), findsOneWidget);
     expect(find.text('RETRY ▸'), findsOneWidget);
   });
 }

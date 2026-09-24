@@ -44,7 +44,9 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
         _loading = false;
       });
     } on ApiException catch (e) {
-      if (e.statusCode == 403) widget.onConsentMissing?.call();
+      if (e.statusCode == 403 && e.message.contains('health_data')) {
+        widget.onConsentMissing?.call();
+      }
       if (!mounted) return;
       setState(() {
         _error = e.isNetworkError
