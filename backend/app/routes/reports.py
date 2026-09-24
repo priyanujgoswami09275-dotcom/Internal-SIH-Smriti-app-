@@ -190,32 +190,40 @@ async def list_patient_documents(
     """List a patient's ingested medical documents (metadata only).
 
     Same gates as the read/query paths — clinical tier, health_data consent,
-    DPDP read audit. Never returns extracted_text (encrypted at rest).
+    DPDP read audit. Projects only the six metadata columns, so the encrypted
+    `extracted_text` column is never loaded, and it is never returned.
     """
     await ensure_clinical_access(db, current_user, patient_id)
     await ensure_consent(db, patient_id, "health_data")
     await ComplianceService.log_read_access(db, current_user.id, "medical_document", str(patient_id))
 
     res = await db.execute(
-        select(MedicalDocument)
+        select(
+            MedicalDocument.id,
+            MedicalDocument.title,
+            MedicalDocument.file_ref,
+            MedicalDocument.doc_type,
+            MedicalDocument.embedding_status,
+            MedicalDocument.created_at,
+        )
         .where(MedicalDocument.patient_id == patient_id)
         .order_by(MedicalDocument.created_at.desc(), MedicalDocument.id.desc())
         .limit(50)
     )
     documents = [
         {
-            "document_id": str(doc.id),
-            "title": doc.title,
-            "file_name": doc.file_ref,
-            "doc_type": doc.doc_type.value if hasattr(doc.doc_type, "value") else str(doc.doc_type),
+            "document_id": str(doc_id),
+            "title": title,
+            "file_name": file_ref,
+            "doc_type": doc_type.value if hasattr(doc_type, "value") else str(doc_type),
             "embedding_status": (
-                doc.embedding_status.value
-                if hasattr(doc.embedding_status, "value")
-                else str(doc.embedding_status)
+                embedding_status.value
+                if hasattr(embedding_status, "value")
+                else str(embedding_status)
             ),
-            "created_at": doc.created_at.isoformat() if doc.created_at else None,
+            "created_at": created_at.isoformat() if created_at else None,
         }
-        for doc in res.scalars().all()
+        for doc_id, title, file_ref, doc_type, embedding_status, created_at in res.all()
     ]
     return {"documents": documents, "count": len(documents)}
 
