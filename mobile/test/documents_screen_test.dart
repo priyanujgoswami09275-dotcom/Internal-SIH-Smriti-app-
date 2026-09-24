@@ -340,10 +340,17 @@ void main() {
   });
 
   testWidgets('500 detail shows the server message and Retry', (tester) async {
-    final backend = _FakeBackend((method, uri, body) => (
-          status: 500,
-          json: {'detail': 'server exploded'},
-        ));
+    var requests = 0;
+    final backend = _FakeBackend((method, uri, body) {
+      if (uri.path == '/api/v1/reports/patients/p1/documents') {
+        requests++;
+        if (requests == 1) {
+          return (status: 500, json: {'detail': 'server exploded'});
+        }
+        return (status: 200, json: twoDocs);
+      }
+      return (status: 404, json: {'detail': 'not found'});
+    });
     HttpOverrides.global = backend;
     addTearDown(() => HttpOverrides.global = null);
 
@@ -351,8 +358,17 @@ void main() {
         .pumpWidget(const MaterialApp(home: DocumentsScreen(patientId: 'p1')));
     await tester.pumpAndSettle();
 
+    expect(requests, 1);
     expect(
         find.text('Could not load documents: server exploded'), findsOneWidget);
     expect(find.text('RETRY ▸'), findsOneWidget);
+
+    await tester.tap(find.text('RETRY ▸'));
+    await tester.pumpAndSettle();
+
+    expect(requests, 2);
+    expect(find.text('Discharge summary'), findsOneWidget);
+    expect(
+        find.text('Could not load documents: server exploded'), findsNothing);
   });
 }
