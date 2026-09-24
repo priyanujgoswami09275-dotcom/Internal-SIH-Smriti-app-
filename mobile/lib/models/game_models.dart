@@ -406,6 +406,7 @@ class GameAction {
 class SyncQueueItem {
   final String id;
   final String? patientId;
+  final String? accountId;
   final String resourceType;
   final String operation;
   final String resourceId;
@@ -418,6 +419,7 @@ class SyncQueueItem {
   const SyncQueueItem({
     required this.id,
     this.patientId,
+    this.accountId,
     required this.resourceType,
     required this.operation,
     required this.resourceId,
@@ -428,9 +430,16 @@ class SyncQueueItem {
     this.lastError,
   });
 
+  String? get idempotencyKey {
+    final value = payload['idempotency_key'];
+    return value is String && value.isNotEmpty ? value : null;
+  }
+
   Map<String, dynamic> toJson() => {
     'id': id,
     if (patientId != null && patientId!.isNotEmpty) 'patient_id': patientId,
+    if (accountId != null && accountId!.isNotEmpty) 'account_id': accountId,
+    if (idempotencyKey != null) 'idempotency_key': idempotencyKey,
     'resource_type': resourceType,
     'operation': operation,
     'resource_id': resourceId,
@@ -444,6 +453,7 @@ class SyncQueueItem {
   factory SyncQueueItem.fromJson(Map<String, dynamic> json) => SyncQueueItem(
     id: json['id'] as String,
     patientId: json['patient_id'] as String?,
+    accountId: json['account_id'] as String?,
     resourceType: json['resource_type'] as String,
     operation: json['operation'] as String,
     resourceId: json['resource_id'] as String,

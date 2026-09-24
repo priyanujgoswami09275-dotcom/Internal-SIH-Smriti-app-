@@ -1485,6 +1485,12 @@ class $SyncQueueTable extends SyncQueue
   late final GeneratedColumn<String> patientId = GeneratedColumn<String>(
       'patient_id', aliasedName, true,
       type: DriftSqlType.string, requiredDuringInsert: false);
+  static const VerificationMeta _accountIdMeta =
+      const VerificationMeta('accountId');
+  @override
+  late final GeneratedColumn<String> accountId = GeneratedColumn<String>(
+      'account_id', aliasedName, true,
+      type: DriftSqlType.string, requiredDuringInsert: false);
   static const VerificationMeta _resourceTypeMeta =
       const VerificationMeta('resourceType');
   @override
@@ -1539,6 +1545,7 @@ class $SyncQueueTable extends SyncQueue
   List<GeneratedColumn> get $columns => [
         id,
         patientId,
+        accountId,
         resourceType,
         operation,
         resourceId,
@@ -1566,6 +1573,10 @@ class $SyncQueueTable extends SyncQueue
     if (data.containsKey('patient_id')) {
       context.handle(_patientIdMeta,
           patientId.isAcceptableOrUnknown(data['patient_id']!, _patientIdMeta));
+    }
+    if (data.containsKey('account_id')) {
+      context.handle(_accountIdMeta,
+          accountId.isAcceptableOrUnknown(data['account_id']!, _accountIdMeta));
     }
     if (data.containsKey('resource_type')) {
       context.handle(
@@ -1628,6 +1639,8 @@ class $SyncQueueTable extends SyncQueue
           .read(DriftSqlType.string, data['${effectivePrefix}id'])!,
       patientId: attachedDatabase.typeMapping
           .read(DriftSqlType.string, data['${effectivePrefix}patient_id']),
+      accountId: attachedDatabase.typeMapping
+          .read(DriftSqlType.string, data['${effectivePrefix}account_id']),
       resourceType: attachedDatabase.typeMapping
           .read(DriftSqlType.string, data['${effectivePrefix}resource_type'])!,
       operation: attachedDatabase.typeMapping
@@ -1656,6 +1669,7 @@ class $SyncQueueTable extends SyncQueue
 class SyncQueueRow extends DataClass implements Insertable<SyncQueueRow> {
   final String id;
   final String? patientId;
+  final String? accountId;
   final String resourceType;
   final String operation;
   final String resourceId;
@@ -1667,6 +1681,7 @@ class SyncQueueRow extends DataClass implements Insertable<SyncQueueRow> {
   const SyncQueueRow(
       {required this.id,
       this.patientId,
+      this.accountId,
       required this.resourceType,
       required this.operation,
       required this.resourceId,
@@ -1681,6 +1696,9 @@ class SyncQueueRow extends DataClass implements Insertable<SyncQueueRow> {
     map['id'] = Variable<String>(id);
     if (!nullToAbsent || patientId != null) {
       map['patient_id'] = Variable<String>(patientId);
+    }
+    if (!nullToAbsent || accountId != null) {
+      map['account_id'] = Variable<String>(accountId);
     }
     map['resource_type'] = Variable<String>(resourceType);
     map['operation'] = Variable<String>(operation);
@@ -1703,6 +1721,9 @@ class SyncQueueRow extends DataClass implements Insertable<SyncQueueRow> {
       patientId: patientId == null && nullToAbsent
           ? const Value.absent()
           : Value(patientId),
+      accountId: accountId == null && nullToAbsent
+          ? const Value.absent()
+          : Value(accountId),
       resourceType: Value(resourceType),
       operation: Value(operation),
       resourceId: Value(resourceId),
@@ -1724,6 +1745,7 @@ class SyncQueueRow extends DataClass implements Insertable<SyncQueueRow> {
     return SyncQueueRow(
       id: serializer.fromJson<String>(json['id']),
       patientId: serializer.fromJson<String?>(json['patientId']),
+      accountId: serializer.fromJson<String?>(json['accountId']),
       resourceType: serializer.fromJson<String>(json['resourceType']),
       operation: serializer.fromJson<String>(json['operation']),
       resourceId: serializer.fromJson<String>(json['resourceId']),
@@ -1740,6 +1762,7 @@ class SyncQueueRow extends DataClass implements Insertable<SyncQueueRow> {
     return <String, dynamic>{
       'id': serializer.toJson<String>(id),
       'patientId': serializer.toJson<String?>(patientId),
+      'accountId': serializer.toJson<String?>(accountId),
       'resourceType': serializer.toJson<String>(resourceType),
       'operation': serializer.toJson<String>(operation),
       'resourceId': serializer.toJson<String>(resourceId),
@@ -1754,6 +1777,7 @@ class SyncQueueRow extends DataClass implements Insertable<SyncQueueRow> {
   SyncQueueRow copyWith(
           {String? id,
           Value<String?> patientId = const Value.absent(),
+          Value<String?> accountId = const Value.absent(),
           String? resourceType,
           String? operation,
           String? resourceId,
@@ -1765,6 +1789,7 @@ class SyncQueueRow extends DataClass implements Insertable<SyncQueueRow> {
       SyncQueueRow(
         id: id ?? this.id,
         patientId: patientId.present ? patientId.value : this.patientId,
+        accountId: accountId.present ? accountId.value : this.accountId,
         resourceType: resourceType ?? this.resourceType,
         operation: operation ?? this.operation,
         resourceId: resourceId ?? this.resourceId,
@@ -1778,6 +1803,7 @@ class SyncQueueRow extends DataClass implements Insertable<SyncQueueRow> {
     return SyncQueueRow(
       id: data.id.present ? data.id.value : this.id,
       patientId: data.patientId.present ? data.patientId.value : this.patientId,
+      accountId: data.accountId.present ? data.accountId.value : this.accountId,
       resourceType: data.resourceType.present
           ? data.resourceType.value
           : this.resourceType,
@@ -1798,6 +1824,7 @@ class SyncQueueRow extends DataClass implements Insertable<SyncQueueRow> {
     return (StringBuffer('SyncQueueRow(')
           ..write('id: $id, ')
           ..write('patientId: $patientId, ')
+          ..write('accountId: $accountId, ')
           ..write('resourceType: $resourceType, ')
           ..write('operation: $operation, ')
           ..write('resourceId: $resourceId, ')
@@ -1811,14 +1838,25 @@ class SyncQueueRow extends DataClass implements Insertable<SyncQueueRow> {
   }
 
   @override
-  int get hashCode => Object.hash(id, patientId, resourceType, operation,
-      resourceId, payload, createdAt, syncedAt, retryCount, lastError);
+  int get hashCode => Object.hash(
+      id,
+      patientId,
+      accountId,
+      resourceType,
+      operation,
+      resourceId,
+      payload,
+      createdAt,
+      syncedAt,
+      retryCount,
+      lastError);
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
       (other is SyncQueueRow &&
           other.id == this.id &&
           other.patientId == this.patientId &&
+          other.accountId == this.accountId &&
           other.resourceType == this.resourceType &&
           other.operation == this.operation &&
           other.resourceId == this.resourceId &&
@@ -1832,6 +1870,7 @@ class SyncQueueRow extends DataClass implements Insertable<SyncQueueRow> {
 class SyncQueueCompanion extends UpdateCompanion<SyncQueueRow> {
   final Value<String> id;
   final Value<String?> patientId;
+  final Value<String?> accountId;
   final Value<String> resourceType;
   final Value<String> operation;
   final Value<String> resourceId;
@@ -1844,6 +1883,7 @@ class SyncQueueCompanion extends UpdateCompanion<SyncQueueRow> {
   const SyncQueueCompanion({
     this.id = const Value.absent(),
     this.patientId = const Value.absent(),
+    this.accountId = const Value.absent(),
     this.resourceType = const Value.absent(),
     this.operation = const Value.absent(),
     this.resourceId = const Value.absent(),
@@ -1857,6 +1897,7 @@ class SyncQueueCompanion extends UpdateCompanion<SyncQueueRow> {
   SyncQueueCompanion.insert({
     required String id,
     this.patientId = const Value.absent(),
+    this.accountId = const Value.absent(),
     required String resourceType,
     required String operation,
     required String resourceId,
@@ -1875,6 +1916,7 @@ class SyncQueueCompanion extends UpdateCompanion<SyncQueueRow> {
   static Insertable<SyncQueueRow> custom({
     Expression<String>? id,
     Expression<String>? patientId,
+    Expression<String>? accountId,
     Expression<String>? resourceType,
     Expression<String>? operation,
     Expression<String>? resourceId,
@@ -1888,6 +1930,7 @@ class SyncQueueCompanion extends UpdateCompanion<SyncQueueRow> {
     return RawValuesInsertable({
       if (id != null) 'id': id,
       if (patientId != null) 'patient_id': patientId,
+      if (accountId != null) 'account_id': accountId,
       if (resourceType != null) 'resource_type': resourceType,
       if (operation != null) 'operation': operation,
       if (resourceId != null) 'resource_id': resourceId,
@@ -1903,6 +1946,7 @@ class SyncQueueCompanion extends UpdateCompanion<SyncQueueRow> {
   SyncQueueCompanion copyWith(
       {Value<String>? id,
       Value<String?>? patientId,
+      Value<String?>? accountId,
       Value<String>? resourceType,
       Value<String>? operation,
       Value<String>? resourceId,
@@ -1915,6 +1959,7 @@ class SyncQueueCompanion extends UpdateCompanion<SyncQueueRow> {
     return SyncQueueCompanion(
       id: id ?? this.id,
       patientId: patientId ?? this.patientId,
+      accountId: accountId ?? this.accountId,
       resourceType: resourceType ?? this.resourceType,
       operation: operation ?? this.operation,
       resourceId: resourceId ?? this.resourceId,
@@ -1935,6 +1980,9 @@ class SyncQueueCompanion extends UpdateCompanion<SyncQueueRow> {
     }
     if (patientId.present) {
       map['patient_id'] = Variable<String>(patientId.value);
+    }
+    if (accountId.present) {
+      map['account_id'] = Variable<String>(accountId.value);
     }
     if (resourceType.present) {
       map['resource_type'] = Variable<String>(resourceType.value);
@@ -1971,6 +2019,7 @@ class SyncQueueCompanion extends UpdateCompanion<SyncQueueRow> {
     return (StringBuffer('SyncQueueCompanion(')
           ..write('id: $id, ')
           ..write('patientId: $patientId, ')
+          ..write('accountId: $accountId, ')
           ..write('resourceType: $resourceType, ')
           ..write('operation: $operation, ')
           ..write('resourceId: $resourceId, ')
@@ -3137,6 +3186,7 @@ typedef $$ReminderEventsTableProcessedTableManager = ProcessedTableManager<
 typedef $$SyncQueueTableCreateCompanionBuilder = SyncQueueCompanion Function({
   required String id,
   Value<String?> patientId,
+  Value<String?> accountId,
   required String resourceType,
   required String operation,
   required String resourceId,
@@ -3150,6 +3200,7 @@ typedef $$SyncQueueTableCreateCompanionBuilder = SyncQueueCompanion Function({
 typedef $$SyncQueueTableUpdateCompanionBuilder = SyncQueueCompanion Function({
   Value<String> id,
   Value<String?> patientId,
+  Value<String?> accountId,
   Value<String> resourceType,
   Value<String> operation,
   Value<String> resourceId,
@@ -3175,6 +3226,9 @@ class $$SyncQueueTableFilterComposer
 
   ColumnFilters<String> get patientId => $composableBuilder(
       column: $table.patientId, builder: (column) => ColumnFilters(column));
+
+  ColumnFilters<String> get accountId => $composableBuilder(
+      column: $table.accountId, builder: (column) => ColumnFilters(column));
 
   ColumnFilters<String> get resourceType => $composableBuilder(
       column: $table.resourceType, builder: (column) => ColumnFilters(column));
@@ -3216,6 +3270,9 @@ class $$SyncQueueTableOrderingComposer
   ColumnOrderings<String> get patientId => $composableBuilder(
       column: $table.patientId, builder: (column) => ColumnOrderings(column));
 
+  ColumnOrderings<String> get accountId => $composableBuilder(
+      column: $table.accountId, builder: (column) => ColumnOrderings(column));
+
   ColumnOrderings<String> get resourceType => $composableBuilder(
       column: $table.resourceType,
       builder: (column) => ColumnOrderings(column));
@@ -3256,6 +3313,9 @@ class $$SyncQueueTableAnnotationComposer
 
   GeneratedColumn<String> get patientId =>
       $composableBuilder(column: $table.patientId, builder: (column) => column);
+
+  GeneratedColumn<String> get accountId =>
+      $composableBuilder(column: $table.accountId, builder: (column) => column);
 
   GeneratedColumn<String> get resourceType => $composableBuilder(
       column: $table.resourceType, builder: (column) => column);
@@ -3310,6 +3370,7 @@ class $$SyncQueueTableTableManager extends RootTableManager<
           updateCompanionCallback: ({
             Value<String> id = const Value.absent(),
             Value<String?> patientId = const Value.absent(),
+            Value<String?> accountId = const Value.absent(),
             Value<String> resourceType = const Value.absent(),
             Value<String> operation = const Value.absent(),
             Value<String> resourceId = const Value.absent(),
@@ -3323,6 +3384,7 @@ class $$SyncQueueTableTableManager extends RootTableManager<
               SyncQueueCompanion(
             id: id,
             patientId: patientId,
+            accountId: accountId,
             resourceType: resourceType,
             operation: operation,
             resourceId: resourceId,
@@ -3336,6 +3398,7 @@ class $$SyncQueueTableTableManager extends RootTableManager<
           createCompanionCallback: ({
             required String id,
             Value<String?> patientId = const Value.absent(),
+            Value<String?> accountId = const Value.absent(),
             required String resourceType,
             required String operation,
             required String resourceId,
@@ -3349,6 +3412,7 @@ class $$SyncQueueTableTableManager extends RootTableManager<
               SyncQueueCompanion.insert(
             id: id,
             patientId: patientId,
+            accountId: accountId,
             resourceType: resourceType,
             operation: operation,
             resourceId: resourceId,

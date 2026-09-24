@@ -35,6 +35,10 @@ class FakeReplayApi extends ApiService {
     required int difficultyLevel,
     String? contentPackId,
     String? routineId,
+    String? patientId,
+    DateTime? startedAt,
+    DateTime? completedAt,
+    String? idempotencyKey,
   }) async {
     calls.add('startGame:$gameType:$difficultyLevel');
     return 'server-new-1';
@@ -64,6 +68,7 @@ class FakeReplayApi extends ApiService {
     Map<String, dynamic>? actionData,
     bool? isCorrect,
     int? responseTimeMs,
+    String? idempotencyKey,
   }) async {
     calls.add('record:$actionType:$sessionId');
     recordedActions.add({
@@ -77,7 +82,11 @@ class FakeReplayApi extends ApiService {
   }
 
   @override
-  Future<GameSessionSummary> completeGame(String sessionId) async {
+  Future<GameSessionSummary> completeGame(
+    String sessionId, {
+    String? idempotencyKey,
+    DateTime? completedAt,
+  }) async {
     calls.add('complete:$sessionId');
     return GameSessionSummary(
       sessionId: sessionId,

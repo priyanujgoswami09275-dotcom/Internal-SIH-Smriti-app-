@@ -97,6 +97,10 @@ class FakeApiService extends ApiService {
     required int difficultyLevel,
     String? contentPackId,
     String? routineId,
+    String? patientId,
+    DateTime? startedAt,
+    DateTime? completedAt,
+    String? idempotencyKey,
   }) async {
     startCalls++;
     lastGameType = gameType;
@@ -135,7 +139,11 @@ class FakeApiService extends ApiService {
   }
 
   @override
-  Future<GameSessionSummary> completeGame(String sessionId) async {
+  Future<GameSessionSummary> completeGame(
+    String sessionId, {
+    String? idempotencyKey,
+    DateTime? completedAt,
+  }) async {
     completeCalls++;
     final summary = completeSummary;
     if (summary == null) throw ApiException('offline');
@@ -192,6 +200,8 @@ class FakeSync extends OfflineSyncService {
     required String patientId,
     required GameSessionModel session,
     required List<GameAction> actions,
+    String? contentPackId,
+    String? routineId,
   }) async {
     enqueuedSessions.add(session);
     enqueuedActions.add(actions);

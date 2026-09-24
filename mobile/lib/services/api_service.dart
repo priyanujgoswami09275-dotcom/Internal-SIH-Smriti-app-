@@ -204,6 +204,33 @@ class ApiService {
     throw ApiException(detail, statusCode: res.statusCode);
   }
 
+  bool _isUnsupportedIdempotencyKey(ApiException error) {
+    if (error.statusCode != 422) return false;
+    final message = error.message.toLowerCase();
+    return message.contains('idempotency') ||
+        message.contains('extra') ||
+        message.contains('unexpected');
+  }
+
+  Future<dynamic> _postJsonWithOptionalIdempotency(
+    String path, {
+    required Map<String, dynamic> body,
+    String? idempotencyKey,
+  }) async {
+    final requestBody = <String, dynamic>{...body};
+    if (idempotencyKey != null && idempotencyKey.isNotEmpty) {
+      requestBody['idempotency_key'] = idempotencyKey;
+    }
+    try {
+      return await postJson(path, body: requestBody);
+    } on ApiException catch (error) {
+      if (idempotencyKey == null || !_isUnsupportedIdempotencyKey(error)) {
+        rethrow;
+      }
+      return postJson(path, body: body);
+    }
+  }
+
   // =====================================================================
   // Auth
   // =====================================================================
@@ -355,23 +382,41 @@ class ApiService {
     required int difficultyLevel,
     String? contentPackId,
     String? routineId,
+    String? patientId,
+    DateTime? startedAt,
+    DateTime? completedAt,
+    String? idempotencyKey,
   }) async {
-    final data = await postJson(
+    final data = await _postJsonWithOptionalIdempotency(
       '${AppConfig.apiV1}/games/sessions',
       body: {
         'game_type': gameType,
         'difficulty_level': difficultyLevel,
         if (contentPackId != null) 'content_pack_id': contentPackId,
         if (routineId != null) 'routine_id': routineId,
+        if (patientId != null) 'patient_id': patientId,
+        if (startedAt != null) 'started_at': startedAt.toIso8601String(),
+        if (completedAt != null) 'completed_at': completedAt.toIso8601String(),
       },
+      idempotencyKey: idempotencyKey,
     );
     final map = data as Map<String, dynamic>;
     if (map['session_id'] == null) throw ApiException('No session_id returned');
     return map['session_id'] as String;
   }
 
-  Future<GameSessionSummary> completeGame(String sessionId) async {
-    final data = await postJson('${AppConfig.apiV1}/games/sessions/$sessionId/complete');
+  Future<GameSessionSummary> completeGame(
+    String sessionId, {
+    String? idempotencyKey,
+    DateTime? completedAt,
+  }) async {
+    final data = await _postJsonWithOptionalIdempotency(
+      '${AppConfig.apiV1}/games/sessions/$sessionId/complete',
+      body: {
+        if (completedAt != null) 'completed_at': completedAt.toIso8601String(),
+      },
+      idempotencyKey: idempotencyKey,
+    );
     return GameSessionSummary.fromJson(data as Map<String, dynamic>);
   }
 
@@ -390,8 +435,9 @@ class ApiService {
     Map<String, dynamic>? actionData,
     bool? isCorrect,
     int? responseTimeMs,
+    String? idempotencyKey,
   }) async {
-    await postJson(
+    await _postJsonWithOptionalIdempotency(
       '${AppConfig.apiV1}/games/sessions/$sessionId/actions',
       body: {
         'action_type': actionType,
@@ -399,6 +445,7 @@ class ApiService {
         if (isCorrect != null) 'is_correct': isCorrect,
         if (responseTimeMs != null) 'response_time_ms': responseTimeMs,
       },
+      idempotencyKey: idempotencyKey,
     );
     return true;
   }
@@ -455,10 +502,15 @@ class ApiService {
   }
 
   /// Record an acknowledgment for a reminder event.
-  Future<bool> acknowledgeReminder(String eventId, {String method = 'button'}) async {
-    final data = await postJson(
+  Future<bool> acknowledgeReminder(
+    String eventId, {
+    String method = 'button',
+    String? idempotencyKey,
+  }) async {
+    final data = await _postJsonWithOptionalIdempotency(
       '${AppConfig.apiV1}/reminders/events/$eventId/acknowledge',
       body: {'method': method},
+      idempotencyKey: idempotencyKey,
     );
     return data != null;
   }
