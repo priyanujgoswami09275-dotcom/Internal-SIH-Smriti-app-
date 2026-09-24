@@ -19,10 +19,29 @@ class _RagQaScreenState extends State<RagQaScreen> {
   String? _error;
   bool _asking = false;
 
+  Map<String, dynamic>? get storedResultForTest => _result;
+
   @override
   void dispose() {
     _controller.dispose();
     super.dispose();
+  }
+
+  Map<String, dynamic> _projectResult(Map<String, dynamic> result) {
+    final rawCitations = result['citations'];
+    final citations = <Map<String, dynamic>>[];
+    if (rawCitations is List) {
+      for (final citation in rawCitations) {
+        if (citation is Map) {
+          citations.add({
+            'title': citation['title'],
+            'file_ref': citation['file_ref'],
+            'similarity': citation['similarity'],
+          });
+        }
+      }
+    }
+    return {...result, 'citations': citations};
   }
 
   Future<void> _ask() async {
@@ -41,7 +60,7 @@ class _RagQaScreenState extends State<RagQaScreen> {
           .askDocumentQuestion(patientId: widget.patientId, question: question);
       if (!mounted) return;
       setState(() {
-        _result = result;
+        _result = _projectResult(result);
         _asking = false;
       });
     } on ApiException catch (e) {

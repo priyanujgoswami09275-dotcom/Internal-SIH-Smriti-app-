@@ -659,7 +659,15 @@ class ApiService {
   Future<List<Map<String, dynamic>>> listDocuments(String patientId) async {
     final data = await getJson(
         '${AppConfig.apiV1}/reports/patients/$patientId/documents');
-    final rows = (data as Map<String, dynamic>)['documents'] as List? ?? const [];
+    if (data is! Map) {
+      throw ApiException(
+          'Invalid documents response: expected an object with a documents list.');
+    }
+    final rows = data['documents'];
+    if (rows is! List) {
+      throw ApiException(
+          'Invalid documents response: expected an object with a documents list.');
+    }
     return rows.cast<Map<String, dynamic>>();
   }
 
@@ -674,7 +682,9 @@ class ApiService {
       '${AppConfig.apiV1}/reports/documents/answer',
       body: {'patient_id': patientId, 'question': question, 'top_k': topK},
     );
-    if (data is! Map) return <String, dynamic>{};
+    if (data is! Map) {
+      throw ApiException('Invalid answer response: expected an object.');
+    }
     return Map<String, dynamic>.from(data);
   }
 }

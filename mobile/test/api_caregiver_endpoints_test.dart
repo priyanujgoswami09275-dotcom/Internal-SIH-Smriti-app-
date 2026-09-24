@@ -8,6 +8,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:eldercare_mobile/screens/documents_screen.dart';
 import 'package:eldercare_mobile/screens/rag_upload_screen.dart';
 import 'package:eldercare_mobile/services/api_service.dart';
 import 'package:flutter/material.dart';
@@ -436,6 +437,68 @@ void main() {
       final docs = await api.listDocuments('p1');
       expect(docs, hasLength(1));
       expect(docs.single['file_name'], 'discharge.txt');
+    });
+
+    test('listDocuments rejects a response without documents', () async {
+      final backend = _FakeBackend((method, uri, body) =>
+          (status: 200, json: {'count': 0}));
+      HttpOverrides.global = backend;
+      addTearDown(() => HttpOverrides.global = null);
+      final api = ApiService(baseUrl: 'http://fake.invalid')..authToken = 'tok-1';
+
+      await expectLater(
+        api.listDocuments('p1'),
+        throwsA(isA<ApiException>().having(
+          (e) => e.message,
+          'message',
+          contains('documents'),
+        )),
+      );
+    });
+
+    test('listDocuments rejects a non-list documents value', () async {
+      final backend = _FakeBackend((method, uri, body) =>
+          (status: 200, json: {'documents': <String, dynamic>{}, 'count': 0}));
+      HttpOverrides.global = backend;
+      addTearDown(() => HttpOverrides.global = null);
+      final api = ApiService(baseUrl: 'http://fake.invalid')..authToken = 'tok-1';
+
+      await expectLater(
+        api.listDocuments('p1'),
+        throwsA(isA<ApiException>().having(
+          (e) => e.message,
+          'message',
+          contains('documents'),
+        )),
+      );
+    });
+
+    testWidgets('documents screen renders a malformed list as an error',
+        (tester) async {
+      final backend = _FakeBackend((method, uri, body) =>
+          (status: 200, json: {'count': 0}));
+      HttpOverrides.global = backend;
+      addTearDown(() => HttpOverrides.global = null);
+
+      await tester.pumpWidget(
+          const MaterialApp(home: DocumentsScreen(patientId: 'p1')));
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('Could not load documents:'), findsOneWidget);
+      expect(find.textContaining('No documents yet'), findsNothing);
+    });
+
+    test('askDocumentQuestion rejects a non-map answer', () async {
+      final backend = _FakeBackend((method, uri, body) =>
+          (status: 200, json: ['not', 'a', 'map']));
+      HttpOverrides.global = backend;
+      addTearDown(() => HttpOverrides.global = null);
+      final api = ApiService(baseUrl: 'http://fake.invalid')..authToken = 'tok-1';
+
+      await expectLater(
+        api.askDocumentQuestion(patientId: 'p1', question: 'What medication?'),
+        throwsA(isA<ApiException>()),
+      );
     });
 
     test('askDocumentQuestion POSTs the question and returns the answer map',

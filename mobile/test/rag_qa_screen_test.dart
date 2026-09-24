@@ -223,6 +223,48 @@ void main() {
     expect(find.textContaining('Could not get an answer:'), findsNothing);
   });
 
+  testWidgets('malformed answer response renders a visible error',
+      (tester) async {
+    HttpOverrides.global = _FakeBackend((method, uri, body) =>
+        (status: 200, json: ['not', 'a', 'map']));
+    addTearDown(() => HttpOverrides.global = null);
+
+    await tester
+        .pumpWidget(const MaterialApp(home: RagQaScreen(patientId: 'p1')));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField), 'What medication?');
+    await tester.tap(find.text('ASK ▸'));
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('Could not get an answer:'), findsOneWidget);
+    expect(find.text('Answer'), findsNothing);
+  });
+
+  testWidgets('stored citations omit PHI text', (tester) async {
+    HttpOverrides.global = answerBackend('Answer [1].', [
+      {
+        'title': 'Discharge summary',
+        'file_ref': 'discharge.txt',
+        'similarity': 0.82,
+        'text': 'Sensitive patient record excerpt',
+      }
+    ]);
+    addTearDown(() => HttpOverrides.global = null);
+
+    await tester
+        .pumpWidget(const MaterialApp(home: RagQaScreen(patientId: 'p1')));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField), 'What medication?');
+    await tester.tap(find.text('ASK ▸'));
+    await tester.pumpAndSettle();
+
+    final state = tester.state<State<RagQaScreen>>(find.byType(RagQaScreen));
+    final result = (state as dynamic).storedResultForTest as Map<String, dynamic>;
+    final citation = (result['citations'] as List).single as Map<String, dynamic>;
+    expect(citation.keys, unorderedEquals(['title', 'file_ref', 'similarity']));
+    expect(citation.containsKey('text'), isFalse);
+  });
+
   testWidgets('empty question is refused client-side', (tester) async {
     var called = false;
     HttpOverrides.global = _FakeBackend((method, uri, body) {
