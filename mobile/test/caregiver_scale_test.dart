@@ -409,10 +409,10 @@ void main() {
     testWidgets('rag upload screen renders at 1.3 scale without overflow',
         (tester) async {
       SharedPreferences.setMockInitialValues({});
-      await tester.pumpWidget(const MaterialApp(
-        home: RagUploadScreen(patientId: 'p1'),
-      ));
-      await tester.pumpAndSettle();
+      await _pumpAtScale(
+        tester,
+        const MaterialApp(home: RagUploadScreen(patientId: 'p1')),
+      );
       expect(tester.takeException(), isNull);
     });
 
@@ -422,19 +422,19 @@ void main() {
           (status: 200, json: {'documents': [], 'count': 0}));
       HttpOverrides.global = backend;
       addTearDown(() => HttpOverrides.global = null);
-      await tester.pumpWidget(const MaterialApp(
-        home: DocumentsScreen(patientId: 'p1'),
-      ));
-      await tester.pumpAndSettle();
+      await _pumpAtScale(
+        tester,
+        const MaterialApp(home: DocumentsScreen(patientId: 'p1')),
+      );
       expect(tester.takeException(), isNull);
     });
 
     testWidgets('rag qa screen renders at 1.3 scale without overflow',
         (tester) async {
-      await tester.pumpWidget(const MaterialApp(
-        home: RagQaScreen(patientId: 'p1'),
-      ));
-      await tester.pumpAndSettle();
+      await _pumpAtScale(
+        tester,
+        const MaterialApp(home: RagQaScreen(patientId: 'p1')),
+      );
       expect(tester.takeException(), isNull);
     });
   });
