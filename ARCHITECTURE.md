@@ -23,7 +23,7 @@ Three user-facing surfaces share one FastAPI backend:
             │ REST API
             ▼
 ┌─────────────────────────┐
-│   Caregiver Dashboard      │  Flutter Web
+│   Caregiver Dashboard      │  Flutter Web + mobile
 │ (Trends, alerts, logs)     │
 └─────────────────────────┘
 ```
@@ -59,12 +59,13 @@ Three user-facing surfaces share one FastAPI backend:
   - `mobile/lib/main.dart` (auth gate, home shell, profile setup)
   - `mobile/lib/services/` (api_service, auth_session, offline_sync_service, reminder_service, tts_cache, voice_audio_service, voice_languages, reminder_scheduler, routine_service, match_it_service)
   - `mobile/lib/games/` (game_analytics_engine.dart [pure Dart, no Flutter imports], game_labels.dart, game_visuals.dart, recall_service.dart)
-  - `mobile/lib/screens/` (auth, match_it, pack_picker, routine, reminders, voice_companion [10-lang picker, provider-gated], caregiver_dashboard [role-gated], recall_screen, odd_one_out_screen)
+  - `mobile/lib/screens/` (auth, match_it, pack_picker, routine, reminders, voice_companion [10-lang picker, provider-gated], caregiver_dashboard [role-gated], caregiver/ (sections: patient_switcher, alerts_card, metrics_tiles, trends_section, compliance_log, schedules_card, documents_card, risk_screening_section), audit_viewer_screen, recall_screen, odd_one_out_screen)
   - `mobile/lib/theme/monad_theme.dart` (Monad design tokens — colors, type, spacing, radii)
   - `mobile/test/` (api_live_test, game_analytics_engine_test, level_config_test, monad_widgets_test, odd_one_out_screen_test, recall_service_test, reminder_voice_test, silence_detector_test, voice_languages_test, schedule_delete_contract_test [2A], rag_upload_test [2C], clinical_notes_sync_test [2D], refresh_single_flight_test [5D], widget_test)
+  - `mobile/lib/screens/caregiver/` (port of the caregiver dashboard sections + `audit_viewer_screen`; RAG upload via `file_picker` — no dart:html/dart:io file reads on mobile)
 
 ### Caregiver Dashboard
-- **Framework:** Flutter Web (same Dart codebase as mobile)
+- **Framework:** Flutter Web + mobile app (role-routed in mobile/lib/main.dart; same Monad design system)
 - **Key files:**
   - `dashboard/lib/main.dart` (single-file app: login, roster, summary tiles, alerts, insights) + `dashboard/lib/api_client.dart` extraction pending; `dashboard/lib/widgets/` (risk_screening_card, risk_intake_form [authed, tier-gated], rag_upload_widget + rag_upload_picker_web/stub [real upload, 2C])
   - `dashboard/lib/theme/monad_theme.dart` (copy of mobile's, minus game tints)

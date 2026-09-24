@@ -135,12 +135,13 @@ single-flight refresh covers it. The `patient_id`-as-query+field contract
 
 **Consent & tier surfacing (Amendment 1):**
 - `documents_card`: entry button only when a patient is selected. The pushed
-  upload screen returns its terminal status via `Navigator.pop` result;
-  when it returned the 403 `health_data` detail, the card switches into a
-  persistent tinted state — "This patient hasn't granted health_data
-  consent; documents can't be uploaded until they do" — instead of merely
-  the static helper text. Server-side `formatRagUploadFailure` already
-  carries the consent detail for 403s; nothing is swallowed silently.
+  upload screen invokes an `onConsentMissing` callback; when that fires for
+  the 403 `health_data` detail, the card switches into a
+  persistent tinted state — "health_data consent required — this patient has
+  not granted consent for health data, so documents can't be uploaded until
+  they do." — instead of merely the static helper text. Server-side
+  `formatRagUploadFailure` already carries the consent detail for 403s;
+  nothing is swallowed silently.
 - `risk_screening_section`: clinical tier shows the intake button; 403 on
   submit renders the consent-required state inline on the section; basic
   tier keeps the existing locked note. No silent swallow — the error text
