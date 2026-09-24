@@ -37,12 +37,15 @@ class Api {
   static String? _token;
   static String? _refreshToken;
   static String? _userId;
+  static String? _role;
 
   static const _kAccess = 'access_token';
   static const _kRefresh = 'refresh_token';
   static const _kUserId = 'user_id';
+  static const _kRole = 'user_role';
 
   static String? get userId => _userId;
+  static String? get role => _role;
   static bool get hasSession => _token != null && _refreshToken != null;
 
   /// Injectable client seam for tests (minimal: production uses the
@@ -57,10 +60,11 @@ class Api {
 
   @visibleForTesting
   static void setTestSession(
-      {String? token, String? refreshToken, String? userId}) {
+      {String? token, String? refreshToken, String? userId, String? role}) {
     _token = token;
     _refreshToken = refreshToken;
     _userId = userId;
+    _role = role ?? 'admin';
   }
 
   @visibleForTesting
@@ -68,6 +72,7 @@ class Api {
     _token = null;
     _refreshToken = null;
     _userId = null;
+    _role = null;
     _refreshInFlight = null;
     _testClient = null;
   }
@@ -78,6 +83,7 @@ class Api {
     _token = prefs.getString(_kAccess);
     _refreshToken = prefs.getString(_kRefresh);
     _userId = prefs.getString(_kUserId);
+    _role = prefs.getString(_kRole);
   }
 
   static Future<void> _persist() async {
@@ -96,6 +102,11 @@ class Api {
       await prefs.setString(_kUserId, _userId!);
     } else {
       await prefs.remove(_kUserId);
+    }
+    if (_role != null) {
+      await prefs.setString(_kRole, _role!);
+    } else {
+      await prefs.remove(_kRole);
     }
   }
 
@@ -218,6 +229,7 @@ class Api {
     _refreshToken = data['refresh_token'] as String?;
     final me = await _get('/api/v1/auth/me');
     _userId = me['id'] as String?;
+    _role = me['role'] as String?;
     await _persist();
   }
 
@@ -227,6 +239,7 @@ class Api {
     try {
       final me = await _get('/api/v1/auth/me');
       _userId = me['id'] as String? ?? _userId;
+      _role = me['role'] as String? ?? _role;
       await _persist();
       return _userId != null;
     } catch (_) {
@@ -257,6 +270,7 @@ class Api {
     _token = null;
     _refreshToken = null;
     _userId = null;
+    _role = null;
     await _persist();
   }
 
@@ -463,6 +477,7 @@ class _Root extends StatefulWidget {
 class _RootState extends State<_Root> {
   bool _checking = true;
   String? _userId;
+  String? _role;
 
   @override
   void initState() {
@@ -475,15 +490,24 @@ class _RootState extends State<_Root> {
     if (!mounted) return;
     setState(() {
       _userId = ok ? Api.userId : null;
+      _role = ok ? Api.role : null;
       _checking = false;
     });
   }
 
-  void _onLoggedIn(String userId) => setState(() => _userId = userId);
+  void _onLoggedIn(String userId, String? role) => setState(() {
+        _userId = userId;
+        _role = role;
+      });
 
   Future<void> _logout() async {
     await Api.logout();
-    if (mounted) setState(() => _userId = null);
+    if (mounted) {
+      setState(() {
+        _userId = null;
+        _role = null;
+      });
+    }
   }
 
   @override
@@ -492,7 +516,8 @@ class _RootState extends State<_Root> {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
     if (_userId != null) {
-      return _DashboardScreen(caregiverId: _userId!, onLogout: _logout);
+      return _DashboardScreen(
+          caregiverId: _userId!, role: _role, onLogout: _logout);
     }
     return _LoginScreen(onLoggedIn: _onLoggedIn);
   }
@@ -503,7 +528,7 @@ class _RootState extends State<_Root> {
 // =====================================================================
 
 class _LoginScreen extends StatefulWidget {
-  final void Function(String userId) onLoggedIn;
+  final void Function(String userId, String? role) onLoggedIn;
   const _LoginScreen({required this.onLoggedIn});
 
   @override
@@ -531,7 +556,7 @@ class _LoginScreenState extends State<_LoginScreen> {
     try {
       await Api.login(_phone.text.trim(), _password.text);
       if (!mounted) return;
-      widget.onLoggedIn(Api.userId!);
+      widget.onLoggedIn(Api.userId!, Api.role);
     } on Exception catch (e) {
       if (mounted) setState(() => _error = '$e');
     } finally {
@@ -607,8 +632,10 @@ class _LoginScreenState extends State<_LoginScreen> {
 
 class _DashboardScreen extends StatefulWidget {
   final String caregiverId;
+  final String? role;
   final VoidCallback onLogout;
-  const _DashboardScreen({required this.caregiverId, required this.onLogout});
+  const _DashboardScreen(
+      {required this.caregiverId, required this.role, required this.onLogout});
 
   @override
   State<_DashboardScreen> createState() => _DashboardScreenState();
@@ -760,10 +787,11 @@ class _DashboardScreenState extends State<_DashboardScreen> {
       appBar: AppBar(
         title: const Text('Caregiver Dashboard'),
         actions: [
-          IconButton(
-              tooltip: 'Compliance audit trail (admin)',
-              onPressed: _toggleAudit,
-              icon: const Icon(Icons.receipt_long)),
+          if (widget.role == 'admin')
+            IconButton(
+                tooltip: 'Compliance audit trail (admin)',
+                onPressed: _toggleAudit,
+                icon: const Icon(Icons.receipt_long)),
           IconButton(
               tooltip: 'Refresh',
               onPressed: _selectedPatientId == null ? _load : () => _select(_selectedPatientId!),
@@ -867,6 +895,9 @@ class _DashboardScreenState extends State<_DashboardScreen> {
 
   Widget _summaryContent(Map<String, dynamic> s) {
     final isClinical = _isClinicalView(s);
+    final canUploadDocuments =
+        const {'admin', 'asha_worker', 'clinician'}.contains(widget.role) ||
+            (widget.role == 'family_caregiver' && isClinical);
     final accuracy = (s['accuracy_pct'] as num? ?? 0).toDouble();
     final compliance = (s['compliance_pct'] as num? ?? 0).toDouble();
     final remindersTotal = (s['reminders_total'] as num? ?? 0).toInt();
@@ -971,8 +1002,10 @@ class _DashboardScreenState extends State<_DashboardScreen> {
         // Reminder schedules (caregiver-editable)
         if (_schedules != null) _schedulesCard(),
         const SizedBox(height: 12),
-        // RAG document upload — clinical view; feeds reports endpoint.
-        RagUploadWidget(patientId: _selectedPatientId ?? ''),
+        if (canUploadDocuments) ...[
+          const SizedBox(height: 8),
+          RagUploadWidget(patientId: _selectedPatientId ?? ''),
+        ],
         const SizedBox(height: 8),
         // Alerts
         if (alerts.isNotEmpty) ...[
