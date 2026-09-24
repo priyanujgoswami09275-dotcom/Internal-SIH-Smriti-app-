@@ -147,6 +147,14 @@ class SessionSummaryResponse(BaseModel):
     completed_at: str
     explanation: Optional[str] = None
     idempotent_replay: bool = False
+    recommended_level: int
+    difficulty_reason: str
+    difficulty_source: Optional[str] = None
+    rule_triggered: Optional[str] = None
+    rule_version: Optional[str] = None
+    shadow_probability: Optional[float] = None
+    shadow_model_version: Optional[str] = None
+    shadow_reason: Optional[str] = None
 
 
 class GameHistoryItem(BaseModel):

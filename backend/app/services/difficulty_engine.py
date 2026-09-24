@@ -145,6 +145,8 @@ async def evaluate_difficulty(
     game_type: GameTypeEnum,
     current_difficulty: int,
     strategy: Optional[DifficultyStrategy] = None,
+    *,
+    commit: bool = True,
 ) -> Dict[str, Any]:
     """
     Evaluate if difficulty should change for a patient's game.
@@ -186,8 +188,17 @@ async def evaluate_difficulty(
         result="raise" if resulting_level > current_difficulty else "lower" if resulting_level < current_difficulty else "hold",
         **shadow,
     )
-    await _log_adjustment(db, patient_id, game_type, current_difficulty, resulting_level, reason,
-                          adjusted_at=decision_time, **metadata)
+    await _log_adjustment(
+        db,
+        patient_id,
+        game_type,
+        current_difficulty,
+        resulting_level,
+        reason,
+        adjusted_at=decision_time,
+        commit=commit,
+        **metadata,
+    )
 
     return {
         **metadata,
@@ -207,6 +218,7 @@ async def _log_adjustment(
     reason: str,
     *,
     adjusted_at=None,
+    commit: bool = True,
     **metadata,
 ) -> None:
     """Log a difficulty adjustment for audit trail."""
@@ -220,4 +232,7 @@ async def _log_adjustment(
         **metadata,
     )
     db.add(log)
-    await db.commit()
+    if commit:
+        await db.commit()
+    else:
+        await db.flush()

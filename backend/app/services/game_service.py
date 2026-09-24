@@ -16,7 +16,12 @@ from app.models.all_models import (
     GameSession,
     GameTypeEnum,
 )
-from app.services import odd_one_out_service, recall_service, routine_service
+from app.services import (
+    difficulty_engine,
+    odd_one_out_service,
+    recall_service,
+    routine_service,
+)
 
 
 _SESSION_LOCKS: WeakKeyDictionary[
@@ -428,6 +433,19 @@ async def complete_game_session(
         if idempotency_key is not None:
             session.completion_idempotency_key = idempotency_key
 
+        await db.flush()
+        difficulty = await difficulty_engine.evaluate_difficulty(
+            db,
+            patient_id=session.patient_id,
+            game_type=session.game_type,
+            current_difficulty=session.difficulty_level,
+            commit=False,
+        )
+        recommended_level = (
+            difficulty["new_difficulty"]
+            if difficulty["new_difficulty"] is not None
+            else session.difficulty_level
+        )
         result = {
             "session_id": str(session.id),
             "patient_id": str(session.patient_id),
@@ -440,6 +458,14 @@ async def complete_game_session(
             "avg_response_time_ms": avg_response_time_ms,
             "started_at": session.started_at.isoformat(),
             "completed_at": session.completed_at.isoformat(),
+            "recommended_level": recommended_level,
+            "difficulty_reason": difficulty["reason"],
+            "difficulty_source": difficulty.get("source"),
+            "rule_triggered": difficulty.get("rule_triggered"),
+            "rule_version": difficulty.get("rule_version"),
+            "shadow_probability": difficulty.get("shadow_probability"),
+            "shadow_model_version": difficulty.get("shadow_model_version"),
+            "shadow_reason": difficulty.get("shadow_reason"),
         }
         if session.game_type == GameTypeEnum.ODD_ONE_OUT:
             result["explanation"] = odd_one_out_service.odd_one_out_explanation(
