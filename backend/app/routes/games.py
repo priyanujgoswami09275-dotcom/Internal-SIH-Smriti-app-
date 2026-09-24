@@ -18,7 +18,7 @@ from typing import Optional
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from sqlalchemy import select
 from app.core.security import require_role
@@ -121,10 +121,16 @@ class StartGameRequest(BaseModel):
 
 class RecordActionRequest(BaseModel):
     """Record a single player action."""
-    action_type: str
+    action_type: str = Field(min_length=1, max_length=100)
     action_data: dict
     is_correct: Optional[bool] = None
-    response_time_ms: Optional[int] = None
+    response_time_ms: Optional[int] = Field(default=None, ge=0)
+    idempotency_key: Optional[str] = Field(default=None, min_length=1, max_length=200)
+
+
+class CompleteGameRequest(BaseModel):
+    idempotency_key: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    expected_action_ids: list[str] = Field(default_factory=list, max_length=1000)
 
 
 class SessionSummaryResponse(BaseModel):
@@ -140,6 +146,7 @@ class SessionSummaryResponse(BaseModel):
     started_at: str
     completed_at: str
     explanation: Optional[str] = None
+    idempotent_replay: bool = False
 
 
 class GameHistoryItem(BaseModel):
@@ -309,22 +316,30 @@ async def record_action(
     if response_time_ms is None:
         response_time_ms = action_data.get("response_time_ms")
     try:
-        event = await game_service.record_game_action(
+        event, idempotent_replay = await game_service.record_game_action(
             db,
             session_id=sid,
             action_type=request.action_type,
             action_data=action_data,
             response_time_ms=response_time_ms,
+            idempotency_key=request.idempotency_key,
         )
     except game_service.GameActionValidationError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
+    except game_service.GameSessionCompletedError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
     await db.commit()
-    return {"status": "recorded", "event": event}
+    return {
+        "status": "recorded",
+        "event": event,
+        "idempotent_replay": idempotent_replay,
+    }
 
 
 @router.post("/sessions/{session_id}/complete", response_model=SessionSummaryResponse)
 async def complete_game(
     session_id: str,
+    request: Optional[CompleteGameRequest] = None,
     current_user: User = Depends(require_patient),
     db: AsyncSession = Depends(get_db),
 ):
@@ -337,11 +352,24 @@ async def complete_game(
             detail=f"Invalid session_id '{session_id}': must be a valid UUID",
         )
     await _ensure_owned_session(db, current_user, sid)
+    completion_request = request or CompleteGameRequest()
     try:
-        summary = await game_service.complete_game_session(db, session_id=sid)
+        summary, idempotent_replay = await game_service.complete_game_session(
+            db,
+            session_id=sid,
+            idempotency_key=completion_request.idempotency_key,
+            expected_action_ids=completion_request.expected_action_ids,
+        )
+    except game_service.GameActionBarrierError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except game_service.GameCompletionConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
     except ValueError:
         raise HTTPException(status_code=404, detail="Game session not found")
-    return SessionSummaryResponse(**summary)
+    return SessionSummaryResponse(
+        **summary,
+        idempotent_replay=idempotent_replay,
+    )
 
 
 @router.get("/sessions/{session_id}", response_model=dict)

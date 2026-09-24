@@ -6,15 +6,32 @@ log accuracy metrics, response times, and raw event history.
 """
 from typing import List, Dict, Any, Optional
 from datetime import datetime, timezone
-from uuid import UUID
-import json
+from uuid import UUID, uuid4
+from weakref import WeakKeyDictionary
+import asyncio
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update
+from sqlalchemy import select
 from app.models.all_models import (
+    GameAction,
     GameSession,
     GameTypeEnum,
 )
 from app.services import odd_one_out_service, recall_service, routine_service
+
+
+_SESSION_LOCKS: WeakKeyDictionary[
+    asyncio.AbstractEventLoop,
+    tuple[asyncio.Lock, ...],
+] = WeakKeyDictionary()
+
+
+def _session_lock(session_id: UUID) -> asyncio.Lock:
+    loop = asyncio.get_running_loop()
+    locks = _SESSION_LOCKS.get(loop)
+    if locks is None:
+        locks = tuple(asyncio.Lock() for _ in range(64))
+        _SESSION_LOCKS[loop] = locks
+    return locks[session_id.int % len(locks)]
 
 
 def iso_utc(value: Optional[datetime]) -> Optional[str]:
@@ -66,6 +83,32 @@ async def start_game_session(
 
 class GameActionValidationError(ValueError):
     pass
+
+
+class GameSessionCompletedError(RuntimeError):
+    pass
+
+
+class GameActionBarrierError(RuntimeError):
+    pass
+
+
+class GameCompletionConflictError(RuntimeError):
+    pass
+
+
+def _game_action_event(action: GameAction) -> Dict[str, Any]:
+    event = {
+        "timestamp": action.created_at.isoformat() if action.created_at else None,
+        "idempotency_key": action.idempotency_key,
+        "action_type": action.action_type,
+        "action_data": action.action_data or {},
+        "is_correct": action.is_correct,
+        "response_time_ms": action.response_time_ms,
+    }
+    if isinstance(action.server_fields, dict):
+        event.update(action.server_fields)
+    return event
 
 
 def _score_match_it(
@@ -244,102 +287,167 @@ async def record_game_action(
     action_data: Dict[str, Any],
     is_correct: Optional[bool] = None,
     response_time_ms: Optional[int] = None,
-) -> Dict[str, Any]:
-    """Record an action whose correctness is derived only from server state."""
-    result = await db.execute(select(GameSession).where(GameSession.id == session_id))
-    session = result.scalar_one_or_none()
-    if not session:
-        raise ValueError(f"Game session {session_id} not found")
+    idempotency_key: Optional[str] = None,
+) -> tuple[Dict[str, Any], bool]:
+    """Record one server-scored action with durable idempotent storage."""
+    key = idempotency_key or f"legacy-{uuid4()}"
+    async with _session_lock(session_id):
+        result = await db.execute(
+            select(GameSession)
+            .where(GameSession.id == session_id)
+            .with_for_update()
+        )
+        session = result.scalar_one_or_none()
+        if not session:
+            raise ValueError(f"Game session {session_id} not found")
+        if session.completed_at is not None:
+            raise GameSessionCompletedError("Game session is already completed")
 
-    scored_data, server_verdict, server_fields = _score_game_action(
-        session,
-        action_type,
-        action_data,
-    )
-    if server_verdict is not None:
-        if server_verdict:
-            session.correct_count += 1
-        else:
-            session.incorrect_count += 1
-        session.attempts += 1
+        existing = await db.execute(
+            select(GameAction).where(
+                GameAction.session_id == session_id,
+                GameAction.idempotency_key == key,
+            )
+        )
+        duplicate = existing.scalar_one_or_none()
+        if duplicate is not None:
+            return _game_action_event(duplicate), True
 
-    event = {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "action_type": action_type,
-        "action_data": scored_data,
-        "is_correct": server_verdict,
-        "response_time_ms": response_time_ms,
-        **server_fields,
-    }
-    updated_log = list(session.raw_event_log or [])
-    updated_log.append(event)
-    session.raw_event_log = updated_log
-    await db.flush()
-    return event
+        scored_data, server_verdict, server_fields = _score_game_action(
+            session,
+            action_type,
+            action_data,
+        )
+        if server_verdict is not None:
+            if server_verdict:
+                session.correct_count += 1
+            else:
+                session.incorrect_count += 1
+            session.attempts += 1
+
+        now = datetime.now(timezone.utc)
+        action = GameAction(
+            session_id=session_id,
+            idempotency_key=key,
+            action_type=action_type,
+            action_data=scored_data,
+            is_correct=server_verdict,
+            response_time_ms=response_time_ms,
+            server_fields=server_fields or None,
+            created_at=now.replace(tzinfo=None),
+        )
+        db.add(action)
+        await db.flush()
+        return _game_action_event(action), False
 
 
 async def complete_game_session(
     db: AsyncSession,
     session_id: UUID,
-) -> Dict[str, Any]:
-    """Mark session as complete and compute final metrics.
-
-    Returns a summary dict with:
-        - session_id
-        - total_attempts
-        - correct_count, incorrect_count
-        - accuracy_pct
-        - avg_response_time_ms (computed from raw_event_log)
-        - completed_at
-    """
-    result = await db.execute(select(GameSession).where(GameSession.id == session_id))
-    session = result.scalar_one_or_none()
-    if not session:
-        raise ValueError(f"Game session {session_id} not found")
-
-    session.completed_at = datetime.now(timezone.utc)
-
-    # Compute final metrics from raw_event_log
-    response_times = [
-        e["response_time_ms"]
-        for e in (session.raw_event_log or [])
-        if e.get("response_time_ms") is not None
-    ]
-    avg_response_time_ms = (
-        round(sum(response_times) / len(response_times), 1) if response_times else 0.0
-    )
-
-    total_attempts = session.attempts or 0
-    accuracy_pct = (
-        round((session.correct_count / total_attempts) * 100.0, 1)
-        if total_attempts > 0
-        else 0.0
-    )
-
-    session.avg_response_time_ms = avg_response_time_ms
-    session.accuracy_pct = accuracy_pct
-
-    await db.commit()
-    await db.refresh(session)
-
-    result = {
-        "session_id": session.id,
-        "patient_id": session.patient_id,
-        "game_type": session.game_type.value,
-        "difficulty_level": session.difficulty_level,
-        "total_attempts": total_attempts,
-        "correct_count": session.correct_count,
-        "incorrect_count": session.incorrect_count,
-        "accuracy_pct": accuracy_pct,
-        "avg_response_time_ms": avg_response_time_ms,
-        "started_at": session.started_at.isoformat(),
-        "completed_at": session.completed_at.isoformat(),
-    }
-    if session.game_type == GameTypeEnum.ODD_ONE_OUT:
-        result["explanation"] = odd_one_out_service.odd_one_out_explanation(
-            session.server_state
+    *,
+    idempotency_key: Optional[str] = None,
+    expected_action_ids: Optional[List[str]] = None,
+) -> tuple[Dict[str, Any], bool]:
+    """Finalize only after expected actions are durable; replay is a no-op."""
+    async with _session_lock(session_id):
+        result = await db.execute(
+            select(GameSession)
+            .where(GameSession.id == session_id)
+            .with_for_update()
         )
-    return result
+        session = result.scalar_one_or_none()
+        if not session:
+            raise ValueError(f"Game session {session_id} not found")
+
+        if session.completed_at is not None:
+            if (
+                idempotency_key is not None
+                and session.completion_idempotency_key is not None
+                and idempotency_key != session.completion_idempotency_key
+            ):
+                raise GameCompletionConflictError(
+                    "Game session was completed with a different idempotency key"
+                )
+            if isinstance(session.completion_result, dict):
+                return dict(session.completion_result), True
+
+        expected = list(dict.fromkeys(expected_action_ids or []))
+        if expected:
+            durable = await db.execute(
+                select(GameAction.idempotency_key).where(
+                    GameAction.session_id == session_id,
+                    GameAction.idempotency_key.in_(expected),
+                )
+            )
+            durable_keys = set(durable.scalars().all())
+            missing = sorted(set(expected) - durable_keys)
+            if missing:
+                raise GameActionBarrierError(
+                    "expected actions are not durable: " + ", ".join(missing)
+                )
+
+        rows = await db.execute(
+            select(GameAction)
+            .where(GameAction.session_id == session_id)
+            .order_by(GameAction.created_at.asc(), GameAction.id.asc())
+        )
+        actions = list(rows.scalars().all())
+        legacy_events = [
+            dict(event)
+            for event in (session.raw_event_log or [])
+            if isinstance(event, dict) and not event.get("idempotency_key")
+        ]
+        events = legacy_events + [_game_action_event(action) for action in actions]
+        scored_events = [event for event in events if event.get("is_correct") is not None]
+        total_attempts = len(scored_events)
+        correct_count = sum(1 for event in scored_events if event["is_correct"])
+        incorrect_count = total_attempts - correct_count
+        accuracy_pct = (
+            round((correct_count / total_attempts) * 100.0, 1)
+            if total_attempts
+            else 0.0
+        )
+        response_times = [
+            event["response_time_ms"]
+            for event in events
+            if isinstance(event.get("response_time_ms"), (int, float))
+        ]
+        avg_response_time_ms = (
+            round(sum(response_times) / len(response_times), 1)
+            if response_times
+            else 0.0
+        )
+
+        session.completed_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        session.attempts = total_attempts
+        session.correct_count = correct_count
+        session.incorrect_count = incorrect_count
+        session.accuracy_pct = accuracy_pct
+        session.avg_response_time_ms = avg_response_time_ms
+        session.raw_event_log = events
+        if idempotency_key is not None:
+            session.completion_idempotency_key = idempotency_key
+
+        result = {
+            "session_id": str(session.id),
+            "patient_id": str(session.patient_id),
+            "game_type": session.game_type.value,
+            "difficulty_level": session.difficulty_level,
+            "total_attempts": total_attempts,
+            "correct_count": correct_count,
+            "incorrect_count": incorrect_count,
+            "accuracy_pct": accuracy_pct,
+            "avg_response_time_ms": avg_response_time_ms,
+            "started_at": session.started_at.isoformat(),
+            "completed_at": session.completed_at.isoformat(),
+        }
+        if session.game_type == GameTypeEnum.ODD_ONE_OUT:
+            result["explanation"] = odd_one_out_service.odd_one_out_explanation(
+                session.server_state
+            )
+        session.completion_result = result
+        await db.commit()
+        return result, False
 
 
 async def get_session_summary(db: AsyncSession, session_id: UUID) -> Dict[str, Any]:

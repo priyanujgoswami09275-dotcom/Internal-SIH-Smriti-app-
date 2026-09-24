@@ -466,9 +466,18 @@ async def test_repeat_complete_stable(client, db_session):
         f"{GAMES}/sessions/{session_id}/complete", headers=headers)).json()
     second = (await client.post(
         f"{GAMES}/sessions/{session_id}/complete", headers=headers)).json()
-    # completed_at refreshes; every scored field must be identical (stable).
-    assert {k: v for k, v in second.items() if k != "completed_at"} == {
-        k: v for k, v in first.items() if k != "completed_at"}
+    assert second["completed_at"] == first["completed_at"]
+    assert {
+        k: v
+        for k, v in second.items()
+        if k not in {"completed_at", "idempotent_replay"}
+    } == {
+        k: v
+        for k, v in first.items()
+        if k not in {"completed_at", "idempotent_replay"}
+    }
+    assert first["idempotent_replay"] is False
+    assert second["idempotent_replay"] is True
     assert first["accuracy_pct"] == 100.0
     assert first["total_attempts"] == 1
     stored = await _snapshot(db_session, session_id)
