@@ -34,9 +34,16 @@ import '../widgets/monad/monad_pill_button.dart';
 /// Server board endpoint (brief contract, authoritative).
 String get oddOneOutBoardPath => '${AppConfig.apiV1}/games/odd-one-out/board';
 
+Map<String, dynamic> _publicBoardJson(Map<String, dynamic> raw) {
+  final public = Map<String, dynamic>.from(raw)
+    ..remove('answer_item_id')
+    ..remove('explanation');
+  return public;
+}
+
 /// SharedPreferences key for cached board snapshots, per difficulty level:
 /// `{ "<level>": <board json> }`.
-const String oddOneOutCacheKey = 'smriti_ooo_board_v1';
+const String oddOneOutCacheKey = 'smriti_ooo_board_v2';
 
 class OddOneOutScreen extends StatefulWidget {
   final String patientId;
@@ -141,9 +148,11 @@ class _OddOneOutScreenState extends State<OddOneOutScreen> {
           'difficulty_level': '$_difficulty',
         },
       );
-      final board =
-          OddOneOutBoard.fromServerJson(Map<String, dynamic>.from(raw));
-      await _saveBoardCache(_difficulty, Map<String, dynamic>.from(raw));
+      final publicRaw = _publicBoardJson(
+        Map<String, dynamic>.from(raw as Map),
+      );
+      final board = OddOneOutBoard.fromServerJson(publicRaw);
+      await _saveBoardCache(_difficulty, publicRaw);
       if (!mounted) return;
       setState(() {
         _sessionId = sessionId;
@@ -197,8 +206,9 @@ class _OddOneOutScreenState extends State<OddOneOutScreen> {
       final all = Map<String, dynamic>.from(jsonDecode(existing) as Map);
       final entry = all['$level'];
       if (entry == null) return null;
-      final board =
-          OddOneOutBoard.fromJson(Map<String, dynamic>.from(entry as Map));
+      final board = OddOneOutBoard.fromJson(
+        _publicBoardJson(Map<String, dynamic>.from(entry as Map)),
+      );
       if (board.items.isEmpty) return null; // not a compatible snapshot
       return board;
     } catch (_) {
@@ -446,9 +456,9 @@ class _OddOneOutScreenState extends State<OddOneOutScreen> {
               _correctId != null ? 'Correct!' : 'Round finished.',
               style: Monad.patientBody,
             ),
-            if (board.explanation.isNotEmpty) ...[
+            if (resolved?.explanation?.isNotEmpty ?? false) ...[
               const SizedBox(height: 8),
-              Text(board.explanation, style: Monad.monoBodySm),
+              Text(resolved!.explanation!, style: Monad.monoBodySm),
             ],
             const SizedBox(height: 8),
             _resultRow('Attempts', '$attempts'),

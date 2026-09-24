@@ -600,7 +600,7 @@ class OddOneOutItem {
 ///
 /// Parsed from `GET /games/odd-one-out/board` (`game_type`,
 /// `difficulty_level`, `items: [{item_id, name}]`, `item_count`,
-/// `target_seconds`, `group_label`, `explanation`). The response never
+/// `target_seconds`, `group_label`). The response never
 /// contains the answer, and neither does this model: correctness always
 /// comes from the server verdict, never from local inspection.
 class OddOneOutBoard {
@@ -610,7 +610,6 @@ class OddOneOutBoard {
   final int itemCount;
   final int targetSeconds;
   final String groupLabel;
-  final String explanation;
   final DateTime generatedAt;
 
   const OddOneOutBoard({
@@ -621,7 +620,6 @@ class OddOneOutBoard {
     required this.targetSeconds,
     required this.generatedAt,
     this.groupLabel = '',
-    this.explanation = '',
   });
 
   factory OddOneOutBoard.fromServerJson(Map<String, dynamic> json) {
@@ -636,7 +634,6 @@ class OddOneOutBoard {
       itemCount: (json['item_count'] as num?)?.toInt() ?? items.length,
       targetSeconds: (json['target_seconds'] as num?)?.toInt() ?? 60,
       groupLabel: json['group_label'] as String? ?? '',
-      explanation: json['explanation'] as String? ?? '',
       generatedAt: DateTime.now(),
     );
   }
@@ -649,7 +646,6 @@ class OddOneOutBoard {
         'item_count': itemCount,
         'target_seconds': targetSeconds,
         'group_label': groupLabel,
-        'explanation': explanation,
       };
 
   factory OddOneOutBoard.fromJson(Map<String, dynamic> json) => OddOneOutBoard(
@@ -661,7 +657,6 @@ class OddOneOutBoard {
         itemCount: (json['item_count'] as num?)?.toInt() ?? 0,
         targetSeconds: (json['target_seconds'] as num?)?.toInt() ?? 60,
         groupLabel: json['group_label'] as String? ?? '',
-        explanation: json['explanation'] as String? ?? '',
         generatedAt: DateTime.now(),
       );
 }

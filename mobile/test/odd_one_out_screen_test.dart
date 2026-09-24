@@ -285,7 +285,7 @@ void main() {
       expect(board.itemCount, 3);
       expect(board.targetSeconds, 45);
       expect(board.groupLabel, 'Fruits');
-      expect(board.explanation, contains('instrument'));
+      expect(board.toJson().containsKey('explanation'), isFalse);
     });
 
     test('never carries the answer, even if the server sent one', () {
@@ -302,7 +302,7 @@ void main() {
       expect(restored.items.map((i) => i.itemId).toList(),
           board.items.map((i) => i.itemId).toList());
       expect(restored.groupLabel, board.groupLabel);
-      expect(restored.explanation, board.explanation);
+      expect(restored.toJson().containsKey('explanation'), isFalse);
     });
   });
 
@@ -580,7 +580,7 @@ void main() {
     testWidgets('cached board plays + queues with pending-sync label',
         (tester) async {
       SharedPreferences.setMockInitialValues({
-        'smriti_ooo_board_v1': jsonEncode({'1': _boardJson()}),
+        'smriti_ooo_board_v2': jsonEncode({'1': _boardJson()}),
       });
       final api = FakeApiService()..failStart = true;
       final sync = FakeSync();
