@@ -32,7 +32,11 @@ class RiskScreeningCard extends StatelessWidget {
               Row(children: [
                 Icon(Icons.health_and_safety, color: Monad.indigo, size: 24),
                 const SizedBox(width: 8),
-                Text('COGNITIVE RISK SCREENING', style: Monad.monoLabel),
+                // Expanded: title wraps at textScale 1.3 instead of
+                // overflowing the Row on a 390px phone.
+                const Expanded(
+                  child: Text('COGNITIVE RISK SCREENING', style: Monad.monoLabel),
+                ),
               ]),
               const SizedBox(height: 8),
               Text('Not assessed yet',
@@ -87,7 +91,9 @@ class RiskScreeningCard extends StatelessWidget {
               Row(children: [
                 Icon(Icons.health_and_safety, color: Monad.indigo, size: 24),
                 const SizedBox(width: 8),
-                Text('COGNITIVE RISK SCREENING', style: Monad.monoLabel),
+                const Expanded(
+                  child: Text('COGNITIVE RISK SCREENING', style: Monad.monoLabel),
+                ),
               ]),
               const SizedBox(height: 8),
               Row(children: [
@@ -151,7 +157,9 @@ class RiskScreeningCard extends StatelessWidget {
             Row(children: [
               Icon(Icons.info_outline, color: Monad.indigo, size: 24),
               const SizedBox(width: 8),
-              Text('COGNITIVE RISK SCREENING', style: Monad.monoLabel),
+              const Expanded(
+                child: Text('COGNITIVE RISK SCREENING', style: Monad.monoLabel),
+              ),
             ]),
             const SizedBox(height: 8),
             Text('Screening temporarily unavailable',

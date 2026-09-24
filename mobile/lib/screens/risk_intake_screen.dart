@@ -272,13 +272,20 @@ class _RiskIntakeScreenState extends State<RiskIntakeScreen> {
               ),
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-              child: Row(mainAxisAlignment: MainAxisAlignment.end, children: [
-                TextButton(
-                    onPressed: () => Navigator.of(context).pop(),
-                    child: const Text('Cancel')),
-                const SizedBox(width: 8),
-                MonadPillButton(label: 'Run Screening', onPressed: _submit, busy: _loading),
-              ]),
+              // Wrap (not Row): at textScale 1.3 the Cancel + pill pair
+              // exceeds 358px on a 390px phone — reflow instead of overflow.
+              child: Wrap(
+                alignment: WrapAlignment.end,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                spacing: 8,
+                children: [
+                  TextButton(
+                      onPressed: () => Navigator.of(context).pop(),
+                      child: const Text('Cancel')),
+                  MonadPillButton(
+                      label: 'Run Screening', onPressed: _submit, busy: _loading),
+                ],
+              ),
             ),
           ],
         ),

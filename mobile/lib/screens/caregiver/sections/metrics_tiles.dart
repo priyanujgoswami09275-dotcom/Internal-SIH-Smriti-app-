@@ -35,7 +35,10 @@ class MetricsTiles extends StatelessWidget {
       physics: const NeverScrollableScrollPhysics(),
       mainAxisSpacing: 12,
       crossAxisSpacing: 12,
-      childAspectRatio: 1.15,
+      // 1.15 left only ~102px inner height on a 390px phone — the scaled,
+      // wrapped title/subtitle overflowed at textScale 1.3. 0.72 gives the
+      // Column ~189px inner height (needs ~179 worst-case).
+      childAspectRatio: 0.72,
       children: tiles,
     );
   }
