@@ -16,6 +16,15 @@ from app.models.all_models import (
 )
 
 
+def iso_utc(value: Optional[datetime]) -> Optional[str]:
+    """Serialize a (possibly naive UTC) DateTime column as ISO-8601 with Z."""
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc).isoformat()
+
+
 async def start_game_session(
     db: AsyncSession,
     patient_id: UUID,
