@@ -56,6 +56,7 @@ class _RoutineScreenState extends State<RoutineScreen> {
   final RoutineService _logic = RoutineService();
   final GameAnalyticsEngine _engine = GameAnalyticsEngine.instance;
 
+  int _difficulty = 1;
   RoutineGameState? _game;
   bool _loading = true;
   String? _error;
@@ -72,6 +73,7 @@ class _RoutineScreenState extends State<RoutineScreen> {
   @override
   void initState() {
     super.initState();
+    _difficulty = widget.difficultyLevel.clamp(1, 3);
     _startGame();
   }
 
@@ -93,11 +95,11 @@ class _RoutineScreenState extends State<RoutineScreen> {
     try {
       final sessionId = await _api.startGame(
         gameType: 'routine_sequencing',
-        difficultyLevel: widget.difficultyLevel,
+        difficultyLevel: _difficulty,
       );
       final board = await _api.routineBoard(
         patientId: widget.patientId,
-        difficultyLevel: widget.difficultyLevel,
+        difficultyLevel: _difficulty,
         sessionId: sessionId,
       );
       if (!mounted) return;
@@ -108,7 +110,7 @@ class _RoutineScreenState extends State<RoutineScreen> {
       _armStuckTimer();
     } on Exception {
       final board = LocalContentPacks.defaultRoutineBoard(
-        difficultyLevel: widget.difficultyLevel,
+        difficultyLevel: _difficulty,
         levels: LevelConfig.current,
       );
       final sessionId = 'offline_${DateTime.now().millisecondsSinceEpoch}';
@@ -186,14 +188,13 @@ class _RoutineScreenState extends State<RoutineScreen> {
       }
       // Adaptive rule: >=15s stuck (or excessive errors) -> subtle hint.
       // L3 grants fewer free hints (max 1) per the difficulty spec.
-      final hintBudgetLeft =
-          widget.difficultyLevel >= 3 ? _hintsUsed < 1 : true;
+      final hintBudgetLeft = _difficulty >= 3 ? _hintsUsed < 1 : true;
       if (!_hinting &&
           hintBudgetLeft &&
           _engine.shouldHintNow(
             secondsSinceLastCorrect: _secondsSinceCorrect,
             incorrectMoves: current.errors,
-            difficultyLevel: widget.difficultyLevel,
+            difficultyLevel: _difficulty,
           )) {
         setState(() {
           _hinting = true;
@@ -264,6 +265,10 @@ class _RoutineScreenState extends State<RoutineScreen> {
               ApiService.completionIdempotencyKey(finalState.sessionId),
           expectedActionIds: _expectedActionIds(),
         );
+        _difficulty = GameAnalyticsEngine.authoritativeNextLevel(
+          currentLevel: _difficulty,
+          recommendedLevel: summary.recommendedLevel,
+        );
         _bufferedActions.clear(); // server holds the authoritative record
       } else {
         throw ApiException('offline session');
@@ -276,7 +281,7 @@ class _RoutineScreenState extends State<RoutineScreen> {
           id: finalState.sessionId,
           patientId: widget.patientId,
           gameType: GameType.routineSequencing,
-          difficultyLevel: widget.difficultyLevel,
+          difficultyLevel: _difficulty,
           attempts: validation.totalCount,
           correctCount: validation.correctCount,
           incorrectCount: validation.totalCount - validation.correctCount,
@@ -295,7 +300,7 @@ class _RoutineScreenState extends State<RoutineScreen> {
       sessionId: finalState.sessionId,
       patientId: widget.patientId,
       gameType: 'routine_sequencing',
-      difficultyLevel: widget.difficultyLevel,
+      difficultyLevel: _difficulty,
       timeTakenInSeconds:
           DateTime.now().difference(finalState.gameStartedAt).inSeconds,
       totalAttempts: validation.totalCount,

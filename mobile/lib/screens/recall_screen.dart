@@ -259,6 +259,10 @@ class _RecallScreenState extends State<RecallScreen> {
           idempotencyKey: ApiService.completionIdempotencyKey(sessionId),
           expectedActionIds: _expectedActionIds(),
         );
+        _difficulty = GameAnalyticsEngine.authoritativeNextLevel(
+          currentLevel: _difficulty,
+          recommendedLevel: summary.recommendedLevel,
+        );
         _bufferedActions.clear(); // server holds the authoritative record
       } else {
         throw ApiException('offline session');

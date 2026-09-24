@@ -60,6 +60,7 @@ class _MatchItScreenState extends State<MatchItScreen> {
   final MatchItService _logic = MatchItService();
   final GameAnalyticsEngine _engine = GameAnalyticsEngine.instance;
 
+  int _difficulty = 1;
   MatchItGameState? _game;
   String? _sessionId;
   String? _error;
@@ -79,6 +80,7 @@ class _MatchItScreenState extends State<MatchItScreen> {
   @override
   void initState() {
     super.initState();
+    _difficulty = widget.difficultyLevel.clamp(1, 3);
     _startGame();
   }
 
@@ -101,12 +103,12 @@ class _MatchItScreenState extends State<MatchItScreen> {
     try {
       final sessionId = await _api.startGame(
         gameType: 'match_it',
-        difficultyLevel: widget.difficultyLevel,
+        difficultyLevel: _difficulty,
         contentPackId: widget.packId,
       );
       final board = await _api.matchItBoard(
         packId: widget.packId,
-        difficultyLevel: widget.difficultyLevel,
+        difficultyLevel: _difficulty,
         sessionId: sessionId,
       );
       if (!mounted) return;
@@ -119,7 +121,7 @@ class _MatchItScreenState extends State<MatchItScreen> {
       // Offline-first: play from the local NER pack and queue the session later.
       final board = LocalContentPacks.board(
         widget.packId,
-        widget.difficultyLevel,
+        _difficulty,
         widget.packName,
         LevelConfig.current,
       );
@@ -203,7 +205,7 @@ class _MatchItScreenState extends State<MatchItScreen> {
           _engine.shouldHintNow(
             secondsSinceLastCorrect: _secondsSinceCorrect,
             incorrectMoves: current.incorrectMatches,
-            difficultyLevel: widget.difficultyLevel,
+            difficultyLevel: _difficulty,
           )) {
         setState(() => _hinting = true);
         // One stuck telemetry event per idle episode; rearmed on next tap.
@@ -285,7 +287,7 @@ class _MatchItScreenState extends State<MatchItScreen> {
       sessionId: sessionId,
       patientId: AuthSession.instance.user?.id ?? 'demo_patient',
       gameType: 'match_it',
-      difficultyLevel: widget.difficultyLevel,
+      difficultyLevel: _difficulty,
       timeTakenInSeconds:
           DateTime.now().difference(finalState.gameStartedAt).inSeconds,
       totalAttempts: finalState.attempts,
@@ -309,6 +311,10 @@ class _MatchItScreenState extends State<MatchItScreen> {
           idempotencyKey: ApiService.completionIdempotencyKey(sessionId),
           expectedActionIds: _expectedActionIds(),
         );
+        _difficulty = GameAnalyticsEngine.authoritativeNextLevel(
+          currentLevel: _difficulty,
+          recommendedLevel: summary.recommendedLevel,
+        );
         _bufferedActions.clear(); // server holds the authoritative record
       } else {
         throw ApiException('offline session');
@@ -321,7 +327,7 @@ class _MatchItScreenState extends State<MatchItScreen> {
           id: sessionId,
           patientId: AuthSession.instance.user?.id ?? '',
           gameType: GameType.matchIt,
-          difficultyLevel: widget.difficultyLevel,
+          difficultyLevel: _difficulty,
           attempts: finalState.attempts,
           correctCount: finalState.correctMatches,
           incorrectCount: finalState.incorrectMatches,
