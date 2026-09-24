@@ -586,10 +586,10 @@ class ApiService {
   }
 
   /// Authed multipart upload → POST /reports/documents/upload.
-  /// `patient_id` rides as query param AND form field (FastAPI signature
-  /// declares query; field keeps the contract either way — see the web
-  /// dashboard). Rebuilds the MultipartRequest on refresh retry (a sent
-  /// request cannot be re-streamed).
+  /// `patient_id` rides as query param AND form field; document metadata
+  /// rides in the query because that is where the backend signature binds it.
+  /// Rebuilds the MultipartRequest on refresh retry (a sent request cannot
+  /// be re-streamed).
   Future<Map<String, dynamic>> uploadDocument({
     required String patientId,
     required Uint8List bytes,
@@ -599,17 +599,19 @@ class ApiService {
     void Function(ApiException error)? onUnauthorizedError,
   }) async {
     http.MultipartRequest build() {
+      final query = <String, String>{
+        'patient_id': patientId,
+        'doc_type': docType,
+      };
+      if (title != null && title.isNotEmpty) query['title'] = title;
       final req = http.MultipartRequest(
         'POST',
-        _uri('${AppConfig.apiV1}/reports/documents/upload',
-            {'patient_id': patientId}),
+        _uri('${AppConfig.apiV1}/reports/documents/upload', query),
       );
       // package:http sets the multipart Content-Type (with boundary) itself.
       final h = _headers()..remove('Content-Type');
       req.headers.addAll(h);
       req.fields['patient_id'] = patientId;
-      req.fields['doc_type'] = docType;
-      if (title != null && title.isNotEmpty) req.fields['title'] = title;
       req.files.add(http.MultipartFile.fromBytes('file', bytes, filename: filename));
       return req;
     }

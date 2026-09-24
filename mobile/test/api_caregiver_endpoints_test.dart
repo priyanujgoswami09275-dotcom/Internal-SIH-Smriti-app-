@@ -171,14 +171,17 @@ class _FakeResponse extends Stream<List<int>> implements HttpClientResponse {
 
 void main() {
   group('uploadDocument', () {
-    test('multipart POST to upload path with query+field patient_id, auth header', () async {
+    test('multipart POST to upload path with query metadata and patient field', () async {
       final backend = _FakeBackend((method, uri, body) {
         expect(method, 'POST');
         expect(uri.path, '/api/v1/reports/documents/upload');
         expect(uri.queryParameters['patient_id'], 'p1');
+        expect(uri.queryParameters['doc_type'], 'report');
+        expect(uri.queryParameters['title'], 'Discharge summary');
         expect(body, contains('name="patient_id"'));
         expect(body, contains('name="file"'));
-        expect(body, contains('name="doc_type"'));
+        expect(body, isNot(contains('name="doc_type"')));
+        expect(body, isNot(contains('name="title"')));
         return (status: 200, json: {'document_id': 'd1'});
       });
       HttpOverrides.global = backend;
@@ -188,6 +191,8 @@ void main() {
         patientId: 'p1',
         bytes: Uint8List.fromList(utf8.encode('hi')),
         filename: 'note.pdf',
+        docType: 'report',
+        title: 'Discharge summary',
       );
       expect(data['document_id'], 'd1');
     });
@@ -381,6 +386,7 @@ void main() {
   group('network errors + documents read API', () {
     test('isNetworkError only for the wrapper, not HTTP failures', () {
       expect(ApiException('Network error: SocketException').isNetworkError, isTrue);
+      expect(ApiException('boom').isNetworkError, isFalse);
       expect(ApiException('boom', statusCode: 500).isNetworkError, isFalse);
       expect(ApiException('boom', statusCode: 403).isNetworkError, isFalse);
     });
@@ -440,6 +446,7 @@ void main() {
         final payload = jsonDecode(body) as Map<String, dynamic>;
         expect(payload['patient_id'], 'p1');
         expect(payload['question'], 'What medication was prescribed?');
+        expect(payload['top_k'], 7);
         return (
           status: 200,
           json: {
@@ -459,7 +466,10 @@ void main() {
       final result = await api.askDocumentQuestion(
         patientId: 'p1',
         question: 'What medication was prescribed?',
+        topK: 7,
       );
+      expect(result['answer'], 'Donepezil 5 mg at bedtime [1].');
+      expect(result['disclaimer'], 'Not medical advice.');
       expect(result['synthesized'], isFalse);
       expect((result['citations'] as List), hasLength(1));
     });

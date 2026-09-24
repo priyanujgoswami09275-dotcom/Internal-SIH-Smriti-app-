@@ -169,7 +169,7 @@ class _FakeResponse extends Stream<List<int>> implements HttpClientResponse {
 
 void main() {
   group('2.4-mobile (a) auth header', () {
-    test('upload request carries Authorization header + fields + file',
+    test('upload request carries Authorization header + query metadata + file',
         () async {
       ApiService.instance.authToken = 'tok-mobile-123';
       addTearDown(() => ApiService.instance.authToken = null);
@@ -179,14 +179,19 @@ void main() {
         bytes: Uint8List.fromList(utf8.encode('hello')),
         filename: 'note.pdf',
         authToken: ApiService.instance.authToken,
+        docType: 'report',
+        title: 'Discharge summary',
         baseUrl: 'http://fake.invalid',
       );
 
       expect(req.url.path, '/api/v1/reports/documents/upload');
+      expect(req.url.queryParameters['patient_id'], 'p1');
+      expect(req.url.queryParameters['doc_type'], 'report');
+      expect(req.url.queryParameters['title'], 'Discharge summary');
       expect(req.headers['Authorization'], 'Bearer tok-mobile-123');
       expect(req.fields['patient_id'], 'p1');
-      expect(req.fields['doc_type'], 'prescription');
-      expect(req.fields['title'], isNotEmpty);
+      expect(req.fields.containsKey('doc_type'), isFalse);
+      expect(req.fields.containsKey('title'), isFalse);
       expect(req.files, hasLength(1));
       expect(req.files.single.field, 'file');
       expect(req.files.single.filename, 'note.pdf');

@@ -17,10 +17,9 @@ import '../services/document_validation.dart';
 import '../theme/monad_theme.dart';
 import '../widgets/monad/monad_pill_button.dart';
 
-/// Testable request builder: authed multipart POST with the backend field
-/// contract (`patient_id` + `doc_type` + `title` fields, `file` part).
-/// `patient_id` is also sent as a query param (FastAPI signature declares it
-/// as a query param) so the contract holds either way.
+/// Testable request builder: authed multipart POST with query metadata,
+/// the `patient_id` field, and the `file` part. `patient_id` is also sent as
+/// a query param so the backend's query binding is explicit.
 @visibleForTesting
 http.MultipartRequest buildRagUploadRequest({
   required String patientId,
@@ -31,15 +30,17 @@ http.MultipartRequest buildRagUploadRequest({
   String title = 'Medical Document',
   required String baseUrl,
 }) {
-  final uri = Uri.parse('$baseUrl/api/v1/reports/documents/upload')
-      .replace(queryParameters: {'patient_id': patientId});
+  final uri = Uri.parse('$baseUrl/api/v1/reports/documents/upload').replace(
+      queryParameters: {
+        'patient_id': patientId,
+        'doc_type': docType,
+        'title': title,
+      });
   final request = http.MultipartRequest('POST', uri);
   if (authToken != null && authToken.isNotEmpty) {
     request.headers['Authorization'] = 'Bearer $authToken';
   }
   request.fields['patient_id'] = patientId;
-  request.fields['doc_type'] = docType;
-  request.fields['title'] = title;
   request.files
       .add(http.MultipartFile.fromBytes('file', bytes, filename: filename));
   return request;
@@ -106,6 +107,12 @@ String _documentUploadDetail(int statusCode, String body) {
   return detail;
 }
 
+class _DocumentPickerError implements Exception {
+  const _DocumentPickerError(this.message);
+
+  final String message;
+}
+
 class RagUploadScreen extends StatefulWidget {
   final String patientId;
   final Uint8List? testBytes;
@@ -145,33 +152,65 @@ class _RagUploadScreenState extends State<RagUploadScreen> {
   String? get lastOutcome => _consentMissing ? 'consent_missing' : null;
 
   Future<void> _pickFile() async {
-    final picked = widget.pickForTest != null
-        ? await widget.pickForTest!()
-        : await _pickWithFilePicker();
-    if (picked == null || !mounted) return;
-    final problem = validateDocumentFile(
-      filename: picked.filename,
-      byteLength: picked.bytes.length,
-    );
-    if (problem != null) {
-      setState(() => _result = problem);
-      return;
+    try {
+      final picked = widget.pickForTest != null
+          ? await widget.pickForTest!()
+          : await _pickWithFilePicker();
+      if (picked == null || !mounted) return;
+      final problem = validateDocumentFile(
+        filename: picked.filename,
+        byteLength: picked.bytes.length,
+      );
+      if (problem != null) {
+        setState(() => _result = problem);
+        return;
+      }
+      setState(() {
+        _pickedBytes = picked.bytes;
+        _pickedFilename = picked.filename;
+        _filePath = picked.filename;
+        _result = null;
+      });
+    } on _DocumentPickerError catch (e) {
+      if (!mounted) return;
+      setState(() => _result = e.message);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _result = 'Could not select file: $e');
     }
-    setState(() {
-      _pickedBytes = picked.bytes;
-      _pickedFilename = picked.filename;
-      _filePath = picked.filename;
-      _result = null;
-    });
   }
 
   Future<({Uint8List bytes, String filename})?> _pickWithFilePicker() async {
-    final f = await FilePicker.pickFile(
-      type: FileType.custom,
-      allowedExtensions: kAllowedDocumentExtensions.toList()..sort(),
-    );
+    final PlatformFile? f;
+    try {
+      f = await FilePicker.pickFile(
+        type: FileType.custom,
+        allowedExtensions: kAllowedDocumentExtensions.toList()..sort(),
+      );
+    } catch (e) {
+      throw _DocumentPickerError('Could not select file: $e');
+    }
     if (f == null) return null;
-    return (bytes: await f.readAsBytes(), filename: f.name);
+
+    final int? reportedSize;
+    try {
+      reportedSize = f.lengthSync();
+    } catch (e) {
+      throw _DocumentPickerError('Could not read selected file: $e');
+    }
+    if (reportedSize != null) {
+      final problem = validateDocumentFile(
+        filename: f.name,
+        byteLength: reportedSize,
+      );
+      if (problem != null) throw _DocumentPickerError(problem);
+    }
+
+    try {
+      return (bytes: await f.readAsBytes(), filename: f.name);
+    } catch (e) {
+      throw _DocumentPickerError('Could not read selected file: $e');
+    }
   }
 
   bool get _canUpload {

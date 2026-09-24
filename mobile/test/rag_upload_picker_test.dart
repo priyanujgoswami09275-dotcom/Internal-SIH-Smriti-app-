@@ -6,10 +6,70 @@ library;
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:file_picker_platform_interface/file_picker_platform_interface.dart';
+import 'package:plugin_platform_interface/plugin_platform_interface.dart';
+
 import 'package:eldercare_mobile/screens/rag_upload_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
+
+base class _FakePlatformFile extends PlatformFile {
+  _FakePlatformFile(this.name, this.reportedSize, {this.onRead});
+
+  @override
+  final String name;
+
+  final int? reportedSize;
+  final void Function()? onRead;
+
+  @override
+  Uri get uri => Uri.file('/tmp/$name');
+
+  @override
+  Never get xFile => throw UnimplementedError();
+
+  @override
+  int? lengthSync() => reportedSize;
+
+  @override
+  Future<int?> length() async => reportedSize;
+
+  @override
+  Future<Uint8List> readAsBytes() async {
+    onRead?.call();
+    return Uint8List.fromList(utf8.encode('small contents'));
+  }
+
+  @override
+  Stream<Uint8List> readAsByteStream() => const Stream.empty();
+}
+
+class _FakeFilePickerPlatform extends FilePickerPlatform
+    with MockPlatformInterfaceMixin {
+  _FakeFilePickerPlatform(this.file, {this.throwOnPick = false});
+
+  final PlatformFile? file;
+  final bool throwOnPick;
+
+  @override
+  Future<PlatformFile?> pickFile({
+    String? dialogTitle,
+    String? initialDirectory,
+    FileType type = FileType.any,
+    List<String>? allowedExtensions,
+    Function(FilePickerStatus)? onFileLoading,
+    int compressionQuality = 0,
+    AndroidOptions androidOptions = const AndroidOptions(),
+    DarwinOptions darwinOptions = const DarwinOptions(),
+    WindowsOptions windowsOptions = const WindowsOptions(),
+    LinuxOptions linuxOptions = const LinuxOptions(),
+    WebOptions webOptions = const WebOptions(),
+  }) async {
+    if (throwOnPick) throw StateError('picker failed');
+    return file;
+  }
+}
 
 void main() {
   group('task 9 pickForTest seam', () {
@@ -216,5 +276,70 @@ void main() {
     expect(request.files.single.filename, 'valid.txt');
     final sentBytes = await request.files.single.finalize().toBytes();
     expect(sentBytes, utf8.encode('valid contents'));
+  });
+
+  testWidgets('reported oversized platform file is rejected before read',
+      (tester) async {
+    var readCalled = false;
+    final originalPlatform = FilePickerPlatform.instance;
+    FilePickerPlatform.instance = _FakeFilePickerPlatform(
+      _FakePlatformFile(
+        'big.txt',
+        10 * 1024 * 1024 + 1,
+        onRead: () => readCalled = true,
+      ),
+    );
+    addTearDown(() => FilePickerPlatform.instance = originalPlatform);
+
+    await tester.pumpWidget(
+        const MaterialApp(home: RagUploadScreen(patientId: 'p1')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('SELECT FILE'));
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('10 MB'), findsOneWidget);
+    expect(readCalled, isFalse);
+  });
+
+  testWidgets('platform read failure is shown visibly', (tester) async {
+    var readCalled = false;
+    final originalPlatform = FilePickerPlatform.instance;
+    FilePickerPlatform.instance = _FakeFilePickerPlatform(
+      _FakePlatformFile(
+        'note.txt',
+        12,
+        onRead: () {
+          readCalled = true;
+          throw StateError('read failed');
+        },
+      ),
+    );
+    addTearDown(() => FilePickerPlatform.instance = originalPlatform);
+
+    await tester.pumpWidget(
+        const MaterialApp(home: RagUploadScreen(patientId: 'p1')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('SELECT FILE'));
+    await tester.pumpAndSettle();
+
+    expect(readCalled, isTrue);
+    expect(find.textContaining('Could not read selected file'), findsOneWidget);
+    expect(find.textContaining('read failed'), findsOneWidget);
+  });
+
+  testWidgets('picker failure is shown visibly', (tester) async {
+    final originalPlatform = FilePickerPlatform.instance;
+    FilePickerPlatform.instance =
+        _FakeFilePickerPlatform(null, throwOnPick: true);
+    addTearDown(() => FilePickerPlatform.instance = originalPlatform);
+
+    await tester.pumpWidget(
+        const MaterialApp(home: RagUploadScreen(patientId: 'p1')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('SELECT FILE'));
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('Could not select file'), findsOneWidget);
+    expect(find.textContaining('picker failed'), findsOneWidget);
   });
 }
