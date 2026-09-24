@@ -12,6 +12,6 @@ void main() {
   testWidgets('PatientHome shows the caregiver-documents line', (tester) async {
     SharedPreferences.setMockInitialValues({});
     await tester.pumpWidget(const MaterialApp(home: PatientHome(patientId: 'p1')));
-    expect(find.text('Your caregiver can add your health documents.'), findsOneWidget);
+    expect(find.text('Your health worker can add your health documents.'), findsOneWidget);
   });
 }

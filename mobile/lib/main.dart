@@ -382,7 +382,7 @@ class PatientHome extends StatelessWidget {
           Padding(
             padding: const EdgeInsets.only(bottom: Monad.spacing16),
             child: Text(
-              'Your caregiver can add your health documents.',
+              'Your health worker can add your health documents.',
               style: Monad.monoBodySm.copyWith(color: Monad.smoke),
             ),
           ),

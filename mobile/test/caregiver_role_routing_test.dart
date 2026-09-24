@@ -388,7 +388,7 @@ void main() {
       expect(find.byType(PatientHome), findsOneWidget);
       expect(find.byType(CaregiverDashboardScreen), findsNothing);
       expect(
-        find.text('Your caregiver can add your health documents.'),
+        find.text('Your health worker can add your health documents.'),
         findsOneWidget,
       );
       expect(tester.takeException(), isNull);

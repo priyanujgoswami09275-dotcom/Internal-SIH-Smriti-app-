@@ -398,7 +398,7 @@ void main() {
 
       expect(tester.takeException(), isNull);
       expect(
-        find.text('Your caregiver can add your health documents.'),
+        find.text('Your health worker can add your health documents.'),
         findsOneWidget,
       );
     });
