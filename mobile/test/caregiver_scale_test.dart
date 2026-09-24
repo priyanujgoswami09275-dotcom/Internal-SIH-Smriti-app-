@@ -14,6 +14,9 @@ import 'dart:io';
 import 'package:eldercare_mobile/main.dart';
 import 'package:eldercare_mobile/screens/caregiver/audit_viewer_screen.dart';
 import 'package:eldercare_mobile/screens/caregiver_dashboard_screen.dart';
+import 'package:eldercare_mobile/screens/documents_screen.dart';
+import 'package:eldercare_mobile/screens/rag_qa_screen.dart';
+import 'package:eldercare_mobile/screens/rag_upload_screen.dart';
 import 'package:eldercare_mobile/screens/risk_intake_screen.dart';
 import 'package:eldercare_mobile/services/auth_session.dart';
 import 'package:flutter/material.dart';
@@ -401,6 +404,38 @@ void main() {
         find.text('Your health worker can add your health documents.'),
         findsOneWidget,
       );
+    });
+
+    testWidgets('rag upload screen renders at 1.3 scale without overflow',
+        (tester) async {
+      SharedPreferences.setMockInitialValues({});
+      await tester.pumpWidget(const MaterialApp(
+        home: RagUploadScreen(patientId: 'p1'),
+      ));
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('documents hub renders at 1.3 scale without overflow',
+        (tester) async {
+      final backend = _FakeBackend((method, uri, body) =>
+          (status: 200, json: {'documents': [], 'count': 0}));
+      HttpOverrides.global = backend;
+      addTearDown(() => HttpOverrides.global = null);
+      await tester.pumpWidget(const MaterialApp(
+        home: DocumentsScreen(patientId: 'p1'),
+      ));
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('rag qa screen renders at 1.3 scale without overflow',
+        (tester) async {
+      await tester.pumpWidget(const MaterialApp(
+        home: RagQaScreen(patientId: 'p1'),
+      ));
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
     });
   });
 }
