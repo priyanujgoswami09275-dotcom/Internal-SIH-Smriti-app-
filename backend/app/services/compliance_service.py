@@ -22,6 +22,7 @@ from sqlalchemy import select
 
 from app.config import settings
 from app.models.all_models import ConsentRecord, AuditLog, ConsentTypeEnum
+from app.services.game_service import iso_utc
 
 logger = logging.getLogger(__name__)
 
@@ -215,6 +216,40 @@ class ComplianceService:
             return None
 
     @staticmethod
+    async def log_write_access(
+        db: AsyncSession,
+        user_id: uuid.UUID,
+        resource_type: str,
+        resource_id: str,
+        ip_address: Optional[str] = None,
+        details: Optional[Dict[str, Any]] = None,
+    ) -> Optional[AuditLog]:
+        """Best-effort audit of a patient-data write.
+
+        Never raises and never rolls back the audited work: a failed audit
+        flush leaves the session in pending-rollback, so it is restored and
+        the write itself still completes.
+        """
+        try:
+            rid = uuid.UUID(str(resource_id))
+        except (ValueError, TypeError):
+            rid = resource_id
+        try:
+            return await ComplianceService.log_audit_access(
+                db=db,
+                user_id=user_id,
+                action="write",
+                resource_type=resource_type,
+                resource_id=rid,
+                ip_address=ip_address or "127.0.0.1",
+                details=details or {},
+            )
+        except Exception:  # noqa: BLE001 — audit is best-effort
+            await db.rollback()
+            logger.exception("Write-audit failed for %s %s", resource_type, resource_id)
+            return None
+
+    @staticmethod
     async def export_patient_data(db: AsyncSession, patient_id: uuid.UUID) -> Dict[str, Any]:
         """DPDP data-portability dump: profile, consents, games, reminders."""
         from app.models.all_models import (
@@ -285,8 +320,8 @@ class ComplianceService:
                     "difficulty_level": s.difficulty_level,
                     "attempts": s.attempts,
                     "correct_count": s.correct_count,
-                    "started_at": s.started_at.isoformat() if s.started_at else None,
-                    "completed_at": s.completed_at.isoformat() if s.completed_at else None,
+                    "started_at": iso_utc(s.started_at),
+                    "completed_at": iso_utc(s.completed_at),
                 }
                 for s in sessions
             ],

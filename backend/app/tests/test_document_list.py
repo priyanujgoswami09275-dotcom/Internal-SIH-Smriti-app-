@@ -355,3 +355,86 @@ async def test_answer_writes_read_audit(client, db_session):
     ))).scalars().all()
     new_rows = [row for row in rows if row.id not in before_ids]
     assert len(new_rows) == 1, "asking a question must write a DPDP read audit"
+
+
+# --- Remaining document-route gates: ingest, query, and the write audit ------
+
+
+async def _patient_without_consent(client):
+    reg = await client.post(f"{AUTH}/register", json={
+        "phone": "+919000000005", "password": "Passw0rd123",
+        "role": "patient", "preferred_language": "english"})
+    assert reg.status_code == 201, reg.text
+    pl = await client.post(f"{AUTH}/login", json={
+        "phone": reg.json()["phone"], "password": "Passw0rd123"})
+    ph = {"Authorization": f"Bearer {pl.json()['access_token']}"}
+    prof = (await client.post(f"{PATIENTS}", headers=ph, json={"name": "Gate Patient"})).json()
+    return prof["id"]
+
+
+@pytest.mark.asyncio
+async def test_ingest_without_health_data_consent_is_403(client):
+    from app.tests.conftest import provision_staff_user
+    user = await provision_staff_user(role="clinician")
+    login = await client.post(f"{AUTH}/login", json={
+        "phone": user["phone"], "password": "Passw0rd123"})
+    h = {"Authorization": f"Bearer {login.json()['access_token']}"}
+    pid = await _patient_without_consent(client)
+    r = await client.post(f"{REPORTS}/documents/ingest", headers=h, json={
+        "patient_id": pid, "file_ref": "note.txt", "doc_type": "prescription",
+        "extracted_text": "Donepezil 5 mg at bedtime."})
+    assert r.status_code == 403
+    assert "health_data" in r.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_query_without_health_data_consent_is_403(client):
+    from app.tests.conftest import provision_staff_user
+    user = await provision_staff_user(role="clinician")
+    login = await client.post(f"{AUTH}/login", json={
+        "phone": user["phone"], "password": "Passw0rd123"})
+    h = {"Authorization": f"Bearer {login.json()['access_token']}"}
+    pid = await _patient_without_consent(client)
+    r = await client.post(f"{REPORTS}/documents/query", headers=h,
+        json={"patient_id": pid, "query": "Donepezil"})
+    assert r.status_code == 403
+    assert "health_data" in r.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_query_writes_read_audit(client, db_session):
+    h, pid, staff_id = await _staff_with_patient(client, "clinician")
+    before = (await db_session.execute(select(AuditLog).where(
+        AuditLog.user_id == UUID(staff_id)))).scalars().all()
+    before_ids = {row.id for row in before}
+    r = await client.post(f"{REPORTS}/documents/query", headers=h,
+        json={"patient_id": pid, "query": "Donepezil"})
+    assert r.status_code == 200, r.text
+    rows = (await db_session.execute(select(AuditLog).where(
+        AuditLog.user_id == UUID(staff_id),
+        AuditLog.resource_id == UUID(pid),
+        AuditLog.resource_type == "medical_document",
+        AuditLog.action == "read",
+    ))).scalars().all()
+    assert len([row for row in rows if row.id not in before_ids]) == 1, \
+        "documents/query must write a DPDP read audit"
+
+
+@pytest.mark.asyncio
+async def test_upload_writes_write_audit(client, db_session):
+    """DPDP: a document WRITE must leave an audit trail (not just reads)."""
+    h, pid, staff_id = await _staff_with_patient(client, "clinician")
+    before = (await db_session.execute(select(AuditLog).where(
+        AuditLog.user_id == UUID(staff_id)))).scalars().all()
+    before_ids = {row.id for row in before}
+    up = await _upload_text(client, h, pid, "audited.txt")
+    doc_id = up["document_id"]
+    rows = (await db_session.execute(select(AuditLog).where(
+        AuditLog.user_id == UUID(staff_id),
+        AuditLog.resource_type == "medical_document",
+        AuditLog.action == "write",
+    ))).scalars().all()
+    new_rows = [row for row in rows if row.id not in before_ids]
+    assert len(new_rows) == 1, "uploading a document must write a DPDP write audit"
+    row = new_rows[0]
+    assert UUID(str(row.resource_id)) == UUID(doc_id)

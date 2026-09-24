@@ -78,6 +78,8 @@ async def ingest_medical_document(
         chunk_size=req.chunk_size,
         chunk_overlap=req.chunk_overlap,
     )
+    await ComplianceService.log_write_access(
+        db, current_user.id, "medical_document", str(doc.id))
     return {
         "message": "Document ingested and embedded successfully",
         "document_id": str(doc.id),
@@ -125,6 +127,10 @@ async def upload_medical_document(
         extracted_text=extracted_text,
         title=title,
     )
+    # DPDP write trail: an ingested document is a health-data write, not just
+    # a read. Best-effort, so an audit failure never loses the upload.
+    await ComplianceService.log_write_access(
+        db, current_user.id, "medical_document", str(doc.id))
     return {
         "message": "Document uploaded, extracted, and embedded successfully",
         "document_id": str(doc.id),
