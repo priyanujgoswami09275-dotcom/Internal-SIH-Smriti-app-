@@ -596,6 +596,7 @@ class ApiService {
     required String filename,
     String docType = 'prescription',
     String? title,
+    void Function(ApiException error)? onUnauthorizedError,
   }) async {
     http.MultipartRequest build() {
       final req = http.MultipartRequest(
@@ -630,17 +631,24 @@ class ApiService {
       developer.log('upload failed: $e', name: 'ApiService');
       throw ApiException('Network error: $e');
     }
-    if (res.statusCode == 401 && !_inUnauthorizedHandler) {
-      _inUnauthorizedHandler = true;
-      try {
-        await onUnauthorized?.call();
-      } finally {
-        _inUnauthorizedHandler = false;
+    try {
+      final data = _decode(res);
+      if (data == null) return <String, dynamic>{};
+      return Map<String, dynamic>.from(data as Map);
+    } on ApiException catch (error) {
+      if (res.statusCode == 401) {
+        onUnauthorizedError?.call(error);
+        if (!_inUnauthorizedHandler) {
+          _inUnauthorizedHandler = true;
+          try {
+            await onUnauthorized?.call();
+          } finally {
+            _inUnauthorizedHandler = false;
+          }
+        }
       }
+      rethrow;
     }
-    final data = _decode(res);
-    if (data == null) return <String, dynamic>{};
-    return Map<String, dynamic>.from(data as Map);
   }
 
   /// GET /reports/patients/{id}/documents — ingested document metadata for

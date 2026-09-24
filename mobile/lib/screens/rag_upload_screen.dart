@@ -180,6 +180,18 @@ class _RagUploadScreenState extends State<RagUploadScreen> {
     return _pickedBytes != null && _pickedBytes!.isNotEmpty;
   }
 
+  void _showUploadError(ApiException error) {
+    if (!mounted) return;
+    final consentMissing =
+        error.statusCode == 403 && error.message.contains('health_data');
+    setState(() {
+      _uploading = false;
+      if (consentMissing) _consentMissing = true;
+      _result = formatDocumentUploadError(error);
+    });
+    if (consentMissing) widget.onConsentMissing?.call();
+  }
+
   Future<void> _upload() async {
     final hasTestBytes =
         widget.testBytes != null && widget.testBytes!.isNotEmpty;
@@ -244,6 +256,7 @@ class _RagUploadScreenState extends State<RagUploadScreen> {
           bytes: bytes,
           filename: filename,
           title: 'Medical Document',
+          onUnauthorizedError: _showUploadError,
         );
         if (!mounted) return;
         setState(() {
@@ -252,17 +265,7 @@ class _RagUploadScreenState extends State<RagUploadScreen> {
         });
       }
     } on ApiException catch (e) {
-      if (!mounted) return;
-      final consentMissing =
-          e.statusCode == 403 && e.message.contains('health_data');
-      setState(() {
-        _uploading = false;
-        if (consentMissing) _consentMissing = true;
-        _result = formatDocumentUploadError(e);
-      });
-      // Structural consent state fires alongside the inline message
-      // (no silent failures: both the message AND the callback fire).
-      if (consentMissing) widget.onConsentMissing?.call();
+      _showUploadError(e);
     } catch (e) {
       if (!mounted) return;
       setState(() {

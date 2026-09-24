@@ -193,6 +193,46 @@ void main() {
     });
   });
 
+  testWidgets(
+      'live 401 surfaces session-expired copy before unauthorized handler completes',
+      (tester) async {
+    final gate = Completer<void>();
+    var unauthorizedCalled = false;
+    final previousUnauthorized = ApiService.onUnauthorized;
+    ApiService.onUnauthorized = () {
+      unauthorizedCalled = true;
+      return gate.future;
+    };
+    addTearDown(() {
+      ApiService.onUnauthorized = previousUnauthorized;
+      if (!gate.isCompleted) gate.complete();
+      HttpOverrides.global = null;
+    });
+
+    final backend = _FakeBackend((method, uri, body) =>
+        (status: 401, json: {'detail': 'token expired'}));
+    HttpOverrides.global = backend;
+    ApiService.instance.authToken = 'expired';
+    addTearDown(() => ApiService.instance.authToken = null);
+
+    await tester.pumpWidget(MaterialApp(
+      home: RagUploadScreen(
+        patientId: 'p1',
+        testBytes: Uint8List.fromList(utf8.encode('note')),
+        testFilename: 'note.txt',
+      ),
+    ));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('UPLOAD ▸'));
+    await tester.pump();
+
+    expect(unauthorizedCalled, isTrue);
+    expect(find.text('Session expired — sign in again.'), findsOneWidget);
+
+    gate.complete();
+    await tester.pumpAndSettle();
+  });
+
   group('2.4-mobile (c) 403 detail', () {
     test('formats server detail with clinical-tier/consent hint', () {
       final msg = formatRagUploadFailure(
