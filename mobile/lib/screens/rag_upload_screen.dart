@@ -67,6 +67,30 @@ String formatRagUploadFailure(int statusCode, String body) {
   return msg;
 }
 
+/// Single source of truth for upload failures: offline, expired session, size,
+/// rate limit, clinical tier, consent, and pass-through details. Never a bare
+/// code. The 403-consent path delegates to [formatRagUploadFailure] so the
+/// port-locked consent copy stays byte-identical.
+@visibleForTesting
+String formatDocumentUploadError(ApiException e) {
+  if (e.isNetworkError) return "You're offline — try again when connected.";
+  switch (e.statusCode) {
+    case 401:
+      return 'Session expired — sign in again.';
+    case 413:
+      return 'That file is over the 10 MB limit — choose a smaller file.';
+    case 429:
+      return 'Rate limit reached — wait a minute and try again.';
+    case 403:
+      if (e.message.contains('health_data')) {
+        return formatRagUploadFailure(403, e.message);
+      }
+      return "Your account can't add health documents. "
+          'A health worker — ASHA worker, clinician, or admin — can.';
+  }
+  return 'Upload failed: ${e.message}';
+}
+
 class RagUploadScreen extends StatefulWidget {
   final String patientId;
   final Uint8List? testBytes;
@@ -187,9 +211,17 @@ class _RagUploadScreenState extends State<RagUploadScreen> {
         setState(() {
           _uploading = false;
           if (consentMissing) _consentMissing = true;
-          _result = res.statusCode >= 200 && res.statusCode < 300
-              ? 'Uploaded successfully (HTTP ${res.statusCode}).'
-              : formatRagUploadFailure(res.statusCode, res.body);
+          if (res.statusCode >= 200 && res.statusCode < 300) {
+            _result = 'Uploaded successfully (HTTP ${res.statusCode}).';
+          } else if (res.statusCode == 401) {
+            _result = 'Session expired — sign in again.';
+          } else if (res.statusCode == 413) {
+            _result = 'That file is over the 10 MB limit — choose a smaller file.';
+          } else if (res.statusCode == 429) {
+            _result = 'Rate limit reached — wait a minute and try again.';
+          } else {
+            _result = formatRagUploadFailure(res.statusCode, res.body);
+          }
         });
         // Structural consent state fires alongside the inline message
         // (no silent failures: both the message AND the callback fire).
@@ -214,9 +246,7 @@ class _RagUploadScreenState extends State<RagUploadScreen> {
       setState(() {
         _uploading = false;
         if (consentMissing) _consentMissing = true;
-        _result = e.statusCode != null
-            ? formatRagUploadFailure(e.statusCode!, e.message)
-            : 'Upload failed: ${e.message}';
+        _result = formatDocumentUploadError(e);
       });
       // Structural consent state fires alongside the inline message
       // (no silent failures: both the message AND the callback fire).
