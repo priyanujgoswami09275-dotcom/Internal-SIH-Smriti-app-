@@ -118,17 +118,12 @@ class _RagUploadScreenState extends State<RagUploadScreen> {
   }
 
   Future<({Uint8List bytes, String filename})?> _pickWithFilePicker() async {
-    // file_picker 13.x: static call returns List<PlatformFile> (empty on
-    // cancel); bytes are read explicitly — the 13.x replacement for the
-    // pre-13 `withData: true` / `FilePicker.platform` API.
-    final res = await FilePicker.pickFiles(
+    final f = await FilePicker.pickFile(
       type: FileType.custom,
       allowedExtensions: const ['pdf', 'txt', 'md', 'doc', 'docx'],
     );
-    if (res.isEmpty) return null;
-    final f = res.first;
-    final bytes = await f.readAsBytes();
-    return (bytes: bytes, filename: f.name);
+    if (f == null) return null;
+    return (bytes: await f.readAsBytes(), filename: f.name);
   }
 
   bool get _canUpload {
