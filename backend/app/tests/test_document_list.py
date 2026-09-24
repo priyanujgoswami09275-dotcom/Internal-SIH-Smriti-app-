@@ -467,6 +467,9 @@ async def test_ingest_rolls_back_document_and_audit_when_chunk_add_fails(
             extracted_text="document body",
         )
 
+    pending_audits = [entry for entry in db_session.new if isinstance(entry, AuditLog)]
+    assert len(pending_audits) == 1
+    assert pending_audits[0].resource_id is not None
     await db_session.rollback()
     documents = (await db_session.execute(select(MedicalDocument))).scalars().all()
     audits = (await db_session.execute(select(AuditLog))).scalars().all()
