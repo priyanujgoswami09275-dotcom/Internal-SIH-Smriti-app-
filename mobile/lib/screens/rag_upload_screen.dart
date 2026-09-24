@@ -1,13 +1,13 @@
 /// Medical document upload for RAG pipeline — staff uploads a prescription,
 /// discharge summary, or doctor's note for the selected patient.
-/// Uses existing `http` package (multipart); no new dependencies.
+/// Uses `http` (multipart) for upload + `file_picker` for selection.
 /// Backend endpoint: POST /api/v1/reports/documents/upload (staff roles +
 /// clinical access + `health_data` consent enforced server-side).
 library;
 
 import 'dart:convert';
-import 'dart:io';
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
@@ -72,6 +72,11 @@ class RagUploadScreen extends StatefulWidget {
   final String? testFilename;
   final Future<http.Response> Function(http.MultipartRequest)? sendForTest;
   final VoidCallback? onConsentMissing;
+
+  /// Test seam mirroring `sendForTest`: when set, `_pickFile` uses this
+  /// instead of the platform `FilePicker` call (no MethodChannel in tests).
+  @visibleForTesting
+  final Future<({Uint8List bytes, String filename})?> Function()? pickForTest;
   const RagUploadScreen({
     super.key,
     required this.patientId,
@@ -79,6 +84,7 @@ class RagUploadScreen extends StatefulWidget {
     this.testFilename,
     this.sendForTest,
     this.onConsentMissing,
+    this.pickForTest,
   });
 
   @override
@@ -89,6 +95,8 @@ class _RagUploadScreenState extends State<RagUploadScreen> {
   bool _uploading = false;
   String? _result;
   String? _filePath;
+  Uint8List? _pickedBytes;
+  String? _pickedFilename;
   bool _consentMissing = false;
 
   /// Structural consent marker for the orchestrator's documents card
@@ -96,25 +104,44 @@ class _RagUploadScreenState extends State<RagUploadScreen> {
   @visibleForTesting
   String? get lastOutcome => _consentMissing ? 'consent_missing' : null;
 
-  void _pickFile() {
-    // Web/desktop: file picker via HTML input (not implemented fully here);
-    // placeholder that guides the user to use the dashboard widget or provide
-    // a file path via device picker. The real upload path uses http.MultipartRequest.
+  Future<void> _pickFile() async {
+    final picked = widget.pickForTest != null
+        ? await widget.pickForTest!()
+        : await _pickWithFilePicker();
+    if (picked == null || !mounted) return;
     setState(() {
-      _result = 'Use file picker to select a PDF / text file, then tap Upload.';
+      _pickedBytes = picked.bytes;
+      _pickedFilename = picked.filename;
+      _filePath = picked.filename; // display line unchanged
+      _result = null;
     });
+  }
+
+  Future<({Uint8List bytes, String filename})?> _pickWithFilePicker() async {
+    // file_picker 13.x: static call returns List<PlatformFile> (empty on
+    // cancel); bytes are read explicitly — the 13.x replacement for the
+    // pre-13 `withData: true` / `FilePicker.platform` API.
+    final res = await FilePicker.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: const ['pdf', 'txt', 'md', 'doc', 'docx'],
+    );
+    if (res.isEmpty) return null;
+    final f = res.first;
+    final bytes = await f.readAsBytes();
+    return (bytes: bytes, filename: f.name);
   }
 
   bool get _canUpload {
     if (_uploading) return false;
     if (widget.testBytes != null && widget.testBytes!.isNotEmpty) return true;
-    return _filePath != null && _filePath!.isNotEmpty;
+    return _pickedBytes != null && _pickedBytes!.isNotEmpty;
   }
 
   Future<void> _upload() async {
     final hasTestBytes =
         widget.testBytes != null && widget.testBytes!.isNotEmpty;
-    if (!hasTestBytes && (_filePath == null || _filePath!.isEmpty)) {
+    final hasPickedBytes = _pickedBytes != null && _pickedBytes!.isNotEmpty;
+    if (!hasTestBytes && !hasPickedBytes) {
       setState(() => _result = 'Please select a file first.');
       return;
     }
@@ -129,9 +156,8 @@ class _RagUploadScreenState extends State<RagUploadScreen> {
         bytes = widget.testBytes!;
         filename = widget.testFilename ?? 'document.pdf';
       } else {
-        final file = File(_filePath!);
-        bytes = await file.readAsBytes();
-        filename = file.path.split('/').last;
+        bytes = _pickedBytes!;
+        filename = _pickedFilename ?? 'document.pdf';
       }
       final request = buildRagUploadRequest(
         patientId: widget.patientId,

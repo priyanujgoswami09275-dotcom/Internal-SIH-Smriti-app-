@@ -1,0 +1,98 @@
+/// Task 9: file_picker RAG upload behind the pickForTest seam.
+/// TDD red: seam + pick→bytes→upload wiring do not exist yet
+/// (_pickFile is a placeholder that only sets a hint message).
+library;
+
+import 'dart:convert';
+import 'dart:typed_data';
+
+import 'package:eldercare_mobile/screens/rag_upload_screen.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
+
+void main() {
+  group('task 9 pickForTest seam', () {
+    testWidgets(
+        'pick → filename display → Upload sends picked file part + success',
+        (tester) async {
+      http.MultipartRequest? captured;
+      await tester.pumpWidget(MaterialApp(
+        home: RagUploadScreen(
+          patientId: 'p1',
+          pickForTest: () async => (
+            bytes: Uint8List.fromList(utf8.encode('hello')),
+            filename: 'note.pdf',
+          ),
+          sendForTest: (req) async {
+            captured = req;
+            return http.Response('', 200);
+          },
+        ),
+      ));
+      await tester.pumpAndSettle();
+
+      // No file yet: display line default + Upload disabled (no testBytes).
+      expect(find.text('No file selected.'), findsOneWidget);
+      final uploadBtn = find.widgetWithText(FilledButton, 'UPLOAD ▸');
+      expect(uploadBtn, findsOneWidget);
+      expect(tester.widget<FilledButton>(uploadBtn).onPressed, isNull);
+
+      await tester.tap(find.text('SELECT FILE'));
+      await tester.pumpAndSettle();
+
+      // Picked filename now displays; Upload enabled via real label.
+      expect(find.text('note.pdf'), findsOneWidget);
+      expect(find.text('No file selected.'), findsNothing);
+      expect(tester.widget<FilledButton>(uploadBtn).onPressed, isNotNull);
+
+      await tester.tap(uploadBtn);
+      await tester.pumpAndSettle();
+
+      // Captured multipart carries the picked file (buildRagUploadRequest
+      // field name 'file') with the picked bytes.
+      expect(captured, isNotNull);
+      expect(captured!.files, hasLength(1));
+      expect(captured!.files.single.field, 'file');
+      expect(captured!.files.single.filename, 'note.pdf');
+      expect(captured!.files.single.length, utf8.encode('hello').length);
+      expect(find.text('Uploaded successfully (HTTP 200).'), findsOneWidget);
+    });
+
+    testWidgets('cancel (null pick) leaves no file, Upload stays disabled',
+        (tester) async {
+      await tester.pumpWidget(MaterialApp(
+        home: RagUploadScreen(
+          patientId: 'p1',
+          pickForTest: () async => null,
+          sendForTest: (req) async => http.Response('', 200),
+        ),
+      ));
+      await tester.pumpAndSettle();
+
+      expect(find.text('No file selected.'), findsOneWidget);
+      expect(
+        tester
+            .widget<FilledButton>(find.widgetWithText(FilledButton, 'UPLOAD ▸'))
+            .onPressed,
+        isNull,
+      );
+
+      await tester.tap(find.text('SELECT FILE'));
+      await tester.pumpAndSettle();
+
+      // Cancel = no state change, no crash, no result message.
+      expect(find.text('No file selected.'), findsOneWidget);
+      expect(find.textContaining('Upload'), findsWidgets);
+      expect(
+        tester
+            .widget<FilledButton>(find.widgetWithText(FilledButton, 'UPLOAD ▸'))
+            .onPressed,
+        isNull,
+      );
+      expect(find.textContaining('successfully'), findsNothing);
+      expect(find.textContaining('Please select'), findsNothing);
+      expect(find.textContaining('Error'), findsNothing);
+    });
+  });
+}
