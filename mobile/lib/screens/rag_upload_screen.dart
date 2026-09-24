@@ -13,6 +13,7 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import '../config/app_config.dart';
 import '../services/api_service.dart';
+import '../services/document_validation.dart';
 import '../theme/monad_theme.dart';
 import '../widgets/monad/monad_pill_button.dart';
 
@@ -109,10 +110,18 @@ class _RagUploadScreenState extends State<RagUploadScreen> {
         ? await widget.pickForTest!()
         : await _pickWithFilePicker();
     if (picked == null || !mounted) return;
+    final problem = validateDocumentFile(
+      filename: picked.filename,
+      byteLength: picked.bytes.length,
+    );
+    if (problem != null) {
+      setState(() => _result = problem);
+      return;
+    }
     setState(() {
       _pickedBytes = picked.bytes;
       _pickedFilename = picked.filename;
-      _filePath = picked.filename; // display line unchanged
+      _filePath = picked.filename;
       _result = null;
     });
   }
@@ -120,7 +129,7 @@ class _RagUploadScreenState extends State<RagUploadScreen> {
   Future<({Uint8List bytes, String filename})?> _pickWithFilePicker() async {
     final f = await FilePicker.pickFile(
       type: FileType.custom,
-      allowedExtensions: const ['pdf', 'txt', 'md', 'doc', 'docx'],
+      allowedExtensions: kAllowedDocumentExtensions.toList()..sort(),
     );
     if (f == null) return null;
     return (bytes: await f.readAsBytes(), filename: f.name);
@@ -153,6 +162,15 @@ class _RagUploadScreenState extends State<RagUploadScreen> {
       } else {
         bytes = _pickedBytes!;
         filename = _pickedFilename ?? 'document.pdf';
+      }
+      final problem =
+          validateDocumentFile(filename: filename, byteLength: bytes.length);
+      if (problem != null) {
+        setState(() {
+          _uploading = false;
+          _result = problem;
+        });
+        return;
       }
       if (widget.sendForTest != null) {
         final request = buildRagUploadRequest(

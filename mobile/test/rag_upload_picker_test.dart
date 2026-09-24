@@ -95,4 +95,51 @@ void main() {
       expect(find.textContaining('Error'), findsNothing);
     });
   });
+
+  testWidgets('pick of a rejected type shows the type message, Upload stays off',
+      (tester) async {
+    await tester.pumpWidget(MaterialApp(
+      home: RagUploadScreen(
+        patientId: 'p1',
+        pickForTest: () async => (
+          bytes: Uint8List.fromList(utf8.encode('binary-ish')),
+          filename: 'scan.png',
+        ),
+      ),
+    ));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('SELECT FILE'));
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining("isn't supported"), findsOneWidget);
+    expect(find.text('No file selected.'), findsOneWidget);
+    expect(
+      tester.widget<FilledButton>(find.widgetWithText(FilledButton, 'UPLOAD ▸')).onPressed,
+      isNull,
+    );
+  });
+
+  testWidgets('pick over 10 MB is rejected before any request', (tester) async {
+    var hitBackend = false;
+    await tester.pumpWidget(MaterialApp(
+      home: RagUploadScreen(
+        patientId: 'p1',
+        pickForTest: () async => (
+          bytes: Uint8List(10 * 1024 * 1024 + 1),
+          filename: 'big.txt',
+        ),
+        sendForTest: (req) async {
+          hitBackend = true;
+          return http.Response('', 200);
+        },
+      ),
+    ));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('SELECT FILE'));
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('10 MB'), findsOneWidget);
+    expect(hitBackend, isFalse);
+  });
 }
