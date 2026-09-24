@@ -124,7 +124,13 @@ async def chat_text(
     """Text-based conversation with the elder companion (Redis-backed history)."""
     patient = await _resolve_patient_access(db, current_user, req.patient_id)
     await ensure_consent(db, req.patient_id, "voice_companion")
-    await ComplianceService.log_read_access(db, current_user.id, "voice_companion", req.patient_id)
+    await ComplianceService.log_write_access(
+        db,
+        current_user.id,
+        "conversation",
+        str(req.patient_id),
+        details={"channel": "text"},
+    )
     service = VoiceCompanionService()
     store = await get_conversation_store()
     history = await store.get(req.patient_id)
@@ -155,7 +161,13 @@ async def chat_voice(
     """End-to-end voice conversation: Bhashini ASR -> Claude -> Bhashini TTS."""
     patient = await _resolve_patient_access(db, current_user, req.patient_id)
     await ensure_consent(db, req.patient_id, "voice_companion")
-    await ComplianceService.log_read_access(db, current_user.id, "voice_companion", req.patient_id)
+    await ComplianceService.log_write_access(
+        db,
+        current_user.id,
+        "conversation",
+        str(req.patient_id),
+        details={"channel": "voice"},
+    )
     service = VoiceCompanionService()
     store = await get_conversation_store()
     history = await store.get(req.patient_id)
