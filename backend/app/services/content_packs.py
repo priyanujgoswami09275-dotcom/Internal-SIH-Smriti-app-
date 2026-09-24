@@ -151,11 +151,14 @@ def generate_match_it_board(
     DB-resolved value); the parameter exists so offline/pure callers stay sync.
     """
     pack = NER_CONTENT_PACKS.get(pack_id) or NER_CONTENT_PACKS["festivals_ner"]
+    if not pack.items:
+        raise ValueError(f"Content pack '{pack.id}' has no playable items")
     if pair_count is None:
         pair_count = _pairs_for_level(difficulty_level)
+    pair_count = max(1, min(pair_count, len(pack.items)))
 
     # Pick N random distinct items from pack
-    selected_items = random.sample(pack.items, min(pair_count, len(pack.items)))
+    selected_items = random.sample(pack.items, pair_count)
 
     cards = []
     card_id = 1
