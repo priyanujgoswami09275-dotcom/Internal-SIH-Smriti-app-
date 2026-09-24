@@ -78,6 +78,36 @@ async def _ensure_owned_session(
     return session
 
 
+async def _ensure_board_session(
+    db: AsyncSession,
+    current_user: User,
+    session_id: Optional[UUID],
+    game_type: GameTypeEnum,
+    difficulty_level: int,
+    *,
+    patient_id: Optional[UUID] = None,
+    content_pack_id: Optional[str] = None,
+) -> Optional[GameSession]:
+    if session_id is None:
+        return None
+    session = await _ensure_owned_session(db, current_user, session_id)
+    if session.completed_at is not None:
+        raise HTTPException(status_code=409, detail="Game session is already completed")
+    if session.game_type != game_type:
+        raise HTTPException(status_code=422, detail="session game_type does not match board")
+    if session.difficulty_level != difficulty_level:
+        raise HTTPException(status_code=422, detail="difficulty_level does not match session")
+    if patient_id is not None and session.patient_id != patient_id:
+        raise HTTPException(status_code=422, detail="patient_id does not match session")
+    if (
+        content_pack_id is not None
+        and session.content_pack_id is not None
+        and session.content_pack_id != content_pack_id
+    ):
+        raise HTTPException(status_code=422, detail="pack_id does not match session")
+    return session
+
+
 # ============= Schemas =============
 
 
@@ -274,56 +304,21 @@ async def record_action(
             detail=f"Invalid session_id '{session_id}': must be a valid UUID",
         )
     session = await _ensure_owned_session(db, current_user, sid)
-    is_correct = request.is_correct
+    action_data = request.action_data or {}
     response_time_ms = request.response_time_ms
-    server_fields: dict = {}
-    if (
-        session.game_type == GameTypeEnum.ODD_ONE_OUT
-        and request.action_type == "select_odd_item"
-    ):
-        # Server-truth scoring: correctness derives from the stored board
-        # snapshot, never from client claims. Other games honor the client
-        # verdict as before.
-        snapshot = session.server_state or {}
-        answer_item_id = snapshot.get("answer_item_id")
-        if not answer_item_id:
-            raise HTTPException(
-                status_code=422,
-                detail="no server board for this session; fetch board first",
-            )
-        action_data = request.action_data or {}
-        if response_time_ms is None:
-            response_time_ms = action_data.get("response_time_ms")
-        verdict = odd_one_out_service.score_odd_one_out(
-            action_data.get("selected_item_id"), answer_item_id
+    if response_time_ms is None:
+        response_time_ms = action_data.get("response_time_ms")
+    try:
+        event = await game_service.record_game_action(
+            db,
+            session_id=sid,
+            action_type=request.action_type,
+            action_data=action_data,
+            response_time_ms=response_time_ms,
         )
-        is_correct = verdict["correct"]
-        server_fields = {
-            "error_category": verdict["error_category"],
-            "opportunity": verdict["opportunity"],
-        }
-    event = await game_service.record_game_action(
-        db,
-        session_id=sid,
-        action_type=request.action_type,
-        action_data=request.action_data,
-        is_correct=is_correct,
-        response_time_ms=response_time_ms,
-    )
-    if server_fields:
-        # Persist the server verdict + error_category in the stored event.
-        # Reassign — don't mutate — so change detection persists on flush.
-        updated_log = list(session.raw_event_log or [])
-        if updated_log:
-            patched = dict(updated_log[-1])
-            patched.update(server_fields)
-            updated_log[-1] = patched
-            session.raw_event_log = updated_log
-            await db.flush()
-    await db.commit()  # record_game_action only flushes; persist before returning
-    if server_fields:
-        event = {**event, **server_fields}
-
+    except game_service.GameActionValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    await db.commit()
     return {"status": "recorded", "event": event}
 
 
@@ -511,6 +506,7 @@ async def list_content_packs(current_user: User = Depends(get_current_user)):
 async def generate_match_it_board(
     pack_id: str,
     difficulty_level: int = 1,
+    session_id: Optional[UUID] = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -521,14 +517,30 @@ async def generate_match_it_board(
     Patient scoping + consent are enforced at session start, not on the
     static board.
     """
+    session = await _ensure_board_session(
+        db,
+        current_user,
+        session_id,
+        GameTypeEnum.MATCH_IT,
+        difficulty_level,
+        content_pack_id=pack_id,
+    )
+    if session is not None and isinstance(session.board_snapshot, dict):
+        return MatchItBoardResponse(**session.board_snapshot)
     params = await level_config_service.get_level_params(
         db, "match_it", difficulty_level
     )
-    board = content_packs.generate_match_it_board(
-        pack_id=pack_id,
-        difficulty_level=difficulty_level,
-        pair_count=params.get("pairs", 2),
-    )
+    try:
+        board = content_packs.generate_match_it_board(
+            pack_id=pack_id,
+            difficulty_level=difficulty_level,
+            pair_count=params.get("pairs", 2),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    if session is not None:
+        session.board_snapshot = board
+        await db.commit()
     return MatchItBoardResponse(**board)
 
 
@@ -613,6 +625,7 @@ async def get_patient_routine(
 async def generate_routine_board(
     patient_id: str,
     difficulty_level: int = 1,
+    session_id: Optional[UUID] = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -626,25 +639,42 @@ async def generate_routine_board(
         )
     await ensure_patient_access(db, current_user, pid)
     await ensure_consent(db, pid, "game_data")
+    session = await _ensure_board_session(
+        db,
+        current_user,
+        session_id,
+        GameTypeEnum.ROUTINE_SEQUENCING,
+        difficulty_level,
+        patient_id=pid,
+    )
+    if session is not None and isinstance(session.board_snapshot, dict):
+        return RoutineSequencingBoardResponse(**session.board_snapshot)
     routine = await routine_service.get_patient_routine(
         db, patient_id=pid
     )
     params = await level_config_service.get_level_params(
         db, "routine_sequencing", difficulty_level
     )
-    board = routine_service.generate_routine_sequencing_board(
-        routine,
-        difficulty_level=difficulty_level,
-        step_count=params.get("steps", 3),
-        include_icons=params.get("icons", True),
-        include_hints=params.get("hints", difficulty_level <= 2),
-    )
+    try:
+        board = routine_service.generate_routine_sequencing_board(
+            routine,
+            difficulty_level=difficulty_level,
+            step_count=params.get("steps", 3),
+            include_icons=params.get("icons", True),
+            include_hints=params.get("hints", difficulty_level <= 2),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    if session is not None:
+        session.board_snapshot = board
+        await db.commit()
     return RoutineSequencingBoardResponse(**board)
 
 
 @router.get("/recall/board", response_model=NumberRecallBoardResponse)
 async def generate_number_recall_board(
     difficulty_level: int = 1,
+    session_id: Optional[UUID] = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -655,6 +685,15 @@ async def generate_number_recall_board(
     Patient scoping + consent are enforced at session start, not on the
     static board.
     """
+    session = await _ensure_board_session(
+        db,
+        current_user,
+        session_id,
+        GameTypeEnum.NUMBER_RECALL,
+        difficulty_level,
+    )
+    if session is not None and isinstance(session.board_snapshot, dict):
+        return NumberRecallBoardResponse(**session.board_snapshot)
     params = await level_config_service.get_level_params(
         db, "number_recall", difficulty_level
     )
@@ -663,6 +702,9 @@ async def generate_number_recall_board(
         sequence_length=params.get("sequence_length", 3),
         show_seconds_per_item=params.get("show_seconds_per_item", 2),
     )
+    if session is not None:
+        session.board_snapshot = board
+        await db.commit()
     return NumberRecallBoardResponse(**board)
 
 
@@ -675,9 +717,14 @@ async def generate_odd_one_out_board(
 ):
     """Generate an Odd-One-Out board for an owned session (counts from level
     config). Same gate as start_game: caller-owned session + active
-    `game_data` consent. The full board (including `answer_item_id`) is stored
-    on `session.board_snapshot`; the response withholds the answer."""
-    session = await _ensure_owned_session(db, current_user, session_id)
+    `game_data` consent. The answer is held only in private server state."""
+    session = await _ensure_board_session(
+        db,
+        current_user,
+        session_id,
+        GameTypeEnum.ODD_ONE_OUT,
+        difficulty_level,
+    )
     res = await db.execute(
         select(PatientProfile).where(PatientProfile.user_id == current_user.id)
     )
@@ -692,6 +739,8 @@ async def generate_odd_one_out_board(
         raise HTTPException(
             status_code=422, detail="difficulty_level must be 1, 2, or 3"
         )
+    if isinstance(session.board_snapshot, dict) and isinstance(session.server_state, dict):
+        return OddOneOutBoardResponse(**session.board_snapshot)
     params = await level_config_service.get_level_params(
         db, "odd_one_out", difficulty_level
     )

@@ -109,14 +109,7 @@ async def test_recall_board_endpoint_and_session_flow(client):
     )
     assert resp.status_code == 200, resp.text
 
-    resp = await client.get(f"{GAMES}/recall/board",
-                            params={"difficulty_level": 2}, headers=headers)
-    assert resp.status_code == 200, resp.text
-    board = resp.json()
-    assert board["sequence_length"] == 4
-    assert len(board["sequence"]) == 4
-
-    # Full shared pipeline: start → tap actions → complete → history.
+    # Full shared pipeline: start → fetch bound board → tap actions → complete.
     resp = await client.post(
         f"{GAMES}/sessions",
         json={"game_type": "number_recall", "difficulty_level": 2},
@@ -124,6 +117,15 @@ async def test_recall_board_endpoint_and_session_flow(client):
     )
     assert resp.status_code == 200, resp.text
     session_id = resp.json()["session_id"]
+    resp = await client.get(
+        f"{GAMES}/recall/board",
+        params={"difficulty_level": 2, "session_id": session_id},
+        headers=headers,
+    )
+    assert resp.status_code == 200, resp.text
+    board = resp.json()
+    assert board["sequence_length"] == 4
+    assert len(board["sequence"]) == 4
     for pos, digit in enumerate(board["sequence"]):
         resp = await client.post(
             f"{GAMES}/sessions/{session_id}/actions",

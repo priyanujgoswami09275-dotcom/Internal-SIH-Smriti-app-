@@ -221,7 +221,7 @@ async def test_select_without_board_is_422(client):
 
 
 @pytest.mark.asyncio
-async def test_unknown_action_behavior_preserved(client):
+async def test_unknown_action_is_informational(client):
     headers, _pid, _cid = await _register_patient(client)
     session_id = await _start_session(client, headers, "match_it", 1)
     resp = await client.post(
@@ -232,19 +232,12 @@ async def test_unknown_action_behavior_preserved(client):
         headers=headers,
     )
     assert resp.status_code == 200, resp.text
-    assert resp.json()["event"]["is_correct"] is True
+    assert resp.json()["event"]["is_correct"] is None
     resp = await client.post(
         f"{GAMES}/sessions/{session_id}/complete", headers=headers)
     assert resp.status_code == 200, resp.text
-    assert resp.json()["total_attempts"] == 1
-    assert resp.json()["accuracy_pct"] == 100.0
-
-
-CORRECT_ACTIONS = {
-    "match_it": ("flip_card", {"card_id": 1, "item_id": "bihu"}),
-    "routine_sequencing": ("place_step", {"position": 0, "step_id": "wake_up"}),
-    "number_recall": ("recall_tap", {"position": 0, "digit": 5, "expected": 5}),
-}
+    assert resp.json()["total_attempts"] == 0
+    assert resp.json()["accuracy_pct"] == 0.0
 
 
 @pytest.mark.asyncio
@@ -253,7 +246,7 @@ CORRECT_ACTIONS = {
 async def test_four_games_three_levels_session_flow(
     client, db_session, game_type, level,
 ):
-    headers, _pid, _cid = await _register_patient(client)
+    headers, pid, _cid = await _register_patient(client)
     session_id = await _start_session(client, headers, game_type, level)
     if game_type == "odd_one_out":
         resp = await client.get(
@@ -263,16 +256,57 @@ async def test_four_games_three_levels_session_flow(
         )
         assert resp.status_code == 200, resp.text
         answer = (await _snapshot(db_session, session_id)).server_state["answer_item_id"]
-        payload = {"action_type": "select_odd_item",
-                   "action_data": {"selected_item_id": answer},
-                   "response_time_ms": 1000}
+        payloads = [{"action_type": "select_odd_item",
+                     "action_data": {"selected_item_id": answer},
+                     "response_time_ms": 1000}]
+    elif game_type == "match_it":
+        resp = await client.get(
+            f"{GAMES}/content-packs/festivals_ner/board",
+            params={"session_id": session_id, "difficulty_level": level},
+            headers=headers,
+        )
+        assert resp.status_code == 200, resp.text
+        cards = resp.json()["cards"]
+        first = cards[0]
+        second = next(card for card in cards[1:] if card["item_id"] == first["item_id"])
+        payloads = [
+            {"action_type": "flip_card", "action_data": {"card_id": card["card_id"]},
+             "response_time_ms": 1000}
+            for card in (first, second)
+        ]
+    elif game_type == "routine_sequencing":
+        resp = await client.get(
+            f"{GAMES}/routine/board",
+            params={"patient_id": pid, "session_id": session_id,
+                    "difficulty_level": level},
+            headers=headers,
+        )
+        assert resp.status_code == 200, resp.text
+        board = resp.json()
+        payloads = [
+            {"action_type": "place_step",
+             "action_data": {"position": position, "step_id": step_id},
+             "response_time_ms": 1000}
+            for position, step_id in enumerate(board["correct_sequence"])
+        ]
     else:
-        action_type, data = CORRECT_ACTIONS[game_type]
-        payload = {"action_type": action_type, "action_data": data,
-                   "is_correct": True, "response_time_ms": 1000}
-    resp = await client.post(
-        f"{GAMES}/sessions/{session_id}/actions", json=payload, headers=headers)
-    assert resp.status_code == 200, resp.text
+        resp = await client.get(
+            f"{GAMES}/recall/board",
+            params={"session_id": session_id, "difficulty_level": level},
+            headers=headers,
+        )
+        assert resp.status_code == 200, resp.text
+        sequence = resp.json()["sequence"]
+        payloads = [
+            {"action_type": "recall_tap",
+             "action_data": {"position": position, "digit": digit},
+             "response_time_ms": 1000}
+            for position, digit in enumerate(sequence)
+        ]
+    for payload in payloads:
+        resp = await client.post(
+            f"{GAMES}/sessions/{session_id}/actions", json=payload, headers=headers)
+        assert resp.status_code == 200, resp.text
     resp = await client.post(
         f"{GAMES}/sessions/{session_id}/complete", headers=headers)
     assert resp.status_code == 200, resp.text
@@ -287,13 +321,53 @@ async def test_four_games_three_levels_session_flow(
 async def test_pooled_stats_contribution_proven_per_game(client, db_session):
     headers, pid, _cid = await _register_patient(client)
 
-    async def _correct_session(game_type, moves):
+    async def _correct_session(game_type):
         sid = await _start_session(client, headers, game_type, 1)
-        for action_type, data in moves:
+        if game_type == "match_it":
+            resp = await client.get(
+                f"{GAMES}/content-packs/festivals_ner/board",
+                params={"session_id": sid, "difficulty_level": 1},
+                headers=headers,
+            )
+            assert resp.status_code == 200, resp.text
+            cards = resp.json()["cards"]
+            first = cards[0]
+            second = next(card for card in cards[1:] if card["item_id"] == first["item_id"])
+            payloads = [
+                {"action_type": "flip_card", "action_data": {"card_id": card["card_id"]}}
+                for card in (first, second)
+            ]
+        elif game_type == "routine_sequencing":
+            resp = await client.get(
+                f"{GAMES}/routine/board",
+                params={"patient_id": pid, "session_id": sid, "difficulty_level": 1},
+                headers=headers,
+            )
+            assert resp.status_code == 200, resp.text
+            sequence = resp.json()["correct_sequence"]
+            payloads = [
+                {"action_type": "place_step",
+                 "action_data": {"position": position, "step_id": step_id}}
+                for position, step_id in enumerate(sequence)
+            ]
+        else:
+            resp = await client.get(
+                f"{GAMES}/recall/board",
+                params={"session_id": sid, "difficulty_level": 1},
+                headers=headers,
+            )
+            assert resp.status_code == 200, resp.text
+            sequence = resp.json()["sequence"]
+            payloads = [
+                {"action_type": "recall_tap",
+                 "action_data": {"position": position, "digit": digit}}
+                for position, digit in enumerate(sequence)
+            ]
+        assert resp.status_code == 200, resp.text
+        for payload in payloads:
             resp = await client.post(
                 f"{GAMES}/sessions/{sid}/actions",
-                json={"action_type": action_type, "action_data": data,
-                      "is_correct": True, "response_time_ms": 1000},
+                json={**payload, "response_time_ms": 1000},
                 headers=headers)
             assert resp.status_code == 200, resp.text
         resp = await client.post(
@@ -301,18 +375,9 @@ async def test_pooled_stats_contribution_proven_per_game(client, db_session):
         assert resp.status_code == 200, resp.text
         return sid
 
-    await _correct_session("match_it", [
-        ("flip_card", {"card_id": 1, "item_id": "bihu"}),
-        ("flip_card", {"card_id": 2, "item_id": "bihu"}),
-    ])
-    await _correct_session("routine_sequencing", [
-        ("place_step", {"position": 0, "step_id": "wake_up"}),
-        ("place_step", {"position": 1, "step_id": "bath"}),
-    ])
-    await _correct_session("number_recall", [
-        ("recall_tap", {"position": pos, "digit": pos, "expected": pos})
-        for pos in range(3)
-    ])
+    await _correct_session("match_it")
+    await _correct_session("routine_sequencing")
+    await _correct_session("number_recall")
     # Odd-One-Out contributes the single imperfect fixture: 0/1.
     odd_sid = await _start_session(client, headers, "odd_one_out", 1)
     resp = await client.get(
