@@ -377,4 +377,91 @@ void main() {
       expect(find.text('Uploaded successfully (HTTP 200).'), findsOneWidget);
     });
   });
+
+  group('network errors + documents read API', () {
+    test('isNetworkError only for the wrapper, not HTTP failures', () {
+      expect(ApiException('Network error: SocketException').isNetworkError, isTrue);
+      expect(ApiException('boom', statusCode: 500).isNetworkError, isFalse);
+      expect(ApiException('boom', statusCode: 403).isNetworkError, isFalse);
+    });
+
+    test('uploadDocument normalizes a thrown SocketException', () async {
+      final backend = _FakeBackend((method, uri, body) {
+        throw const SocketException('Failed host lookup');
+      });
+      HttpOverrides.global = backend;
+      addTearDown(() => HttpOverrides.global = null);
+      final api = ApiService(baseUrl: 'http://fake.invalid')..authToken = 'tok-1';
+      await expectLater(
+        api.uploadDocument(
+          patientId: 'p1',
+          bytes: Uint8List.fromList([1]),
+          filename: 'a.txt',
+        ),
+        throwsA(isA<ApiException>()
+            .having((e) => e.isNetworkError, 'isNetworkError', isTrue)),
+      );
+    });
+
+    test('listDocuments GETs the list route and returns rows', () async {
+      final backend = _FakeBackend((method, uri, body) {
+        expect(method, 'GET');
+        expect(uri.path, '/api/v1/reports/patients/p1/documents');
+        return (
+          status: 200,
+          json: {
+            'documents': [
+              {
+                'document_id': 'd1',
+                'title': 'Discharge summary',
+                'file_name': 'discharge.txt',
+                'doc_type': 'prescription',
+                'embedding_status': 'completed',
+                'created_at': '2026-09-24T10:00:00',
+              }
+            ],
+            'count': 1,
+          }
+        );
+      });
+      HttpOverrides.global = backend;
+      addTearDown(() => HttpOverrides.global = null);
+      final api = ApiService(baseUrl: 'http://fake.invalid')..authToken = 'tok-1';
+      final docs = await api.listDocuments('p1');
+      expect(docs, hasLength(1));
+      expect(docs.single['file_name'], 'discharge.txt');
+    });
+
+    test('askDocumentQuestion POSTs the question and returns the answer map',
+        () async {
+      final backend = _FakeBackend((method, uri, body) {
+        expect(method, 'POST');
+        expect(uri.path, '/api/v1/reports/documents/answer');
+        final payload = jsonDecode(body) as Map<String, dynamic>;
+        expect(payload['patient_id'], 'p1');
+        expect(payload['question'], 'What medication was prescribed?');
+        return (
+          status: 200,
+          json: {
+            'question': payload['question'],
+            'answer': 'Donepezil 5 mg at bedtime [1].',
+            'synthesized': false,
+            'citations': [
+              {'title': 'Discharge summary', 'file_ref': 'discharge.txt', 'similarity': 0.82}
+            ],
+            'disclaimer': 'Not medical advice.',
+          }
+        );
+      });
+      HttpOverrides.global = backend;
+      addTearDown(() => HttpOverrides.global = null);
+      final api = ApiService(baseUrl: 'http://fake.invalid')..authToken = 'tok-1';
+      final result = await api.askDocumentQuestion(
+        patientId: 'p1',
+        question: 'What medication was prescribed?',
+      );
+      expect(result['synthesized'], isFalse);
+      expect((result['citations'] as List), hasLength(1));
+    });
+  });
 }

@@ -30,6 +30,11 @@ class ApiException implements Exception {
 
   ApiException(this.message, {this.statusCode});
 
+  /// True when the failure came from the network layer, not the server.
+  /// `_send` wraps transport failures as 'Network error: …' (api_service.dart:124).
+  bool get isNetworkError =>
+      statusCode == null && message.startsWith('Network error');
+
   @override
   String toString() => message;
 }
@@ -608,16 +613,22 @@ class ApiService {
       return req;
     }
 
-    var streamed = await build().send();
-    var res = await http.Response.fromStream(streamed);
-    // One refresh attempt on 401, then retry the original request
-    // (mirrors _send; rebuild required — a sent request cannot re-stream).
-    if (res.statusCode == 401 && refreshToken != null) {
-      final refreshed = await _tryRefresh();
-      if (refreshed) {
-        streamed = await build().send();
-        res = await http.Response.fromStream(streamed);
+    http.Response res;
+    try {
+      var streamed = await build().send();
+      res = await http.Response.fromStream(streamed);
+      // One refresh attempt on 401, then retry the original request
+      // (mirrors _send; rebuild required — a sent request cannot re-stream).
+      if (res.statusCode == 401 && refreshToken != null) {
+        final refreshed = await _tryRefresh();
+        if (refreshed) {
+          streamed = await build().send();
+          res = await http.Response.fromStream(streamed);
+        }
       }
+    } on Exception catch (e) {
+      developer.log('upload failed: $e', name: 'ApiService');
+      throw ApiException('Network error: $e');
     }
     if (res.statusCode == 401 && !_inUnauthorizedHandler) {
       _inUnauthorizedHandler = true;
@@ -630,5 +641,30 @@ class ApiService {
     final data = _decode(res);
     if (data == null) return <String, dynamic>{};
     return Map<String, dynamic>.from(data as Map);
+  }
+
+  /// GET /reports/patients/{id}/documents — ingested document metadata for
+  /// the documents hub. 403 (tier/consent) surfaces as ApiException; the
+  /// caller decides the state.
+  Future<List<Map<String, dynamic>>> listDocuments(String patientId) async {
+    final data = await getJson(
+        '${AppConfig.apiV1}/reports/patients/$patientId/documents');
+    final rows = (data as Map<String, dynamic>)['documents'] as List? ?? const [];
+    return rows.cast<Map<String, dynamic>>();
+  }
+
+  /// POST /reports/documents/answer — cited answer grounded in the patient's
+  /// documents. Never a diagnosis; returns the server's disclaimer verbatim.
+  Future<Map<String, dynamic>> askDocumentQuestion({
+    required String patientId,
+    required String question,
+    int topK = 3,
+  }) async {
+    final data = await postJson(
+      '${AppConfig.apiV1}/reports/documents/answer',
+      body: {'patient_id': patientId, 'question': question, 'top_k': topK},
+    );
+    if (data is! Map) return <String, dynamic>{};
+    return Map<String, dynamic>.from(data);
   }
 }
