@@ -2,7 +2,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, update
 from app.database import get_db
 from app.deps import _parse_sub
 from app.models.user import RoleEnum, User
@@ -63,7 +63,7 @@ async def refresh_token(body: RefreshRequest, db: AsyncSession = Depends(get_db)
     """Single-use rotation: only the current jti is accepted; a new pair
     revokes the presented token."""
     payload = AuthService.verify_token(body.refresh_token)
-    if payload is None or not payload.get("sub"):
+    if payload is None or payload.get("typ") != "refresh" or not payload.get("sub"):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired refresh token")
 
     result = await db.execute(select(User).where(User.id == _parse_sub(payload["sub"])))
@@ -77,7 +77,19 @@ async def refresh_token(body: RefreshRequest, db: AsyncSession = Depends(get_db)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Refresh token already used or revoked")
 
     refresh, jti = AuthService.create_refresh_token({"sub": str(user.id)})
-    user.refresh_jti = jti
+    claim = await db.execute(
+        update(User)
+        .where(
+            User.id == user.id,
+            User.refresh_jti == payload["jti"],
+            User.is_active.is_(True),
+        )
+        .values(refresh_jti=jti)
+    )
+    if claim.rowcount != 1:
+        user.refresh_jti = None
+        await db.commit()
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Refresh token already used or revoked")
     await db.commit()
     return TokenResponse(
         access_token=AuthService.create_access_token({"sub": str(user.id), "role": user.role.value}),
