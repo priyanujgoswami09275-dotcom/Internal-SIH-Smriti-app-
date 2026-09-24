@@ -285,6 +285,11 @@ void main() {
       expect(find.textContaining('linked clinical staff only'), findsWidgets);
       expect(find.text(_runScreening), findsNothing);
       expect(find.byTooltip('Compliance audit trail (admin)'), findsNothing);
+      // Documents are clinical-only: a family caregiver sees the lock, not a
+      // live Upload button, and the app-bar upload icon is hidden.
+      expect(find.textContaining('Health worker only'), findsOneWidget);
+      expect(find.text('UPLOAD DOCUMENT'), findsNothing);
+      expect(find.byIcon(Icons.upload_file_outlined), findsNothing);
       expect(tester.takeException(), isNull);
     });
 

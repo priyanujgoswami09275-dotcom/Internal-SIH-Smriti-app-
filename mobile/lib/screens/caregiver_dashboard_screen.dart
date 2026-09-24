@@ -27,6 +27,7 @@ import 'caregiver/sections/risk_screening_section.dart';
 import 'caregiver/sections/schedules_card.dart';
 import 'caregiver/sections/trends_section.dart';
 import 'clinical_notes_screen.dart';
+import 'documents_screen.dart';
 import 'rag_upload_screen.dart';
 
 class CaregiverDashboardScreen extends StatefulWidget {
@@ -265,6 +266,20 @@ class _CaregiverDashboardScreenState extends State<CaregiverDashboardScreen> {
     );
   }
 
+  /// Documents hub for the selected patient (list + upload + RAG questions).
+  Future<void> _openDocuments() async {
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => DocumentsScreen(
+          patientId: _selectedPatientId!,
+          onConsentMissing: () {
+            if (mounted) setState(() => _consentMissing = true);
+          },
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -309,18 +324,20 @@ class _CaregiverDashboardScreenState extends State<CaregiverDashboardScreen> {
                 );
               },
             ),
-          // RAG medical-document upload — staff-only surface (patients 403
-          // even authenticated: backend requires staff roles + clinical
-          // tier + health-data consent). Hidden until a patient is selected.
-          if (_selectedPatientId != null)
+          if (_selectedPatientId != null && _summary?['view'] == 'clinical')
             IconButton(
               tooltip: 'Upload medical document',
               icon: const Icon(Icons.upload_file_outlined),
+              constraints: const BoxConstraints(minWidth: 48, minHeight: 48),
               onPressed: () {
                 Navigator.of(context).push(
                   MaterialPageRoute<void>(
-                    builder: (_) =>
-                        RagUploadScreen(patientId: _selectedPatientId!),
+                    builder: (_) => RagUploadScreen(
+                      patientId: _selectedPatientId!,
+                      onConsentMissing: () {
+                        if (mounted) setState(() => _consentMissing = true);
+                      },
+                    ),
                   ),
                 );
               },
@@ -417,7 +434,9 @@ class _CaregiverDashboardScreenState extends State<CaregiverDashboardScreen> {
           DocumentsCard(
             patientId: _selectedPatientId,
             consentMissing: _consentMissing,
+            isClinical: summary['view'] == 'clinical',
             onUpload: _selectedPatientId == null ? null : _openUpload,
+            onOpenHub: _openDocuments,
           ),
         ],
       ],

@@ -12,12 +12,16 @@ class DocumentsCard extends StatelessWidget {
     super.key,
     required this.patientId,
     required this.consentMissing,
+    required this.isClinical,
     required this.onUpload,
+    this.onOpenHub,
   });
 
   final String? patientId;
   final bool consentMissing;
+  final bool isClinical;
   final VoidCallback? onUpload;
+  final VoidCallback? onOpenHub;
 
   @override
   Widget build(BuildContext context) {
@@ -52,6 +56,25 @@ class DocumentsCard extends StatelessWidget {
                   ),
                 ]),
               )
+            else if (!isClinical)
+              Container(
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  color: Monad.tintGold,
+                  borderRadius: BorderRadius.circular(Monad.radiusMin),
+                  border: Border.all(color: Monad.ash, width: 1),
+                ),
+                child: const Row(children: [
+                  Icon(Icons.lock_outline, size: 22, color: Monad.graphite),
+                  SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      "Health worker only — family caregiver accounts can't add or read health documents. Ask an ASHA worker, clinician, or admin.",
+                      style: Monad.monoBodySm,
+                    ),
+                  ),
+                ]),
+              )
             else
               const Text(
                 'Upload prescriptions, discharge summaries, care plans. '
@@ -59,13 +82,16 @@ class DocumentsCard extends StatelessWidget {
                 style: Monad.monoBodySm,
               ),
             const SizedBox(height: 16),
-            // Button stays enabled in both states (server authoritative —
-            // re-push allowed after consent is granted).
-            MonadPillButton(
-              label: 'Upload Document',
-              variant: MonadPillVariant.secondary,
-              onPressed: onUpload,
-            ),
+            if (isClinical && onUpload != null)
+              MonadPillButton(
+                label: 'Upload Document',
+                variant: MonadPillVariant.secondary,
+                onPressed: onUpload,
+              ),
+            if (isClinical && onOpenHub != null) ...[
+              const SizedBox(height: 8),
+              MonadPillButton(label: 'Documents & Q&A', onPressed: onOpenHub),
+            ],
           ],
         ),
       ),

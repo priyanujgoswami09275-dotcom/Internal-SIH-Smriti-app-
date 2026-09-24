@@ -267,7 +267,7 @@ void main() {
             json: {
               'active_alerts': [],
               'clinical_flags': {},
-              'view': 'basic',
+              'view': 'clinical',
               'compliance_pct': 80,
               'games_played': 2,
               'reminders_acknowledged': 8,
@@ -346,6 +346,7 @@ void main() {
           body: DocumentsCard(
             patientId: 'p1',
             consentMissing: true,
+            isClinical: true,
             onUpload: () => tapped = true,
           ),
         ),
@@ -367,12 +368,13 @@ void main() {
 
     testWidgets('DocumentsCard consentMissing=false renders normal helper text',
         (tester) async {
-      await tester.pumpWidget(const MaterialApp(
+      await tester.pumpWidget(MaterialApp(
         home: Scaffold(
           body: DocumentsCard(
             patientId: 'p1',
             consentMissing: false,
-            onUpload: null,
+            isClinical: true,
+            onUpload: () {},
           ),
         ),
       ));
@@ -388,5 +390,23 @@ void main() {
       expect(find.text('Medical Documents'), findsOneWidget);
       expect(find.text('UPLOAD DOCUMENT'), findsOneWidget);
     });
+  });
+
+  testWidgets(
+      'DocumentsCard basic view renders the health-worker lock, no button',
+      (tester) async {
+    await tester.pumpWidget(const MaterialApp(
+      home: Scaffold(
+        body: DocumentsCard(
+          patientId: 'p1',
+          consentMissing: false,
+          isClinical: false,
+          onUpload: null,
+        ),
+      ),
+    ));
+
+    expect(find.textContaining('Health worker only'), findsOneWidget);
+    expect(find.text('UPLOAD DOCUMENT'), findsNothing);
   });
 }
