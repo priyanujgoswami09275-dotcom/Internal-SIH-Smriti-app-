@@ -28,10 +28,10 @@ router = APIRouter(prefix="/reminders", tags=["reminders"])
 class CreateScheduleRequest(BaseModel):
     patient_id: uuid.UUID
     reminder_type: ReminderTypeEnum
-    # Structured cadence understood by the generation job (times are IST):
-    #   "08:00" | "daily@08:00" | "08:00,20:00" | "daily@08:00,13:00,20:00"
-    # Free-text cadences are accepted but generate no automatic events.
-    cadence: str = Field(examples=["daily@08:00,20:00"])
+    cadence: str = Field(
+        examples=["daily@08:00,20:00"],
+        description=CADENCE_GRAMMAR,
+    )
 
 
 class ScheduleResponse(BaseModel):
@@ -83,13 +83,19 @@ async def create_schedule(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only caregivers or clinicians can create schedules")
 
     await ensure_patient_access(db, current_user, request.patient_id)
-    schedule = await ReminderService.create_schedule(
-        db=db,
-        patient_id=request.patient_id,
-        reminder_type=request.reminder_type,
-        cadence=request.cadence,
-        created_by=current_user.id,
-    )
+    try:
+        schedule = await ReminderService.create_schedule(
+            db=db,
+            patient_id=request.patient_id,
+            reminder_type=request.reminder_type,
+            cadence=request.cadence,
+            created_by=current_user.id,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
     await ComplianceService.log_write_access(
         db, current_user.id, "reminder_schedule", str(schedule.id),
         details={"patient_id": str(schedule.patient_id), "is_active": schedule.is_active},

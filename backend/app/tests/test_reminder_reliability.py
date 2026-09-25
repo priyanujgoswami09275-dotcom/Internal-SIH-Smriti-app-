@@ -167,6 +167,70 @@ async def test_concurrent_duplicate_alert_condition_creates_one_alert(db_session
     assert len(rows) == 1
 
 
+@pytest.mark.asyncio
+async def test_invalid_cadence_is_rejected_with_grammar(client):
+    headers = await _staff_headers(client)
+    patient = await create_consented_patient(client, "Invalid Cadence")
+
+    response = await client.post(
+        f"{REMINDERS}/schedules",
+        headers=headers,
+        json={
+            "patient_id": patient["id"],
+            "reminder_type": "medicine",
+            "cadence": "every morning after breakfast",
+        },
+    )
+
+    assert response.status_code == 422, response.text
+    detail = str(response.json()["detail"])
+    assert "Invalid cadence" in detail
+    assert "daily|everyday|every day" in detail
+    assert "HH:MM" in detail
+    assert "AM|PM Daily" in detail
+
+
+@pytest.mark.asyncio
+async def test_valid_cadence_grammar_still_generates(client, db_session):
+    headers = await _staff_headers(client)
+    patient = await create_consented_patient(client, "Valid Cadence")
+    cadences = [
+        "DAILY@08:00",
+        "08:00,20:00;08:00",
+        "everyday:08:00",
+        "every day at 08:00",
+        "08:00 AM Daily",
+    ]
+
+    for cadence in cadences:
+        response = await client.post(
+            f"{REMINDERS}/schedules",
+            headers=headers,
+            json={
+                "patient_id": patient["id"],
+                "reminder_type": "water",
+                "cadence": cadence,
+            },
+        )
+        assert response.status_code == 200, (cadence, response.text)
+
+    now = datetime(2026, 1, 15, 12, 0, tzinfo=timezone.utc)
+    result = await ReminderService.generate_due_events_for_all(db_session, now=now)
+
+    assert result["events_created"] == len(cadences)
+    rows = (
+        await db_session.execute(
+            select(ReminderEvent).where(
+                ReminderEvent.patient_id == uuid.UUID(patient["id"])
+            )
+        )
+    ).scalars().all()
+    assert len(rows) == len(cadences)
+    assert {row.scheduled_at.hour for row in rows} == {2}
+    assert {row.scheduled_at.minute for row in rows} == {30}
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("provider_name", ["console", "fcm"])
 async def test_no_real_transport_reports_logged_only(
     client, db_session, monkeypatch, provider_name
