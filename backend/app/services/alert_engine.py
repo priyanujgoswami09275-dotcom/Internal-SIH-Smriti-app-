@@ -21,6 +21,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List
 
 from sqlalchemy import distinct, func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.all_models import (
@@ -35,7 +36,11 @@ from app.models.all_models import (
     ReminderTypeEnum,
 )
 from app.services.notification_service import notify_escalation_results
-from app.services.reminder_service import ReminderService
+from app.services.reminder_service import (
+    ReminderService,
+    alert_dedup_key,
+    is_unique_violation,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -52,27 +57,38 @@ class AlertEngine:
         now: datetime,
     ) -> AlertFlag | None:
         """Insert an AlertFlag unless one of the same trigger exists in 24h."""
+        await ReminderService.lock_patient(db, patient_id)
         existing = (
             await db.execute(
-                select(AlertFlag).where(
+                select(AlertFlag)
+                .where(
                     AlertFlag.patient_id == patient_id,
                     AlertFlag.trigger_type == trigger,
                     AlertFlag.created_at >= now - timedelta(hours=24),
                 )
+                .limit(1)
             )
-        ).scalar_one_or_none()
+        ).scalars().first()
         if existing is not None:
             return None
         alert = AlertFlag(
             id=uuid.uuid4(),
             patient_id=patient_id,
             trigger_type=trigger,
+            dedup_key=alert_dedup_key(now),
             severity=severity,
             alert_summary=summary,
             threshold_detail=detail,
             created_at=now,
         )
-        db.add(alert)
+        try:
+            async with db.begin_nested():
+                db.add(alert)
+                await db.flush()
+        except IntegrityError as exc:
+            if not is_unique_violation(exc):
+                raise
+            return None
         return alert
 
     @staticmethod
