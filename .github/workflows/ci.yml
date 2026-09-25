@@ -61,7 +61,7 @@ jobs:
           exit $RC
 
   frontend:
-    name: Flutter (mobile + dashboard)
+    name: Flutter (mobile + dashboard VM/Chrome + web build)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -75,13 +75,21 @@ jobs:
           flutter pub get
           dart run build_runner build --delete-conflicting-outputs
           flutter analyze
-          flutter test
-      - name: Dashboard — deps + analyze + test
+      - name: Mobile — unit and widget tests
+        working-directory: mobile
+        run: flutter test
+      - name: Dashboard — deps, analyze, VM tests
         working-directory: dashboard
         run: |
           flutter pub get
           flutter analyze
           flutter test
+      - name: Dashboard — Chrome-platform tests
+        working-directory: dashboard
+        run: flutter test --platform chrome
+      - name: Dashboard — release web build
+        working-directory: dashboard
+        run: flutter build web --release --dart-define=API_BASE_URL=https://ci.invalid
       - name: Secret scan (gitleaks)
         uses: gitleaks/gitleaks@v2
         with:
