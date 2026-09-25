@@ -22,30 +22,57 @@ from app.models.all_models import (
 class DashboardService:
     @staticmethod
     async def get_caregiver_patients(
-        db: AsyncSession, caregiver_user_id: uuid.UUID
+        db: AsyncSession,
+        caregiver_user_id: uuid.UUID,
+        role: str = "family_caregiver",
     ) -> List[Dict[str, Any]]:
-        """List all patients linked to this caregiver / ASHA worker with active status."""
-        stmt = (
-            select(PatientProfile, CaregiverPatientLink)
-            .join(CaregiverPatientLink, CaregiverPatientLink.patient_id == PatientProfile.id)
-            .where(
-                CaregiverPatientLink.caregiver_id == caregiver_user_id,
-                CaregiverPatientLink.is_active == True,
+        """Return the roster allowed by the caller's server-side role scope."""
+        role_name = role.value if hasattr(role, "value") else str(role)
+        if role_name in ("clinician", "admin"):
+            res = await db.execute(
+                select(PatientProfile)
+                .order_by(PatientProfile.created_at.desc(), PatientProfile.id)
             )
-        )
-        res = await db.execute(stmt)
-        rows = res.all()
+            rows = [(patient, None) for patient in res.scalars().all()]
+        else:
+            res = await db.execute(
+                select(PatientProfile, CaregiverPatientLink)
+                .join(
+                    CaregiverPatientLink,
+                    CaregiverPatientLink.patient_id == PatientProfile.id,
+                )
+                .where(
+                    CaregiverPatientLink.caregiver_id == caregiver_user_id,
+                    CaregiverPatientLink.is_active == True,
+                )
+                .order_by(PatientProfile.created_at.desc(), PatientProfile.id)
+            )
+            rows = res.all()
 
         patients_data = []
         for patient, link in rows:
+            if link is None:
+                relationship_type = "staff"
+                permission_tier = "clinical"
+            else:
+                relationship_type = (
+                    link.relationship_type.value
+                    if hasattr(link.relationship_type, "value")
+                    else str(link.relationship_type)
+                )
+                permission_tier = (
+                    link.permission_tier.value
+                    if hasattr(link.permission_tier, "value")
+                    else str(link.permission_tier)
+                )
             patients_data.append({
                 "patient_id": str(patient.id),
                 "name": patient.name,
                 "cognitive_baseline": patient.cognitive_baseline.value if hasattr(patient.cognitive_baseline, 'value') else str(patient.cognitive_baseline),
                 "region": patient.region,
                 "district": patient.district,
-                "relationship_type": link.relationship_type.value if hasattr(link.relationship_type, 'value') else str(link.relationship_type),
-                "permission_tier": link.permission_tier.value if hasattr(link.permission_tier, 'value') else str(link.permission_tier),
+                "relationship_type": relationship_type,
+                "permission_tier": permission_tier,
             })
         return patients_data
 

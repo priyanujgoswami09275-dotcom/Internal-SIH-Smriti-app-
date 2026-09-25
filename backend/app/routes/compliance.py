@@ -91,6 +91,7 @@ async def list_audit_logs(
     resource_type: Optional[str] = None,
     action: Optional[str] = None,
     limit: int = 100,
+    offset: int = 0,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_role("admin")),
 ):
@@ -99,7 +100,14 @@ async def list_audit_logs(
     Filters: optional resource_type / action; newest first. The trail itself
     is never deleted (see RetentionService).
     """
-    stmt = select(AuditLog).order_by(AuditLog.timestamp.desc()).limit(min(max(limit, 1), 500))
+    limit = min(max(limit, 1), 500)
+    offset = max(offset, 0)
+    stmt = (
+        select(AuditLog)
+        .order_by(AuditLog.timestamp.desc(), AuditLog.id)
+        .offset(offset)
+        .limit(limit)
+    )
     if resource_type:
         stmt = stmt.where(AuditLog.resource_type == resource_type)
     if action:

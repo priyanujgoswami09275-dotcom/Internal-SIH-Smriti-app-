@@ -29,7 +29,11 @@ async def get_caregiver_patients(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Access denied to other caregiver rosters."
         )
-    roster = await DashboardService.get_caregiver_patients(db, caregiver_id)
+    roster = await DashboardService.get_caregiver_patients(
+        db,
+        caregiver_id,
+        current_user.role.value if hasattr(current_user.role, "value") else str(current_user.role),
+    )
     if current_user.role == RoleEnum.FAMILY_CAREGIVER and current_user.id == caregiver_id:
         for patient in roster:
             if patient.get("permission_tier") == "basic":
@@ -76,6 +80,29 @@ async def get_patient_summary(
     basic_summary["permission_tier"] = tier
     basic_summary["view"] = "basic"
     return basic_summary
+
+
+@router.get("/patients/{patient_id}/risk-screening/consent")
+async def get_risk_screening_consent(
+    patient_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    patient = await ensure_patient_access(db, current_user, patient_id)
+    tier = await get_permission_tier(db, current_user, patient)
+    if tier != "clinical":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Clinical permission tier required for this resource",
+        )
+    granted = await ComplianceService.verify_consent(db, patient_id, "health_data")
+    return {
+        "patient_id": str(patient_id),
+        "permission_tier": tier,
+        "required_scope": "health_data",
+        "health_data_consent": granted,
+        "consent_state": "granted" if granted else "required",
+    }
 
 
 @router.post("/alerts/{alert_id}/acknowledge")
