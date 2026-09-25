@@ -31,9 +31,14 @@ class _FakeNotificationGateway implements ReminderNotificationGateway {
   final List<int> scheduledIds = [];
   final List<int> canceledIds = [];
   int cancelAllCalls = 0;
+  bool permissionGranted = true;
 
   @override
   Future<void> initialize(TargetPlatform platform) async {}
+
+  @override
+  Future<bool?> requestPermission(TargetPlatform platform) async =>
+      permissionGranted;
 
   @override
   Future<List<ScheduledReminderNotification>> pendingNotifications() async =>
@@ -234,6 +239,88 @@ void main() {
       await service.stop();
       expect(gateway.cancelAllCalls, 1);
       expect(gateway.pending, isEmpty);
+    });
+  });
+
+  group('Android reminder notification permission', () {
+    const channel = MethodChannel('dexterous.com/flutter/local_notifications');
+
+    setUpAll(AndroidFlutterLocalNotificationsPlugin.registerWith);
+
+    tearDown(() {
+      debugDefaultTargetPlatformOverride = null;
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, null);
+    });
+
+    test('denied permission schedules nothing and reports denied', () async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.android;
+      final calls = <MethodCall>[];
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(
+        const MethodChannel('dexterous.com/flutter/local_notifications'),
+        (call) async {
+          calls.add(call);
+          if (call.method == 'initialize') return true;
+          if (call.method == 'requestNotificationsPermission') return false;
+          return null;
+        },
+      );
+      final scheduler = ReminderScheduler(
+        platform: TargetPlatform.android,
+        deviceTimeZone: () =>
+            const DeviceTimeZone('IST', Duration(hours: 5, minutes: 30)),
+        now: () => DateTime.utc(2026, 9, 24, 18),
+      );
+
+      final result = await scheduler.scheduleForSchedule(
+        _schedule(id: 'denied', cadence: 'daily@08:00'),
+      );
+
+      expect(result.permissionStatus, ReminderPermissionStatus.denied);
+      expect(result.scheduledCount, 0);
+      expect(
+        calls.map((call) => call.method),
+        contains('requestNotificationsPermission'),
+      );
+      expect(
+          calls.map((call) => call.method), isNot(contains('zonedSchedule')));
+    });
+
+    test('granted permission schedules the reminder', () async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.android;
+      final calls = <MethodCall>[];
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(
+        const MethodChannel('dexterous.com/flutter/local_notifications'),
+        (call) async {
+          calls.add(call);
+          if (call.method == 'initialize') return true;
+          if (call.method == 'requestNotificationsPermission') return true;
+          return null;
+        },
+      );
+      final scheduler = ReminderScheduler(
+        platform: TargetPlatform.android,
+        deviceTimeZone: () =>
+            const DeviceTimeZone('IST', Duration(hours: 5, minutes: 30)),
+        now: () => DateTime.utc(2026, 9, 24, 18),
+      );
+
+      final result = await scheduler.scheduleForSchedule(
+        _schedule(id: 'granted', cadence: 'daily@08:00'),
+      );
+
+      expect(result.permissionStatus, ReminderPermissionStatus.granted);
+      expect(result.scheduledCount, 1);
+      expect(
+        calls.map((call) => call.method),
+        containsAllInOrder([
+          'initialize',
+          'requestNotificationsPermission',
+          'zonedSchedule',
+        ]),
+      );
     });
   });
 }

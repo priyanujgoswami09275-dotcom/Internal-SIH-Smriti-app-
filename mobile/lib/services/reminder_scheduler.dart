@@ -67,6 +67,8 @@ class ScheduledReminderNotification {
 abstract interface class ReminderNotificationGateway {
   Future<void> initialize(TargetPlatform platform);
 
+  Future<bool?> requestPermission(TargetPlatform platform);
+
   Future<List<ScheduledReminderNotification>> pendingNotifications();
 
   Future<void> schedule(ScheduledReminderNotification notification);
@@ -76,13 +78,17 @@ abstract interface class ReminderNotificationGateway {
   Future<void> cancelAll();
 }
 
+enum ReminderPermissionStatus { granted, denied, unavailable }
+
 class ReminderReconciliationResult {
   const ReminderReconciliationResult({
+    required this.permissionStatus,
     required this.scheduledCount,
     required this.canceledCount,
     required this.unchangedCount,
   });
 
+  final ReminderPermissionStatus permissionStatus;
   final int scheduledCount;
   final int canceledCount;
   final int unchangedCount;
@@ -112,6 +118,10 @@ class ReminderScheduler {
   final DeviceTimeZone Function() _deviceTimeZone;
   final DateTime Function() _now;
   bool _initialized = false;
+  ReminderPermissionStatus _permissionStatus =
+      ReminderPermissionStatus.unavailable;
+
+  ReminderPermissionStatus get permissionStatus => _permissionStatus;
 
   static List<ReminderTime> parseCadence(String cadence) {
     final trimmed = cadence.trim();
@@ -201,6 +211,16 @@ class ReminderScheduler {
     if (_initialized) return;
     tz.setLocalLocation(resolveTimeZone(_deviceTimeZone()));
     await _gateway.initialize(_platform);
+    try {
+      final granted = await _gateway.requestPermission(_platform);
+      _permissionStatus = granted == true
+          ? ReminderPermissionStatus.granted
+          : granted == false
+              ? ReminderPermissionStatus.denied
+              : ReminderPermissionStatus.unavailable;
+    } on Exception {
+      _permissionStatus = ReminderPermissionStatus.unavailable;
+    }
     _initialized = true;
   }
 
@@ -208,10 +228,19 @@ class ReminderScheduler {
       ReminderScheduleModel schedule) async {
     await initialize();
     final notifications = _notificationsFor(schedule);
+    if (_permissionStatus != ReminderPermissionStatus.granted) {
+      return ReminderReconciliationResult(
+        permissionStatus: _permissionStatus,
+        scheduledCount: 0,
+        canceledCount: 0,
+        unchangedCount: 0,
+      );
+    }
     for (final notification in notifications) {
       await _gateway.schedule(notification);
     }
     return ReminderReconciliationResult(
+      permissionStatus: _permissionStatus,
       scheduledCount: notifications.length,
       canceledCount: 0,
       unchangedCount: 0,
@@ -250,12 +279,15 @@ class ReminderScheduler {
     }
 
     var scheduledCount = 0;
-    for (final entry in desired.entries) {
-      if (matchedIds.contains(entry.key)) continue;
-      await _gateway.schedule(entry.value);
-      scheduledCount++;
+    if (_permissionStatus == ReminderPermissionStatus.granted) {
+      for (final entry in desired.entries) {
+        if (matchedIds.contains(entry.key)) continue;
+        await _gateway.schedule(entry.value);
+        scheduledCount++;
+      }
     }
     return ReminderReconciliationResult(
+      permissionStatus: _permissionStatus,
       scheduledCount: scheduledCount,
       canceledCount: canceledCount,
       unchangedCount: unchangedCount,
@@ -319,6 +351,7 @@ class _PluginReminderNotificationGateway
   static const _payloadVersion = 1;
 
   final FlutterLocalNotificationsPlugin _plugin;
+  bool? _darwinInitializationResult;
 
   @override
   Future<void> initialize(TargetPlatform platform) async {
@@ -328,9 +361,23 @@ class _PluginReminderNotificationGateway
       requestBadgePermission: true,
       requestSoundPermission: true,
     );
-    await _plugin.initialize(
+    _darwinInitializationResult = await _plugin.initialize(
       settings: const InitializationSettings(android: android, iOS: ios),
     );
+  }
+
+  @override
+  Future<bool?> requestPermission(TargetPlatform platform) async {
+    if (platform == TargetPlatform.android) {
+      return _plugin
+          .resolvePlatformSpecificImplementation<
+              AndroidFlutterLocalNotificationsPlugin>()
+          ?.requestNotificationsPermission();
+    }
+    if (platform == TargetPlatform.iOS) {
+      return _darwinInitializationResult;
+    }
+    return _darwinInitializationResult ?? true;
   }
 
   @override
