@@ -45,21 +45,98 @@ void main() {
       expect(summary['view'], isIn(['basic', 'clinical']));
     });
 
+    // The server is authoritative: the board is bound to the session before
+    // any action, the client never claims correctness, and every verdict
+    // below is computed by the server from its own board snapshot.
     test('games session round-trip persists', () async {
       final api = ApiService.instance;
       await _loginAs('919876543001');
+
+      const difficulty = 2;
+      final pack = (await api.listContentPacks())
+          .firstWhere((contentPack) => contentPack.itemCount >= 4);
       final sessionId = await api.startGame(
-          gameType: 'match_it', difficultyLevel: 1);
+        gameType: 'match_it',
+        difficultyLevel: difficulty,
+        contentPackId: pack.id,
+      );
       expect(sessionId, isNotEmpty);
+
+      // Binding the board is what makes scoring possible at all.
+      final board = await api.matchItBoard(
+        packId: pack.id,
+        difficultyLevel: difficulty,
+        sessionId: sessionId,
+      );
+      expect(board.cards, hasLength(board.pairCount * 2));
+
+      final cardsByItem = <String, List<String>>{};
+      for (final card in board.cards) {
+        cardsByItem.putIfAbsent(card.pairId, () => <String>[]).add(card.id);
+      }
+      final items = cardsByItem.keys.toList()..sort();
+      expect(items.length, greaterThanOrEqualTo(3));
+      for (final item in items) {
+        expect(cardsByItem[item], hasLength(2));
+      }
+      // Two cards of one item, then a deliberate mismatch between two others.
+      final played = <String>[
+        cardsByItem[items[0]]![0],
+        cardsByItem[items[0]]![1],
+        cardsByItem[items[1]]![0],
+        cardsByItem[items[2]]![0],
+      ];
+
+      final actionKeys = <String>[];
+      for (var index = 0; index < played.length; index++) {
+        final key = ApiService.actionIdempotencyKey(
+          sessionId: sessionId,
+          actionIndex: index,
+          actionId: played[index],
+        );
+        actionKeys.add(key);
+        await api.recordGameAction(
+          sessionId: sessionId,
+          actionType: 'flip_card',
+          actionData: {'card_id': played[index]},
+          responseTimeMs: 900,
+          idempotencyKey: key,
+        );
+      }
+
+      // A retried action (same key) must not be scored or counted twice.
       await api.recordGameAction(
         sessionId: sessionId,
         actionType: 'flip_card',
-        actionData: const {'card': 'a'},
-        isCorrect: true,
+        actionData: {'card_id': played.last},
         responseTimeMs: 900,
+        idempotencyKey: actionKeys.last,
       );
-      final summary = await api.completeGame(sessionId);
-      expect(summary.accuracyPct, 100.0);
+
+      final summary = await api.completeGame(
+        sessionId,
+        idempotencyKey: ApiService.completionIdempotencyKey(sessionId),
+        expectedActionIds: actionKeys,
+      );
+
+      // Scored by the server: one matched pair, one mismatch, 2 attempts.
+      expect(summary.sessionId, sessionId);
+      expect(summary.idempotentReplay, isFalse);
+      expect(summary.totalAttempts, 2);
+      expect(summary.correctCount, 1);
+      expect(summary.incorrectCount, 1);
+      expect(summary.accuracyPct, 50.0);
+      expect(summary.avgResponseTimeMs, 900.0);
+      expect(summary.recommendedLevel, isNotNull);
+      expect(summary.recommendedLevel, inInclusiveRange(1, 3));
+
+      // Persisted: readable back through the app's own history endpoint.
+      final history = await api.patientGameHistory(limit: 20);
+      final persisted =
+          history.firstWhere((item) => item.sessionId == sessionId);
+      expect(persisted.gameType, 'match_it');
+      expect(persisted.totalAttempts, 2);
+      expect(persisted.accuracyPct, 50.0);
     });
 
     test('companions chat returns a real reply', () async {
