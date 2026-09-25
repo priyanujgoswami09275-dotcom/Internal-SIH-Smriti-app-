@@ -172,6 +172,17 @@ class GameHistoryItem(BaseModel):
     completed_at: Optional[str]
 
 
+class PatientGameHistoryItem(BaseModel):
+    session_id: UUID
+    game_type: str
+    difficulty_level: int
+    score: int
+    total_attempts: int
+    accuracy_pct: Optional[float] = None
+    avg_response_time_ms: Optional[float] = None
+    completed_at: Optional[str]
+
+
 class ContentPackSummary(BaseModel):
     """Metadata for a content pack."""
     id: str
@@ -418,6 +429,55 @@ async def get_session(
         await ComplianceService.log_read_access(
             db, current_user.id, "game_session", session_id)
     return session_summary
+
+
+@router.get("/me/history", response_model=list[PatientGameHistoryItem])
+async def get_my_history(
+    limit: int = 10,
+    current_user: User = Depends(require_patient),
+    db: AsyncSession = Depends(get_db),
+):
+    """Retrieve the authenticated patient's own recent game sessions."""
+    from app.services.compliance_service import ComplianceService
+
+    patient = (
+        await db.execute(
+            select(PatientProfile).where(PatientProfile.user_id == current_user.id)
+        )
+    ).scalar_one_or_none()
+    if patient is None:
+        raise HTTPException(status_code=404, detail="No patient profile linked to this account")
+    await ensure_consent(db, patient.id, "game_data")
+    await ComplianceService.log_read_access(
+        db, current_user.id, "game_history", str(patient.id)
+    )
+    limit = min(max(limit, 1), 500)
+    sessions = (
+        await db.execute(
+            select(GameSession)
+            .where(
+                GameSession.patient_id == patient.id,
+                GameSession.completed_at.is_not(None),
+            )
+            .order_by(GameSession.completed_at.desc())
+            .limit(limit)
+        )
+    ).scalars().all()
+    return [
+        PatientGameHistoryItem(
+            session_id=session.id,
+            game_type=session.game_type.value,
+            difficulty_level=session.difficulty_level,
+            score=session.correct_count or 0,
+            total_attempts=session.attempts or 0,
+            accuracy_pct=session.accuracy_pct,
+            avg_response_time_ms=session.avg_response_time_ms,
+            completed_at=(
+                session.completed_at.isoformat() if session.completed_at else None
+            ),
+        )
+        for session in sessions
+    ]
 
 
 @router.get("/patients/{patient_id}/history", response_model=list[GameHistoryItem])
