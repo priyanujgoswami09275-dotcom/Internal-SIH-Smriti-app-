@@ -34,6 +34,8 @@ CLINICAL_SUMMARY_KEYS = {
     "games_played",
     "accuracy_pct",
     "avg_response_time_ms",
+    "metric_scope",
+    "game_metrics",
     "reminders_total",
     "reminders_acknowledged",
     "reminders_missed",
@@ -107,6 +109,7 @@ async def _create_basic_family_case(client, db_session):
             incorrect_count=5,
             avg_response_time_ms=2000.0,
             started_at=now - timedelta(hours=1),
+            completed_at=now - timedelta(minutes=50),
         )
     )
     db_session.add(
@@ -146,6 +149,8 @@ async def test_basic_summary_uses_allowlist_and_hides_clinical_data(
         "cognitive_baseline",
         "accuracy_pct",
         "avg_response_time_ms",
+        "metric_scope",
+        "game_metrics",
         "daily_trends",
         "accuracy_drop_pct",
     ):

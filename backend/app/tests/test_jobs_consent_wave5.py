@@ -35,6 +35,7 @@ def _session_for(patient):
         patient_id=patient.id, game_type=GameTypeEnum.MATCH_IT, difficulty_level=1,
         attempts=10, correct_count=9, incorrect_count=1, avg_response_time_ms=1000.0,
         started_at=datetime.now(timezone.utc) - timedelta(hours=1),
+        completed_at=datetime.now(timezone.utc),
     )
 
 

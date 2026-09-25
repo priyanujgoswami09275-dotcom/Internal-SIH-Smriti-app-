@@ -44,12 +44,14 @@ async def test_cognitive_drop_raises_deduped_alert(db_session):
     for i in range(3):
         db_session.add(GameSession(patient_id=patient.id, game_type=GameTypeEnum.MATCH_IT,
             difficulty_level=1, attempts=10, correct_count=9, incorrect_count=1,
-            avg_response_time_ms=1500.0, started_at=week_ago + timedelta(hours=i)))
+            avg_response_time_ms=1500.0, started_at=week_ago + timedelta(hours=i),
+            completed_at=week_ago + timedelta(hours=i, minutes=1)))
     # current week: 50% accuracy -> (90-50)/90 = 44% drop
     for i in range(3):
         db_session.add(GameSession(patient_id=patient.id, game_type=GameTypeEnum.MATCH_IT,
             difficulty_level=1, attempts=10, correct_count=5, incorrect_count=5,
-            avg_response_time_ms=3500.0, started_at=now - timedelta(hours=i + 1)))
+            avg_response_time_ms=3500.0, started_at=now - timedelta(hours=i + 1),
+            completed_at=now - timedelta(hours=i, minutes=59)))
     await db_session.flush()
 
     result = await AlertEngine.evaluate_patient(db_session, patient.id, now=now)
@@ -73,10 +75,12 @@ async def test_stable_accuracy_raises_no_cognitive_alert(db_session):
     for i in range(3):
         db_session.add(GameSession(patient_id=patient.id, game_type=GameTypeEnum.MATCH_IT,
             difficulty_level=1, attempts=10, correct_count=8, incorrect_count=2,
-            avg_response_time_ms=2000.0, started_at=now - timedelta(days=10, hours=i)))
+            avg_response_time_ms=2000.0, started_at=now - timedelta(days=10, hours=i),
+            completed_at=now - timedelta(days=10, hours=i) + timedelta(minutes=1)))
         db_session.add(GameSession(patient_id=patient.id, game_type=GameTypeEnum.MATCH_IT,
             difficulty_level=1, attempts=10, correct_count=8, incorrect_count=2,
-            avg_response_time_ms=2000.0, started_at=now - timedelta(hours=i + 1)))
+            avg_response_time_ms=2000.0, started_at=now - timedelta(hours=i + 1),
+            completed_at=now - timedelta(hours=i, minutes=59)))
     await db_session.flush()
 
     result = await AlertEngine.evaluate_patient(db_session, patient.id, now=now)
@@ -94,9 +98,10 @@ async def test_hourly_pass_covers_all_active_patients(db_session):
     db_session.add(ConsentRecord(
         patient_id=patient.id, scope="all", consent_type="patient_self",
         grantor_id=user.id))
+    now = datetime.now(timezone.utc)
     db_session.add(GameSession(patient_id=patient.id, game_type=GameTypeEnum.MATCH_IT,
         difficulty_level=1, attempts=10, correct_count=9, incorrect_count=1,
-        avg_response_time_ms=1000.0, started_at=datetime.now(timezone.utc)))
+        avg_response_time_ms=1000.0, started_at=now, completed_at=now))
     await db_session.flush()
     stats = await AlertEngine.run_hourly_pass(db_session)
     assert stats["patients_evaluated"] >= 1
