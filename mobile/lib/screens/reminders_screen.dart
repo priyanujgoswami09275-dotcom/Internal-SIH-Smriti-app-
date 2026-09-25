@@ -25,16 +25,23 @@ import '../widgets/monad/monad_pill_button.dart';
 
 class RemindersScreen extends StatefulWidget {
   final String patientId;
+  final MobileReminderService? reminderService;
+  final ApiService? apiService;
 
-  const RemindersScreen({super.key, required this.patientId});
+  const RemindersScreen({
+    super.key,
+    required this.patientId,
+    this.reminderService,
+    this.apiService,
+  });
 
   @override
   State<RemindersScreen> createState() => _RemindersScreenState();
 }
 
 class _RemindersScreenState extends State<RemindersScreen> {
-  final MobileReminderService _reminders = MobileReminderService();
-  final ApiService _api = ApiService.instance;
+  late final MobileReminderService _reminders;
+  late final ApiService _api;
   final VoiceAudioService _voice = VoiceAudioService();
   late final TtsCache _tts = TtsCache(
     synthesize: (text, language) =>
@@ -63,6 +70,8 @@ class _RemindersScreenState extends State<RemindersScreen> {
   @override
   void initState() {
     super.initState();
+    _reminders = widget.reminderService ?? MobileReminderService();
+    _api = widget.apiService ?? ApiService.instance;
     _ttsDoneSub = _voice.onReplyComplete.listen((_) {
       if (mounted) setState(() => _speakingScheduleId = null);
     });
@@ -87,9 +96,13 @@ class _RemindersScreenState extends State<RemindersScreen> {
       final schedules = await _reminders.getSchedules(widget.patientId);
 
       final events = await _reminders.getTodaysEvents(widget.patientId);
+      _justAcked.addAll(
+          await _reminders.getLocalAcknowledgedScheduleIds(widget.patientId));
       final open = <String, ReminderEventModel>{};
       for (final e in events) {
-        if (e.status == ReminderStatus.pending ||
+        if (e.status == ReminderStatus.acknowledged) {
+          _justAcked.add(e.scheduleId);
+        } else if (e.status == ReminderStatus.pending ||
             e.status == ReminderStatus.escalated) {
           final existing = open[e.scheduleId];
           if (existing == null || e.scheduledAt.isAfter(existing.scheduledAt)) {
@@ -170,22 +183,32 @@ class _RemindersScreenState extends State<RemindersScreen> {
       await _voice.stopPlayback();
       _speakingScheduleId = null;
     }
-    final reachedServer = await _reminders.acknowledgeReminder(
+    final result = await _reminders.acknowledgeReminder(
       patientId: widget.patientId,
       eventId: openEvent.id,
       method: 'button',
     );
     if (!mounted) return;
-    setState(() {
-      _justAcked.add(schedule.id);
-      _openEventBySchedule.remove(schedule.id);
-    });
+    final failed =
+        result.outcome == ReminderAcknowledgmentOutcome.failedToRecord;
+    if (!failed) {
+      setState(() {
+        _justAcked.add(schedule.id);
+        _openEventBySchedule.remove(schedule.id);
+      });
+    }
+    final label = _typeLabel(context, schedule.reminderType);
+    final message = switch (result.outcome) {
+      ReminderAcknowledgmentOutcome.sentToServer =>
+        '$label done — saved to your care record.',
+      ReminderAcknowledgmentOutcome.queuedOffline =>
+        '$label done on this phone — waiting to sync.',
+      ReminderAcknowledgmentOutcome.failedToRecord =>
+        '$label could not be saved. Please try again.',
+    };
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text(
-          '${schedule.reminderType.name.toUpperCase()} done — well done! '
-          '${reachedServer ? '' : '(offline — will sync)'}',
-        ),
+        content: Text(message),
         duration: const Duration(seconds: 3),
       ),
     );
