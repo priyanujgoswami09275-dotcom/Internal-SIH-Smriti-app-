@@ -142,7 +142,7 @@ class MobileReminderService {
       deliveredAt: deliveredAt,
     );
     if (event == null) {
-      return ReminderAcknowledgmentResult(
+      return const ReminderAcknowledgmentResult(
         outcome: ReminderAcknowledgmentOutcome.failedToRecord,
         acknowledgedAt: null,
       );
@@ -161,7 +161,7 @@ class MobileReminderService {
       ));
     } on Object catch (error) {
       debugPrint('Reminder acknowledgment could not be stored locally: $error');
-      return ReminderAcknowledgmentResult(
+      return const ReminderAcknowledgmentResult(
         outcome: ReminderAcknowledgmentOutcome.failedToRecord,
         acknowledgedAt: null,
       );
