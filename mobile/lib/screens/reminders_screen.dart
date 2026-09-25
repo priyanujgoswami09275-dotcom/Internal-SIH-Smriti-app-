@@ -96,8 +96,6 @@ class _RemindersScreenState extends State<RemindersScreen> {
       final schedules = await _reminders.getSchedules(widget.patientId);
 
       final events = await _reminders.getTodaysEvents(widget.patientId);
-      _justAcked.addAll(
-          await _reminders.getLocalAcknowledgedScheduleIds(widget.patientId));
       final open = <String, ReminderEventModel>{};
       for (final e in events) {
         if (e.status == ReminderStatus.acknowledged) {
@@ -186,6 +184,9 @@ class _RemindersScreenState extends State<RemindersScreen> {
     final result = await _reminders.acknowledgeReminder(
       patientId: widget.patientId,
       eventId: openEvent.id,
+      scheduleId: openEvent.scheduleId,
+      scheduledAt: openEvent.scheduledAt,
+      deliveredAt: openEvent.deliveredAt,
       method: 'button',
     );
     if (!mounted) return;

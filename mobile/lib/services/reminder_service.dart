@@ -50,7 +50,12 @@ class MobileReminderService {
 
   Future<List<ReminderScheduleModel>> getSchedules(String patientId) async {
     final schedules = await _fetchSchedules(patientId);
-    lastScheduleReconciliation = await scheduler.reconcile(schedules);
+    try {
+      lastScheduleReconciliation = await scheduler.reconcile(schedules);
+    } on Object catch (error) {
+      debugPrint('Reminder schedule reconciliation unavailable: $error');
+      lastScheduleReconciliation = _unavailableReconciliation();
+    }
     return schedules;
   }
 
@@ -60,10 +65,19 @@ class MobileReminderService {
       final schedules = await _fetchSchedules(patientId);
       if (generation != _startupGeneration) return;
       lastScheduleReconciliation = await scheduler.reconcile(schedules);
-    } on Exception catch (error) {
+    } on Object catch (error) {
       debugPrint('Reminder startup reconciliation failed: $error');
+      lastScheduleReconciliation = _unavailableReconciliation();
     }
   }
+
+  ReminderReconciliationResult _unavailableReconciliation() =>
+      const ReminderReconciliationResult(
+        permissionStatus: ReminderPermissionStatus.unavailable,
+        scheduledCount: 0,
+        canceledCount: 0,
+        unchangedCount: 0,
+      );
 
   Future<void> stop() async {
     _startupGeneration++;
@@ -84,15 +98,7 @@ class MobileReminderService {
   /// screen still renders the schedule cards.
   Future<List<ReminderEventModel>> getTodaysEvents(String patientId) async {
     try {
-      final events = await apiService.reminderEvents(patientId);
-      for (final event in events) {
-        try {
-          await database.upsertReminderEvent(event);
-        } on Exception catch (error) {
-          debugPrint('Reminder event could not be stored locally: $error');
-        }
-      }
-      return events;
+      return await apiService.reminderEvents(patientId);
     } on Exception catch (error) {
       debugPrint('Reminder events fetch failed (offline?): $error');
       return const [];
@@ -124,8 +130,17 @@ class MobileReminderService {
     required String patientId,
     required String eventId,
     required String method,
+    String? scheduleId,
+    DateTime? scheduledAt,
+    DateTime? deliveredAt,
   }) async {
-    final event = await _localEvent(eventId);
+    final event = await _localEvent(
+      eventId,
+      patientId: patientId,
+      scheduleId: scheduleId,
+      scheduledAt: scheduledAt,
+      deliveredAt: deliveredAt,
+    );
     if (event == null) {
       return ReminderAcknowledgmentResult(
         outcome: ReminderAcknowledgmentOutcome.failedToRecord,
@@ -192,11 +207,29 @@ class MobileReminderService {
     }
   }
 
-  Future<ReminderEventModel?> _localEvent(String eventId) async {
+  Future<ReminderEventModel?> _localEvent(
+    String eventId, {
+    required String patientId,
+    String? scheduleId,
+    DateTime? scheduledAt,
+    DateTime? deliveredAt,
+  }) async {
     final row = await (database.select(database.reminderEvents)
           ..where((table) => table.id.equals(eventId)))
         .getSingleOrNull();
-    if (row == null) return null;
+    if (row == null) {
+      if (scheduleId == null || scheduleId.isEmpty || scheduledAt == null) {
+        return null;
+      }
+      return ReminderEventModel(
+        id: eventId,
+        scheduleId: scheduleId,
+        patientId: patientId,
+        scheduledAt: scheduledAt,
+        deliveredAt: deliveredAt,
+        status: ReminderStatus.pending,
+      );
+    }
     return ReminderEventModel(
       id: row.id,
       scheduleId: row.scheduleId,

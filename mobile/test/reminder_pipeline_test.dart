@@ -82,10 +82,21 @@ class _FakeNotificationGateway implements ReminderNotificationGateway {
   }
 }
 
+class _ThrowingNotificationGateway extends _FakeNotificationGateway {
+  @override
+  Future<void> initialize(TargetPlatform platform) async {
+    throw StateError('notifications plugin is not registered');
+  }
+}
+
 class _FakeReminderApi extends ApiService {
-  _FakeReminderApi(this.schedules) : super(baseUrl: 'http://reminder.test');
+  _FakeReminderApi(
+    this.schedules, {
+    this.events = const [],
+  }) : super(baseUrl: 'http://reminder.test');
 
   List<ReminderScheduleModel> schedules;
+  List<ReminderEventModel> events;
   bool acknowledgeResult = true;
   Object? acknowledgeError;
   int acknowledgeCalls = 0;
@@ -94,6 +105,10 @@ class _FakeReminderApi extends ApiService {
   Future<List<ReminderScheduleModel>> reminderSchedules(
           String patientId) async =>
       schedules;
+
+  @override
+  Future<List<ReminderEventModel>> reminderEvents(String patientId) async =>
+      events;
 
   @override
   Future<bool> acknowledgeReminder(
@@ -161,6 +176,9 @@ class _ScreenReminderService extends MobileReminderService {
     required String patientId,
     required String eventId,
     required String method,
+    String? scheduleId,
+    DateTime? scheduledAt,
+    DateTime? deliveredAt,
   }) async =>
       ReminderAcknowledgmentResult(
         outcome: outcome,
@@ -307,6 +325,29 @@ void main() {
       expect(gateway.scheduledIds, isEmpty);
     });
 
+    test('plugin unavailability keeps fetched schedules visible and honest',
+        () async {
+      final scheduler = ReminderScheduler(
+        gateway: _ThrowingNotificationGateway(),
+        platform: TargetPlatform.android,
+        deviceTimeZone: () =>
+            const DeviceTimeZone('IST', Duration(hours: 5, minutes: 30)),
+      );
+      final service = MobileReminderService(
+        apiService: _FakeReminderApi([
+          _schedule(id: 'still-visible', cadence: 'daily@08:00'),
+        ]),
+        scheduler: scheduler,
+      );
+
+      expect(await service.getSchedules('patient-1'), hasLength(1));
+      expect(
+        service.lastScheduleReconciliation?.permissionStatus,
+        ReminderPermissionStatus.unavailable,
+      );
+      await expectLater(service.reconcileOnStartup('patient-1'), completes);
+    });
+
     test('every successful fetch reconciles and auth stop clears notifications',
         () async {
       final gateway = _FakeNotificationGateway();
@@ -420,10 +461,26 @@ void main() {
   });
 
   group('reminder acknowledgment durability and honesty', () {
+    test('event fetching does not require an eager local database write',
+        () async {
+      final db = _ToggleFailingDatabase()..failReminderWrites = true;
+      addTearDown(db.close);
+      final event = _event();
+      final service = MobileReminderService(
+        apiService: _FakeReminderApi(const [], events: [event]),
+        sync: OfflineSyncService(
+          db: db,
+          api: _FakeReminderApi(const [], events: [event]),
+        ),
+      );
+
+      expect(await service.getTodaysEvents('patient-1'), [event]);
+    });
+
     test('server-confirmed acknowledgment is distinct and durable', () async {
       final db = AppDatabase.forTesting(NativeDatabase.memory());
       addTearDown(db.close);
-      await db.upsertReminderEvent(_event());
+      final event = _event();
       final api = _FakeReminderApi(const []);
       final sync = OfflineSyncService(db: db, api: api)
         ..setActiveAccount('user-a');
@@ -431,7 +488,10 @@ void main() {
 
       final result = await service.acknowledgeReminder(
         patientId: 'patient-1',
-        eventId: 'event-1',
+        eventId: event.id,
+        scheduleId: event.scheduleId,
+        scheduledAt: event.scheduledAt,
+        deliveredAt: event.deliveredAt,
         method: 'button',
       );
 
@@ -448,7 +508,7 @@ void main() {
         () async {
       final db = AppDatabase.forTesting(NativeDatabase.memory());
       addTearDown(db.close);
-      await db.upsertReminderEvent(_event());
+      final event = _event();
       final api = _FakeReminderApi(const [])
         ..acknowledgeError = ApiException('Network error: offline');
       final sync = OfflineSyncService(db: db, api: api)
@@ -457,7 +517,10 @@ void main() {
 
       final result = await service.acknowledgeReminder(
         patientId: 'patient-1',
-        eventId: 'event-1',
+        eventId: event.id,
+        scheduleId: event.scheduleId,
+        scheduledAt: event.scheduledAt,
+        deliveredAt: event.deliveredAt,
         method: 'button',
       );
 
@@ -477,10 +540,9 @@ void main() {
     });
 
     test('failed local record is distinct and never claims delivery', () async {
-      final db = _ToggleFailingDatabase();
+      final db = _ToggleFailingDatabase()..failReminderWrites = true;
       addTearDown(db.close);
-      await db.upsertReminderEvent(_event());
-      db.failReminderWrites = true;
+      final event = _event();
       final api = _FakeReminderApi(const [])
         ..acknowledgeError = ApiException('Network error: offline');
       final sync = OfflineSyncService(db: db, api: api)
@@ -489,7 +551,10 @@ void main() {
 
       final result = await service.acknowledgeReminder(
         patientId: 'patient-1',
-        eventId: 'event-1',
+        eventId: event.id,
+        scheduleId: event.scheduleId,
+        scheduledAt: event.scheduledAt,
+        deliveredAt: event.deliveredAt,
         method: 'button',
       );
 
