@@ -33,7 +33,7 @@ CADENCE_GRAMMAR = (
     "legacy HH:MM AM|PM Daily is accepted."
 )
 CADENCE_ERROR = f"Invalid cadence. {CADENCE_GRAMMAR}"
-_CADENCE_PREFIX = re.compile(r"^(daily|everyday|every\s+day)\s*(@|at|:)?\s*", re.IGNORECASE)
+_CADENCE_PREFIX = re.compile(r"^(?:(?:daily|everyday|every\s+day)\s*)?(?:@|at|:)?\s*", re.IGNORECASE)
 _TIME_TOKEN = re.compile(
     r"^(?P<hour>\d{1,2}):(?P<minute>\d{2})"
     r"(?:\s*(?P<meridiem>am|pm))?"
