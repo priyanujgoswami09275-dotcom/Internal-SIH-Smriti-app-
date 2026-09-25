@@ -84,8 +84,10 @@ def _extract_pdf(raw: bytes) -> str:
     text = "\n\n".join(p.strip() for p in pages if p and p.strip())
     if not text:
         raise ValueError(
-            "No selectable text found in this PDF — it may be a scanned image. "
-            "Paste the text instead, or upload a text-based PDF."
+            "This PDF has no selectable text and may be a scanned or image-only "
+            "document. OCR is not available in this build. Paste the text into a "
+            ".txt or .md file, or upload a PDF with a selectable text layer, then "
+            "retry."
         )
     return enforce_extracted_text_limit(text)
 

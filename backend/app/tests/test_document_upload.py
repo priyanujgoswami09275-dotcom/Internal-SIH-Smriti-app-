@@ -48,22 +48,35 @@ async def test_upload_text_file_ingests_and_answers(client):
 
 
 @pytest.mark.asyncio
-async def test_upload_real_pdf(client):
-    # Minimal one-page PDF built with pypdf in-memory.
+async def test_upload_pdf_without_selectable_text_explains_ocr_is_unavailable(client):
     from pypdf import PdfWriter
-    w = PdfWriter()
-    w.add_blank_page(width=612, height=792)
-    # pypdf can't add text natively; use extraction on the blank -> "no text"
-    # is exactly the scanned-PDF path we must handle with a 400.
-    buf = io.BytesIO()
-    w.write(buf)
-    h, pid = await _clinician_with_patient(client)
-    r = await client.post(f"{REPORTS}/documents/upload?patient_id={pid}",
-        headers=h,
-        files={"file": ("scan.pdf", io.BytesIO(buf.getvalue()), "application/pdf")},
-        data={"doc_type": "report"})
-    assert r.status_code == 400
-    assert "selectable text" in r.json()["detail"] or "No selectable" in r.json()["detail"]
+
+    writer = PdfWriter()
+    writer.add_blank_page(width=612, height=792)
+    buffer = io.BytesIO()
+    writer.write(buffer)
+
+    headers, patient_id = await _clinician_with_patient(client)
+    response = await client.post(
+        f"{REPORTS}/documents/upload?patient_id={patient_id}",
+        headers=headers,
+        files={
+            "file": (
+                "scan.pdf",
+                io.BytesIO(buffer.getvalue()),
+                "application/pdf",
+            )
+        },
+        data={"doc_type": "report"},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == (
+        "This PDF has no selectable text and may be a scanned or image-only "
+        "document. OCR is not available in this build. Paste the text into a "
+        ".txt or .md file, or upload a PDF with a selectable text layer, then "
+        "retry."
+    )
 
 
 @pytest.mark.asyncio
