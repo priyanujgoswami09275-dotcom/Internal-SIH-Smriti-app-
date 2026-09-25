@@ -124,7 +124,7 @@ async def test_patient_history_returns_only_owned_recent_sessions(client, db_ses
             "total_attempts": 8,
             "accuracy_pct": 87.5,
             "avg_response_time_ms": 1250.0,
-            "completed_at": "2026-09-25T10:30:00",
+            "completed_at": "2026-09-25T10:30:00Z",
         }
     ]
 
