@@ -287,9 +287,19 @@ class ComplianceService:
 
     @staticmethod
     async def export_patient_data(db: AsyncSession, patient_id: uuid.UUID) -> Dict[str, Any]:
-        """DPDP data-portability dump: profile, consents, games, reminders."""
+        """DPDP data-portability dump of the patient's durable stored records."""
         from app.models.all_models import (
-            PatientProfile, GameSession, ReminderEvent, ReminderSchedule, RiskScreening,
+            AlertFlag,
+            CaregiverPatientLink,
+            GameSession,
+            MedicalDocument,
+            PatientProfile,
+            ReminderEvent,
+            ReminderSchedule,
+            RiskScreening,
+            SymptomLog,
+            SyncQueue,
+            UserDeviceToken,
         )
 
         patient = (
@@ -310,6 +320,34 @@ class ComplianceService:
         events = (
             await db.execute(select(ReminderEvent).where(ReminderEvent.patient_id == patient_id))
         ).scalars().all()
+        symptom_logs = (
+            await db.execute(select(SymptomLog).where(SymptomLog.patient_id == patient_id))
+        ).scalars().all()
+        documents = (
+            await db.execute(
+                select(MedicalDocument).where(MedicalDocument.patient_id == patient_id)
+            )
+        ).scalars().all()
+        alerts = (
+            await db.execute(select(AlertFlag).where(AlertFlag.patient_id == patient_id))
+        ).scalars().all()
+        caregiver_links = (
+            await db.execute(
+                select(CaregiverPatientLink).where(
+                    CaregiverPatientLink.patient_id == patient_id
+                )
+            )
+        ).scalars().all()
+        sync_rows = (
+            await db.execute(select(SyncQueue).where(SyncQueue.patient_id == patient_id))
+        ).scalars().all()
+        device_tokens = []
+        if patient.user_id is not None:
+            device_tokens = (
+                await db.execute(
+                    select(UserDeviceToken).where(UserDeviceToken.user_id == patient.user_id)
+                )
+            ).scalars().all()
 
         screening = None
         if await ComplianceService.verify_consent(db, patient_id, "health_data"):
@@ -319,6 +357,7 @@ class ComplianceService:
                 )
             )).scalar_one_or_none()
 
+        encryption = EncryptionService()
         return {
             "risk_screening": {
                 "probability": screening.probability,
@@ -379,4 +418,151 @@ class ComplianceService:
                 }
                 for e in events
             ],
+            "symptom_logs": [
+                {
+                    "id": str(log.id),
+                    "patient_id": str(log.patient_id),
+                    "entered_by": str(log.entered_by),
+                    "entry_source": (
+                        log.entry_source.value
+                        if hasattr(log.entry_source, "value")
+                        else str(log.entry_source)
+                    ),
+                    "notes": encryption.decrypt(log.notes) if log.notes else "",
+                    "severity": log.severity,
+                    "timestamp": log.timestamp.isoformat() if log.timestamp else None,
+                    "created_at": log.created_at.isoformat() if log.created_at else None,
+                }
+                for log in symptom_logs
+            ],
+            "medical_documents": [
+                {
+                    "id": str(document.id),
+                    "patient_id": str(document.patient_id),
+                    "uploaded_by": str(document.uploaded_by),
+                    "title": document.title,
+                    "file_ref": document.file_ref,
+                    "doc_type": (
+                        document.doc_type.value
+                        if hasattr(document.doc_type, "value")
+                        else str(document.doc_type)
+                    ),
+                    "embedding_status": (
+                        document.embedding_status.value
+                        if hasattr(document.embedding_status, "value")
+                        else str(document.embedding_status)
+                    ),
+                    "embedding_provider": document.embedding_provider,
+                    "embedding_model": document.embedding_model,
+                    "embedding_dimensions": document.embedding_dimensions,
+                    "extracted_text": (
+                        encryption.decrypt(document.extracted_text)
+                        if document.extracted_text
+                        else None
+                    ),
+                    "created_at": (
+                        document.created_at.isoformat()
+                        if document.created_at
+                        else None
+                    ),
+                }
+                for document in documents
+            ],
+            "alert_flags": [
+                {
+                    "id": str(alert.id),
+                    "patient_id": str(alert.patient_id),
+                    "trigger_type": (
+                        alert.trigger_type.value
+                        if hasattr(alert.trigger_type, "value")
+                        else str(alert.trigger_type)
+                    ),
+                    "threshold_detail": alert.threshold_detail,
+                    "severity": (
+                        alert.severity.value
+                        if hasattr(alert.severity, "value")
+                        else str(alert.severity)
+                    ),
+                    "alert_summary": alert.alert_summary,
+                    "created_at": alert.created_at.isoformat() if alert.created_at else None,
+                    "acknowledged_by": (
+                        str(alert.acknowledged_by) if alert.acknowledged_by else None
+                    ),
+                    "acknowledged_at": (
+                        alert.acknowledged_at.isoformat()
+                        if alert.acknowledged_at
+                        else None
+                    ),
+                }
+                for alert in alerts
+            ],
+            "caregiver_links": [
+                {
+                    "id": str(link.id),
+                    "caregiver_id": str(link.caregiver_id),
+                    "patient_id": str(link.patient_id),
+                    "relationship_type": (
+                        link.relationship_type.value
+                        if hasattr(link.relationship_type, "value")
+                        else str(link.relationship_type)
+                    ),
+                    "permission_tier": (
+                        link.permission_tier.value
+                        if hasattr(link.permission_tier, "value")
+                        else str(link.permission_tier)
+                    ),
+                    "consent_granted_at": (
+                        link.consent_granted_at.isoformat()
+                        if link.consent_granted_at
+                        else None
+                    ),
+                    "is_active": link.is_active,
+                    "created_at": link.created_at.isoformat() if link.created_at else None,
+                }
+                for link in caregiver_links
+            ],
+            "sync_queue": [
+                {
+                    "id": str(row.id),
+                    "patient_id": str(row.patient_id),
+                    "resource_type": (
+                        row.resource_type.value
+                        if hasattr(row.resource_type, "value")
+                        else str(row.resource_type)
+                    ),
+                    "operation": (
+                        row.operation.value
+                        if hasattr(row.operation, "value")
+                        else str(row.operation)
+                    ),
+                    "resource_id": str(row.resource_id),
+                    "idempotency_key": row.idempotency_key,
+                    "payload": row.payload,
+                    "created_at": row.created_at.isoformat() if row.created_at else None,
+                    "synced_at": row.synced_at.isoformat() if row.synced_at else None,
+                    "retry_count": row.retry_count,
+                    "last_error": row.last_error,
+                }
+                for row in sync_rows
+            ],
+            "device_tokens": [
+                {
+                    "id": str(token.id),
+                    "user_id": str(token.user_id),
+                    "fcm_token": token.fcm_token,
+                    "phone": token.phone,
+                    "platform": token.platform,
+                    "updated_at": token.updated_at.isoformat() if token.updated_at else None,
+                }
+                for token in device_tokens
+            ],
+            "voice_companion_history": {
+                "available": False,
+                "durable": False,
+                "turns": [],
+                "message": (
+                    "Conversation history is process/Redis-backed and is not durably "
+                    "queryable from patient storage."
+                ),
+            },
         }
