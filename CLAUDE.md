@@ -5,41 +5,40 @@
 
 ---
 
-## Implementation Status (Reconciled 2026-09-06)
+## Implementation Status (Reconciled 2026-09-25)
 
-The actual repo state is now the phase docs' own source of truth — all 12 roadmap
-phases are implemented and tested. Tracker/detail docs that were written *before*
-Phases 11–12 landed (`PHASE_1_STATUS.md`, `DEPLOYMENT.md`,
-`docs/superpowers/plans/2026-09-05-remaining-roadmap-to-mvp.md`) are stale on
-those points; treat the code and this file as authoritative.
+The code and this file are authoritative when older tracker or deployment notes
+disagree. All 12 roadmap phases have implementation coverage; test-result counts
+are intentionally not duplicated here because they change as suites grow.
 
-| Phase | Scope | Status | Evidence |
+| Phase / area | Scope | Status | Evidence |
 |---|---|---|---|
-| 1–7 | Backend scaffold, 15 data models, auth/RBAC, games engine, reminders + escalation, dashboard analytics, sync & patient endpoints | ✅ Implemented + tested | Migrations `0001_initial_schema` → `0003_refresh_rotation`; all models/services/routes; gate tests |
-| 8 | Real Bhashini (ULCA) speech provider | ✅ Implemented | `language_service.py`; config-driven (`auto\|bhashini\|mock`); live call requires API keys |
-| 9 | Voice companion (LLM) | ✅ Implemented | `llm_client.py` (OpenRouter default / Anthropic alt), DB-versioned prompts, auth + config endpoints, canned-reply fallback |
-| 10 | RAG pipeline for medical documents | ✅ Implemented | chunking + stable embeddings + cited answers; PDF/text file upload; extractive fallback without LLM keys |
-| 11 | Compliance enforcement | ✅ Implemented + tested | consent-scope gates, no-implicit-access, read-audit, Fernet at-rest encryption, data export, retention/deletion jobs |
-| 12 | Production hardening | ✅ Implemented | rate limiting (Redis+fallback), CORS whitelist, placeholder-secret refusal, CI, E2E smoke vs real Postgres |
-| — | Flutter UIs wired to backend (mobile + caregiver dashboard) | ✅ Compiled in CI | `flutter pub get` + `build_runner` + `flutter analyze` green in `.github/workflows/ci.yml` |
-| — | Offline-first mobile layer (drift + sync outbox + local reminders) | ✅ Implemented | `app_database.g.dart` committed; screens use offline fallbacks; local notifications scheduled |
-| — | Monad design system across all three surfaces | ✅ Implemented | `DESIGN.md` (token spec) → `{mobile,dashboard}/lib/theme/monad_theme.dart`; Newsreader + JetBrainsMono bundled; `backend/static/` landing page restyled |
-| — | Client-side adaptive-difficulty + telemetry engine | ✅ Implemented + tested | `mobile/lib/games/game_analytics_engine.dart` (pure Dart, no Flutter imports) + `mobile/test/game_analytics_engine_test.dart` |
+| 1–7 | Backend scaffold, data models, auth/RBAC, games, reminders + escalation, dashboard analytics, sync, and patient endpoints | Implemented + tested | Migrations `0001_initial_schema` through `0014_reminder_idempotency`; models/services/routes; access-gate tests |
+| 8 | Pluggable ASR / NMT / TTS providers | Implemented + contract-tested | `language_service.py`; `auto` selects Sarvam → AI4Bharat → Bhashini → mock. The shipped example configuration has no provider credentials, so its default is deterministic simulated speech, not live speech. |
+| 9 | Voice companion (LLM) | Implemented | `llm_client.py` (OpenRouter default / Anthropic alternative), DB-versioned prompts, auth + config endpoints, canned-reply fallback |
+| 10 | RAG pipeline for medical documents | Implemented | Text PDF/text upload, chunking, embedding provenance checks, cited answers, encrypted source/chunk text, per-patient reindex command, and extractive fallback without an LLM key. Image-only PDFs are rejected because this build has no OCR. |
+| 11 | Compliance enforcement | Implemented + tested | Consent-scope gates, no-implicit-access, broad read/write audit coverage, Fernet field encryption, data export, retention/deletion jobs. Audit rows are append-oriented and retained, but database-level immutability is not enforced. |
+| 12 | Production hardening | Implemented | Rate limiting (Redis + fallback), CORS allowlist, placeholder-secret refusal, CI, and E2E smoke against a clean PostgreSQL 16 service |
+| — | Flutter surfaces | Implemented + tested | Mobile and multi-file caregiver dashboard are exercised in CI; dashboard release builds require an explicit API URL |
+| — | Offline-capable mobile layer | Implemented | Bundled/generated offline boards where available, cached level config and public Odd-One-Out boards, a drift-backed replay outbox, and local reminder notifications. In-progress game rounds are memory-only and are not resumed after app death. |
+| — | Monad design system | Implemented | `DESIGN.md` → `{mobile,dashboard}/lib/theme/monad_theme.dart`; Newsreader + JetBrains Mono bundled; `backend/static/` landing page restyled |
+| — | Client game-metrics calculator | Implemented + tested | `mobile/lib/games/game_analytics_engine.dart` computes local metrics/hints. It does not choose the next difficulty; the server's rule-based `recommended_level` is applied after an online completion. |
 
-Tests: **130 pytest** pass + 1 skipped (`cd backend && python3 -m pytest app/tests tests -q`,
-SQLite, no DB needed) across the API, security gates (phase0/11/12), reminder
-engine, retention, sync consumer, RAG, document upload, LLM client, embedding
-provider, notification + voice companion. `test_document_upload.py::test_upload_real_pdf`
-needs `pypdf` installed (in `requirements.txt`; it is skipped-by-failure in a bare
-env). Plus `python3 test_phase2_services.py` (standalone), `python3 smoke_e2e.py`
-(live end-to-end walk against a real Postgres — auth → profile → game → reminders
-→ dashboard → sync → companion → RAG → consent), and on the Flutter side
-`flutter test` (model parsing + analytics engine) plus
-`mobile/integration_test/app_flow_test.dart` (on-device, needs an emulator and a
-backend at `10.0.2.2:8000`; on physical devices use
-`adb -s SERIAL reverse tcp:8000 tcp:8000` plus
-`--dart-define=API_BASE_URL=http://localhost:8000` — see DEPLOYMENT.md
-"Run — September 30 demo").
+Canonical verification commands (run from the repository root unless a command
+says otherwise):
+
+```sh
+cd backend && python3 -m pytest app/tests tests -q
+cd backend && python3 test_phase2_services.py
+cd mobile && flutter test
+cd dashboard && flutter test && flutter test --platform chrome
+```
+
+`cd backend && python3 smoke_e2e.py` is the live PostgreSQL-backed smoke walk.
+`mobile/integration_test/app_flow_test.dart` remains an on-device check and needs
+an emulator/device plus a backend at `10.0.2.2:8000`; for a physical device use
+`adb -s SERIAL reverse tcp:8000 tcp:8000` and
+`--dart-define=API_BASE_URL=http://localhost:8000` (see `DEPLOYMENT.md`).
 
 ---
 
@@ -47,11 +46,11 @@ backend at `10.0.2.2:8000`; on physical devices use
 
 Three surfaces share one FastAPI backend (`/api/v1` prefix, `GET /health` unprefixed):
 
-- **`mobile/`** — Flutter patient app (Android/iOS effective; `dart:io` + drift prevent web builds). Offline-first: drift SQLite outbox, replay sync on reconnect, local reminder notifications.
-- **`dashboard/`** — Flutter Web caregiver dashboard. Single-file (`lib/main.dart`): JWT login + auto-refresh, patient roster dropdown, 7-day metric tiles (cognitive accuracy, reminder compliance, response time), 14-day accuracy + response-time trend sparklines (pure `CustomPaint`, no chart dependency; clinical tier), active-alerts acknowledge, clinical-flags insight, reminder-schedule editing (list/add/delete, feeds the generation engine), admin audit-trail viewer (`GET /compliance/audit-logs`), and a basic-tier explanatory banner. Responsive.
-- **`backend/`** — FastAPI + SQLAlchemy 2.0 + Alembic + PostgreSQL (pgvector image in compose). Routes: `auth`, `patients`, `games`, `reminders`, `compliance`, `dashboard`, `language`, `companion` (voice_companion), `reports` (RAG + weekly summary), `sync`.
+- **`mobile/`** — Flutter patient app (Android/iOS). It can start Match It, Routine Sequencing, and Number Recall from bundled offline data; Odd-One-Out requires a previously cached public board. Completed offline sessions/actions and reminder acknowledgments enter a durable drift SQLite outbox. `OfflineSyncService` polls every 30 seconds, scopes queued items to the active account, replays idempotently, and retains failed items for retry. Logout stops replay but does not delete another account's pending rows. Level configuration and public Odd-One-Out board snapshots use `SharedPreferences`; synthesized reminder audio uses a temporary text+language keyed cache. **An in-progress round is not checkpointed: process/app death starts a new board or cached round rather than resuming the exact board.**
+- **`dashboard/`** — Flutter Web caregiver dashboard split across `lib/main.dart`, `lib/config.dart`, theme code, and focused widgets. It has JWT login + serialized refresh, roster selection, role/permission-driven metric/trend/risk/document controls, an admin-only audit control with 50-row offset pagination, and a consent preflight before clinical screening or document upload. The server view remains authoritative. A release build refuses to configure without `--dart-define=API_BASE_URL=<absolute URL>`; development defaults to `http://localhost:8000`.
+- **`backend/`** — FastAPI + SQLAlchemy 2.0 + Alembic + PostgreSQL. Routes: `auth`, `patients`, `games`, `reminders`, `compliance`, `dashboard`, `language`, `voice_companion`, `reports` (RAG + weekly summary), and `sync`. RAG vectors currently use a portable JSON column; pgvector is available in the compose image but is not the active vector index.
 
-**Access model** (`app/deps.py`): JWT bearer → user; `ensure_patient_access` (owner, active `CaregiverPatientLink`, or staff roles); `ensure_consent` per purpose scope (`game_data`/`health_data`/`voice_companion`); `get_permission_tier` → `basic`/`clinical` (family caregivers get `basic`; clinical detail like RAG docs gated by `ensure_clinical_access`).
+**Access model** (`app/deps.py`): clients call the API with JWT bearer tokens; they have no Supabase/Firebase client SDK and no direct table access. The app layer resolves the user, then enforces `ensure_patient_access` (owner, active `CaregiverPatientLink`, or staff role), `ensure_consent` for `game_data`/`health_data`/`voice_companion`, and `get_permission_tier` → `basic`/`clinical`; clinical routes additionally call `ensure_clinical_access`. Enabling direct client database access later would require a new threat model plus publishable-only credentials, per-table/per-operation RLS, authenticated JWT claim propagation, tenant/patient/consent scoping, revocation/session handling, migration and integration tests, and proof that no service-role secret can reach a client. None of that exists in the current build.
 
 ---
 
@@ -61,10 +60,16 @@ Three surfaces share one FastAPI backend (`/api/v1` prefix, `GET /health` unpref
 from the API lifespan and also runnable standalone, each pass exception-isolated
 per patient:
 
-- **Reminder generation** (60s) — materializes PENDING `ReminderEvent`s from schedule cadences (idempotent).
-- **Escalation scan** (60s) — PENDING→ESCALATED (10-min reprompt via notification service)→MISSED; 3 missed same-type in 7 days → AlertFlag + fan-out to linked family/ASHA.
-- **Sync consume** (300s) — materializes the offline outbox (`offline_symptom` → encrypted `SymptomLog`).
+- **Reminder generation** (60s) — materializes idempotent PENDING `ReminderEvent`s from validated daily cadence times.
+- **Escalation scan** (60s) — PENDING→ESCALATED (10-min reprompt request)→MISSED; 3 unresolved same-type reminders in 7 days → `AlertFlag` + recipient-resolution attempt.
+- **Sync consume** (300s) — materializes queued offline symptoms into encrypted `SymptomLog` rows.
 - **Retention** (24h) — DPDP windows + 30-day grace hard-delete after consent revocation.
+
+The default `console`/FCM adapter state is explicit: notification attempts may
+be logged and delivery-audit rows may record FAILED, but escalation responses and
+job summaries return `delivery_state: not_configured` with zero confirmed
+deliveries. `not_configured` means no recipient delivery was confirmed; it must
+not be presented as a sent notification.
 
 CLI: `python -m app.jobs` (forever) or `python -m app.jobs --once generate|escalation|consume|retention`. Disabled in `ENVIRONMENT=test`; controlled by `ENABLE_BACKGROUND_JOBS`.
 
@@ -74,25 +79,68 @@ CLI: `python -m app.jobs` (forever) or `python -m app.jobs --once generate|escal
 
 | Integration | Provider / default | Degradation when unconfigured |
 |---|---|---|
-| LLM (companion + RAG answers) | OpenRouter free-tier (`minimax/minimax-m3:free`; fallback chain `nemotron-3-*:free`). Anthropic alternative. `LLM_PROVIDER=auto` detects `sk-or-` prefix | Canned persona reply (`LLM_AUTO_FALLBACK`), or extractive RAG answers; never errors on the elder UX |
-| Speech (ASR/TTS/NMT) | Bhashini ULCA (`auto\|bhashini\|mock`) | Deterministic local mock |
-| Embeddings | `heuristic` default (deterministic md5-TF, 1536-dim); `local` (sentence-transformers e5-small); `openai` | Missing/unknown backends log a warning and return heuristic — RAG always works |
-| Notifications | `console` (logs + records deliveries) | — (future: sms, fcm, email) |
+| LLM (companion + RAG answers) | OpenRouter free-tier (`minimax/minimax-m3:free`; configured `nemotron-3-*` fallback chain). Anthropic alternative. `LLM_PROVIDER=auto` detects the OpenRouter key prefix | Canned persona reply (`LLM_AUTO_FALLBACK`) or extractive RAG answers |
+| Speech (ASR/NMT/TTS) | `auto` selects Sarvam → AI4Bharat → Bhashini → mock by configured credentials | With the shipped empty provider keys, `auto` returns deterministic simulated ASR/NMT/TTS. No live speech provider is configured by default. |
+| Embeddings | `heuristic` default (deterministic md5-TF, 1536-dim); `local` (sentence-transformers e5-small); `openai` | Missing/unknown backends warn and return heuristic |
+| Notifications | `console` by default; the current FCM adapter records failed/log-only attempts rather than sending | `delivery_state: not_configured`, zero confirmed deliveries |
+
+NER-relevant language coverage implemented per provider:
+
+| Provider | ASR | NMT | TTS | Configuration reality |
+|---|---|---|---|---|
+| Sarvam | Assamese, Bengali, Hindi, English, Manipuri/Meitei, Bodo, Nepali | Same seven | Bengali, Hindi, English | Live only with `SARVAM_API_KEY`; Khasi, Mizo, and Garo are unsupported by the maps |
+| AI4Bharat | Assamese, Bengali, Bodo, Manipuri/Meitei, Nepali, Hindi, English | Same seven | Same seven | Code path exists; the default HF router does not currently serve these models, so a dedicated endpoint is required |
+| Bhashini ULCA | Assamese, Bengali, Hindi, English, Manipuri/Meitei, Bodo, Nepali, Mizo, Khasi | Same nine | Same nine | Live only with both `BHASHINI_API_KEY` and `BHASHINI_USER_ID`; Garo is unsupported |
+| Mock | Advertised picker languages only | Advertised picker languages only | Advertised picker languages only | Deterministic simulation, not recognition, translation, or intelligible synthesis |
 
 Hard guard: `OPENROUTER_FREE_ONLY=true` refuses any model slug that is not
-`:free`. Live usage needs the API keys in `.env` (see `.env.example`).
+`:free`. Live providers require operator-supplied environment variables; see
+`.env.example`.
 
 ---
 
 ## Security & Production Posture (Phase 12)
 
-- **Rate limiting** (`app/middleware/rate_limit.py`) — fixed-window per-IP (100/min), Redis-backed with an in-process fallback (cache outage never takes the API down); auto-on in production; skips `/health`, `/docs`, `/openapi.json`, `/api/v1/language/status`.
-- **CORS** — whitelist via comma-separated `CORS_ORIGINS`; production refuses `*`.
-- **Secret validation** — `Settings.validate_for_environment()` (run at lifespan boot) refuses placeholder/short `SECRET_KEY`/`ENCRYPTION_KEY` and wildcard CORS when `ENVIRONMENT=production`.
-- **No implicit access** — cross-patient access is a 403 at every route; unknown patient IDs return 404 (no existence leak). Regression-tested in `test_phase0_fixes.py` + `test_phase11_gates.py`.
-- **Permission tiers** — `basic` (family caregiver: dashboard + game activity) vs `clinical` (asha/clinician/admin: RAG docs, clinical summaries).
-- **At-rest encryption** — `EncryptionService` (Fernet, key SHA-256-derived from `ENCRYPTION_KEY`) on `SymptomLog.notes` and `MedicalDocument.extracted_text`; audit tokens verify Fernet `gAAAA` prefix.
-- **CI** (`.github/workflows/ci.yml`) — backend: pytest + standalone, `alembic upgrade head` on a clean Postgres 16, live `smoke_e2e.py`; frontend: `flutter pub get` + drift codegen + `flutter analyze` for mobile and dashboard.
+- **Rate limiting** (`app/middleware/rate_limit.py`) — fixed-window per-IP (100/min), Redis-backed with an in-process fallback; auto-on in production; skips health/docs/openapi/status endpoints.
+- **CORS** — allowlist via comma-separated `CORS_ORIGINS`; production refuses `*`.
+- **Secret validation** — `Settings.validate_for_environment()` refuses placeholder/short `SECRET_KEY`/`ENCRYPTION_KEY` and wildcard CORS when `ENVIRONMENT=production`.
+- **No implicit access** — cross-patient access is rejected and unknown patient IDs return 404. Patient-link, consent-purpose, role, and clinical-tier checks happen in the FastAPI app layer.
+- **No direct client data access** — mobile and dashboard use only the REST API. They do not embed Supabase/Firebase table SDKs, anon table credentials, or a service-role key.
+- **Permission tiers** — `basic` for linked family caregivers by default; `clinical` for ASHA workers, clinicians, admins, patient owners, or an explicitly clinical link. Controls are role/permission-driven, but the server remains authoritative.
+- **At-rest encryption** — `EncryptionService` (Fernet, key SHA-256-derived from `ENCRYPTION_KEY`) protects `SymptomLog.notes`, `MedicalDocument.extracted_text`, and every new `DocumentChunk.chunk_text`. Plaintext exists only during processing/retrieval in memory.
+- **Audit trail** — broad read coverage plus tested write coverage for consent, reminders, alerts, document ingest/reindex, voice conversations, sync materialization, and other patient-data paths. Most read/write helper calls are best-effort (failure is logged and the request continues); consent grant/revoke, document ingest/reindex, and data export are fail-closed. Retention excludes audit rows. **Database-level immutability is not enforced**: there are no database triggers, grants, or update/delete denial policies, so an actor with database write privileges can alter or remove a row.
+- **CI** (`.github/workflows/ci.yml`) — backend pytest + standalone checks, `alembic upgrade head` on a clean PostgreSQL 16 service, and live `smoke_e2e.py`; mobile dependency/codegen/analyze/unit-test gates; dashboard dependency/analyze/VM-test, Chrome-platform test, and release web build gates. No provider secret is required because live integrations are not part of CI.
+
+### RAG integrity and maintenance
+
+Every new `MedicalDocument` records embedding provider, model, and dimensions.
+Retrieval refuses a document whose provenance is missing or differs from the
+active provider/model/dimension instead of comparing incompatible vectors. The
+maintenance command is:
+
+```sh
+cd backend && python -m app.services.rag_service reindex \
+  --patient-id <patient-uuid> --actor-id <operator-user-uuid>
+```
+
+Reindex is patient-scoped and idempotent: it recomputes vectors with the active
+provider, backfills provenance, rewrites legacy plaintext chunk text as Fernet
+ciphertext, and records a `rag_reindex` write-audit row for changed documents.
+That is the implemented plaintext-PHI migration path for legacy chunk rows. It
+does not claim to rewrite an arbitrary plaintext `MedicalDocument.extracted_text`
+row; operators must re-ingest/backfill such source rows under a controlled
+process. Upload currently extracts selectable PDF text and text-family files;
+there is no OCR, so image-only PDFs fail before persistence.
+
+### Migrations
+
+The single Alembic head is `0014_reminder_idempotency`. The canonical migration
+test is part of `cd backend && python3 -m pytest app/tests tests -q`; CI also
+runs `alembic upgrade head` against a clean PostgreSQL 16 service. Never run
+`alembic upgrade head` casually against the populated demo database: back it up,
+verify the exact database/system identifier and current revision, review the
+migration, and obtain explicit approval first. `smoke_e2e.py` also writes
+synthetic records and is not a read-only check.
 
 ---
 
@@ -120,6 +168,18 @@ Hard guard: `OPENROUTER_FREE_ONLY=true` refuses any model slug that is not
 | 2 | 4 pairs / 8 cards (4×2) | 4 steps, hints + icons |
 | 3 | 6 pairs / 12 cards (4×3) | 6 steps, icons only (no hints) |
 
+Number Recall is a **digit-sequence** game at levels 1/2/3 (3/4/6 digits). Word
+Recall is not implemented in this scope.
+
+**Adaptive flow:** online play starts a server session, buffers/sends action
+rows, and completes through the idempotent session endpoint. The server scores
+the actions, applies its rule strategy (3 consecutive sessions above 85% may
+bump; 2 below 50% may drop), and returns `recommended_level`, source, reason,
+and shadow-model metadata. The client uses that server value for the next round.
+`game_analytics_engine.dart` computes local performance scores/tags and in-round
+hints and can emit an offline result, but its local streak calculator does not
+promote an in-progress/offline round. Shadow-model output never controls level.
+
 Icons now show at every level and hints through level 2 — the earlier
 "text-only hard mode" tested as too abrupt for the MCI cohort. Content pool:
 festivals, fruits/flora, and heritage packs (4-vernacular labels + region per
@@ -128,110 +188,132 @@ item, currently 10 / 10 / 12 items). Default routine is an 11-step Assamese day
 
 ---
 
-### 2. Caregiver Dashboard: Flutter Web (Shared Models)
-**Decision:** Build caregiver dashboard as Flutter Web, reusing shared Dart models from mobile app
+### 2. Caregiver Dashboard: Flutter Web
+**Decision:** Build the caregiver dashboard as Flutter Web and keep authorization
+in the FastAPI app layer.
 
-**Rationale:**
-- Single frontend codebase (Dart) eliminates model sync bugs
-- No separate React team needed; Flutter handles iOS + Android + Web
-- Game/session data models live in `lib/models/` — shared namespace
+**Current implementation:**
+- The web app is multi-file: `dashboard/lib/main.dart` owns the shell/client and
+  views, `dashboard/lib/config.dart` owns release API URL validation, and focused
+  widgets cover risk screening and RAG upload.
+- JWT login/refresh/logout persists the web session; refresh requests are
+  single-flight. The current role and selected patient's server-provided
+  permission tier drive visible controls, but never replace server checks.
+- Selecting a clinical patient preflights `health_data` consent before enabling
+  risk screening or document upload. A failed/uncertain preflight disables the
+  control and explains the state.
+- The audit control is admin-only in the UI and uses 50-row offset pagination.
+  Trend charts remain dependency-free `CustomPaint` widgets.
+- Release builds must receive an absolute
+  `--dart-define=API_BASE_URL=https://...`; there is no implicit release URL.
 
-**Alternatives Considered:**
-- React dashboard: Equally valid; would require separate API client + model duplication
-- Native web framework: Adds backend complexity; Flutter Web is proven for dashboards
+Run locally from `dashboard/`:
 
-**Impact:**
-- Mobile and dashboard stay in sync automatically
-- Caregiver dashboard is responsive (works on tablets in the field — ASHA workers)
-- Single deployment pipeline (Flutter CI for all three platforms)
+```sh
+flutter pub get
+flutter run -d chrome --dart-define=API_BASE_URL=http://localhost:8000
+flutter test
+flutter test --platform chrome
+flutter build web --release --dart-define=API_BASE_URL=https://api.example.org
+```
 
-> Note: today the dashboard is a self-contained single file that draws its trend
-> charts with `CustomPaint` (no third-party charting library) and shares only the
-> *backend API*, not Dart model files. The shared-models goal is met at the
-> API-schema level.
-
----
-
-### 3. Offline-First Gaming + Sync Queue Architecture
-**Decision:** Games fully playable offline; sync to backend on reconnect via SyncQueue
-
-**Implementation:**
-- Mobile stores GameSession, GameAction, ReminderEvent, SyncQueue, PatientRoutine in local SQLite via drift (`app_database.dart` + committed codegen)
-- `OfflineSyncService` polls every 30s when online; replays game sessions via HTTP and drains the outbox; local reminders scheduled via `flutter_local_notifications`
-- Backend `/sync` accepts batched offline events; a consumer job materializes domain rows (idempotent)
-
-**Rationale:**
-- NER has spotty connectivity; offline capability is non-negotiable
-- Local-first means reminder notifications fire without internet
-- Sync queue is conflict-free for MVP: offline-created sessions are fresh INSERTs
-
-**Impact:**
-- Rural patients don't lose data or game streaks during connectivity gaps
-- Caregiver dashboard shows "syncing" state when patient comes online
-- No complex conflict resolution needed (v2 can add last-write-wins)
+The original goal of sharing Dart model files was not reached; the two clients
+share the API schema and authorization contract, not a Dart package.
 
 ---
 
-### 4. Voice Companion: Bhashini + LLM
-**Decision:** ASR (patient's local language) → LLM (reasoning) → TTS (patient's language)
+### 3. Offline-Capable Gaming + Durable Sync Outbox
+**Decision:** Preserve useful play/reminder behavior through connectivity gaps,
+but do not describe the app as a fully offline-first client.
+
+**Durable scope:**
+- The drift schema defines game session/action, reminder event, sync queue, and
+  routine tables. The live gameplay path durably queues **completed** offline
+  sessions/actions and reminder acknowledgments; it does not checkpoint every
+  move from a currently active round.
+- The sync outbox stores patient ID plus account ID. `OfflineSyncService` selects
+  only rows for the active account, so a newly logged-in account cannot replay a
+  prior account's pending item. Logout stops the timer; it does not destroy the
+  durable queue.
+- Replay uses stable idempotency keys. Failed items remain pending with an
+  incremented retry count and visible failure state; synced rows are removed
+  after seven days.
+- Level configuration and public Odd-One-Out board snapshots survive restarts in
+  `SharedPreferences`; synthesized reminder audio is cached by text + language in
+  a temporary file. Session tokens and the small user profile are also persisted
+  for restore.
+- Scheduled local notifications continue without a network. Reminder
+  acknowledgments made while the API is unavailable enter the durable outbox.
+
+**Non-durable scope:** an in-progress Match It, Routine Sequencing, Number Recall,
+or Odd-One-Out round lives in widget memory. App/process death does not restore
+the exact board, moves, timers, or server session. Match It/Routine/Number Recall
+can start a new local round; Odd-One-Out needs a compatible cached public board
+and otherwise shows a connect-to-download state.
+
+Backend `/sync` accepts batched offline operations, and the consumer materializes
+eligible domain rows idempotently. Document uploads and clinical API reads are
+not queued offline.
+
+---
+
+### 4. Voice Companion: Pluggable Speech + LLM
+**Decision:** Support ASR → LLM → TTS behind provider interfaces while keeping
+text conversation usable when speech is unavailable.
 
 **Architecture:**
-- `LanguageServiceProvider` interface abstracts Bhashini (pluggable for Google/Whisper later)
-- System prompt versioned in `voice_companion_config` table (editable, not hardcoded)
-- Persona: calm, patient, simple sentences; defers medical questions to caregiver
-- LLM via `llm_client.py`: OpenRouter free-tier by default (policy: `:free` slugs only, fallback chain), Anthropic as alternative; provider auto-detected from key prefix
+- `LanguageServiceProvider` implementations are Sarvam, AI4Bharat via a dedicated
+  Hugging Face endpoint, Bhashini ULCA, and deterministic mock.
+- `LANGUAGE_SERVICE_PROVIDER=auto` chooses by configured credentials in that
+  order. The shipped `.env.example` has empty credentials, so default execution
+  is simulated speech. The UI uses `/language/status` operation capabilities to
+  disable unsupported language/action combinations; it does not infer live
+  capability from the language picker alone.
+- The system prompt is versioned in `voice_companion_config`; persona copy is
+  calm and concise and defers medical decisions.
+- `llm_client.py` supports OpenRouter and Anthropic, with canned-reply/extractive
+  fallbacks.
 
-**Rationale:**
-- Text-only interface excludes low-literacy elderly; voice is essential
-- LLM reasoning > simple NLP for understanding context (memory, gentle redirection)
-- Bhashini supports all NER languages; government-backed
-
-**Impact:**
-- Mobile voice pipeline is scaffolded; the chat (text) path and TTS/ASR service calls are integrated, mic/TTS playback on-device is pending speech plugins
-- Easy to swap LLM provider (OpenRouter ↔ Anthropic ↔ local) if needed (security requirement)
-- System prompt updates propagate without code changes
-
----
-
-### 5. Reminder Escalation Thresholds
-**Decision:**
-- Unacknowledged: 10 minutes → secondary notification (re-prompt)
-- Repeated missing: 3 missed same-type reminders in 7 days → AlertFlag
-- Notification recipients: family + ASHA (if linked)
-
-**Rationale:**
-- 10min is typical for "did they see the notification?" without over-prompting
-- 3 misses in 7 days signals pattern (confusion, resistance, or neglect) — clinical signal
-- Family handles immediate response; ASHA is field presence
-
-**Implementation:**
-- ReminderEvent tracks: scheduled_at, delivered_at, acknowledged_at, status (pending | acknowledged | missed | escalated)
-- AlertFlag generated by the background escalation job evaluating ReminderEvent history
-- Escalation logged for caregiver dashboard + audit trail
-
-**Impact:** Caregivers catch medication non-compliance early without false alarms
+**Verification boundary:** provider clients have mock-transport contract tests;
+opt-in live tests require explicit provider secrets. Physical-device mic,
+speaker, and notification behavior has not been validated. A mock transcript,
+translation, or base64 WAV must never be presented as live-provider evidence.
 
 ---
 
-### 6. Multilingual MVP Scope
-**Decision:** Ship with Assamese, Bengali, Hindi, English (highest-coverage for NER); companion picker additionally lists Mizo, Meitei (Manipuri), Khasi, Bodo, Garo, Nepali, provider-gated (unsupported entries show "not yet available" and are disabled).
+### 5. Reminder Cadence, Escalation, and Delivery State
+**Cadence grammar:** `[daily|everyday|every day][@|at|:]? HH:MM[,HH:MM;HH:MM]...`
+(case-insensitive, 24-hour wall clock in `REMINDER_TIMEZONE`). Legacy
+`HH:MM AM|PM Daily` is accepted. Free text such as "after lunch" is rejected;
+duplicate times collapse to one daily occurrence.
 
-**Future Additions (Config-Only):**
-- Manipuri (Meitei), Khasi, Mizo, Nepali, Bodo added purely as Bhashini pipeline IDs
-- No code changes needed — just add language_code to config
+**Lifecycle and thresholds:**
+- Unacknowledged for 10 minutes → `ESCALATED` + reprompt attempt.
+- Still unresolved for 60 minutes → `MISSED`.
+- 3 unresolved same-type reminders in 7 days → `AlertFlag` and a linked
+  family/ASHA recipient-resolution attempt.
+- `ReminderEvent` tracks schedule/occurrence time, delivery/acknowledgment
+  timestamps, method, and status.
 
-**Rationale:**
-- Assamese: Assam (~31M speakers)
-- Bengali: West Bengal, Tripura (~260M speakers, including Indian diaspora)
-- Hindi: National, every region has Hindi-speaking elderly
-- English: Clinician communication, admin interface
+**Delivery honesty:** `console` and the current FCM adapter do not confirm
+recipient delivery. They log/audit the attempt and return
+`delivery_state: not_configured`, `confirmed_deliveries: 0`, and an explicit
+message. This state is distinct from `sent`, `failed`, `no_recipients`,
+`not_applicable`, or `mixed`.
 
-**Implementation:**
-- LANGUAGE_SET config lists supported codes
-- All API responses accept `?language=assamese` parameter
-- Mobile stores preferred_language per user (PatientProfile.preferred_language); companion chat has a 10-language picker (default Assamese; entries the active provider does not cover show "not yet available" and are disabled)
+---
 
-**Impact:** NER coverage from day 1; extensible without rework
+### 6. Multilingual and Speech Scope
+**Product picker (10):** Assamese, Bengali, Hindi, English, Mizo, Meitei
+(Manipuri), Khasi, Bodo, Garo, and Nepali. `meitei` is an alias of canonical
+`manipuri`. Garo has no backend provider mapping and is always disabled.
+
+Provider capability is operation-specific, not a single language list. The exact
+NER-relevant ASR/NMT/TTS coverage and the default simulated state are recorded in
+**External Integrations** above. Khasi/Mizo are unavailable on Sarvam and
+AI4Bharat; Sarvam TTS is narrower than its ASR/NMT set; AI4Bharat's default
+serverless router does not currently host the selected models. Mobile stores the
+preferred language on the user and gates controls from the status endpoint.
 
 ---
 
@@ -258,14 +340,14 @@ item, currently 10 / 10 / 12 items). Default routine is an 11-step Assamese day
 - JWT dependency verifies token on every authenticated endpoint
 - Role checks injected as dependencies (`require_role`)
 - Caregiver access requires active CaregiverPatientLink + ConsentRecord
-- **No implicit access** — every caregiver-to-patient access is gated and audited
+- **No implicit access** — every caregiver-to-patient request is gated; covered successful operations write audit rows under the best-effort/fail-closed policy documented below
 
 **Impact:**
 - Access tokens stay stateless, so verification scales horizontally; only refresh
   costs one row read (the deliberate trade for replay detection)
 - Rural field workers can re-login with refresh token if token expires — but the
   old token dies at that moment, so a copied token is useless
-- Audit trail captures who accessed what patient data and when
+- Audit rows identify actor, action, resource, and time for covered paths; audit persistence itself is not database-immutable
 
 ---
 
@@ -274,45 +356,49 @@ item, currently 10 / 10 / 12 items). Default routine is an 11-step Assamese day
 
 **Core Elements:**
 
-**Consent Capture (ConsentRecord table):**
-- Explicit consent BEFORE any health data storage
-- Scopes: game_data | health_data | voice_companion
-- Consent types: patient_self | guardian | joint (supports cognitively impaired patients)
-- Revocation: Either party can revoke; system atomically removes consent
+**Consent Capture (`ConsentRecord`):**
+- Active purpose scopes are `game_data`, `health_data`, and `voice_companion`
+  (plus the broader `all` scope). Routes enforce the required scope before
+  protected operations.
+- The currently enforced grant policy accepts `patient_self` consent only.
+  `guardian` and `joint` remain enum/schema values but are rejected by
+  `validate_consent_policy`; do not claim verified guardian/joint workflows.
+- Revocation records `revoked_at`; retention removes revoked consent and linked
+  risk-screening rows after the 30-day grace period.
 
-**Audit Logging (AuditLog table):**
-- Immutable log: user_id, action (read/write/delete), resource_type, resource_id, timestamp, ip, details
-- Every health data access logged (compliance trail)
-- Retention: indefinite (audit trail never deleted)
+**Audit Logging (`AuditLog`):**
+- Rows contain actor, action (`read`/`write`/`delete` enum), resource identity,
+  timestamp, IP, and details. Current automated coverage is broad for reads and
+  tested across representative write paths; it is not a mathematical proof that
+  every future route writes a row.
+- `log_read_access` and low-risk `log_write_access` are best-effort: an audit
+  failure is logged, the session is restored, and the request/write continues.
+  Consent grant/revoke, document ingest/reindex, and patient export are
+  fail-closed. Notification-delivery audit is separately best-effort.
+- Retention code excludes `audit_logs`, so the application does not purge them.
+  They are not database-immutable: no trigger, grant, RLS, or database policy
+  prevents a privileged SQL actor from updating/deleting a row.
 
-**Encryption:**
-- **At-rest:** Fernet field encryption for symptom_notes, medical_document text (key SHA-256-derived from ENCRYPTION_KEY)
-- **In-transit:** TLS 1.2+ required (enforce in production)
-- Key rotation: Quarterly (production schedule)
+**Encryption and transport:**
+- Fernet field encryption protects symptom notes, medical-document source text,
+  and document chunk text. `ENCRYPTION_KEY` is SHA-256-derived into a Fernet
+  key; plaintext is used only in memory during allowed processing/retrieval.
+- TLS 1.2+ is a deployment requirement, not enforced by FastAPI itself. A
+  production deployment must terminate TLS at its trusted proxy/load balancer.
+  Key rotation remains an operator process; no quarterly rotation is automated.
 
 **Data Retention:**
-- Game sessions: 2 years (clinical value for trends)
-- Symptom logs: 1 year (patient history)
-- Reminder events: 6 months
-- Medical documents: 5 years (+ chunks)
-- Sync queue: 7 days (synced rows only)
-- On revocation: Soft-delete; hard-delete after 30-day grace period
+- Game sessions: 2 years; symptom logs: 1 year; reminder events: ~6 months;
+  medical documents + chunks: 5 years; synced backend sync rows: 7 days.
+- Revoked consents and linked screening rows: hard-delete after 30 days.
+- The maintenance job is idempotent; pending sync rows are not purged.
 
-**Purpose Limitation:**
-- ConsentRecord.scope restricts data use (`ensure_consent` in `deps.py`)
-- API validation: game_data scope → cannot read SymptomLog / RAG documents
-- Violation logs security alert
-
-**Ethical Design for Cognitively Impaired:**
-- Patients who cannot consent: Guardian gives consent (scope=guardian)
-- Patients who can: Own consent (scope=patient_self)
-- Both present: Joint (both must grant; either can revoke)
-- UI flags consent status; caregiver dashboard shows revocation option
-
-**Impact:**
-- DPDP-compliant from day 1 (not bolted on later)
-- Patients own their data; caregivers are trustees
-- Compliance audits have a clean paper trail
+**Purpose and ethical controls:**
+- `ensure_consent` limits route data use to active scopes.
+- Patient ownership, active caregiver links, role checks, and clinical tiers are
+  separate gates; a role alone does not bypass consent.
+- The UI exposes consent state, but enforcement and audit guarantees come from
+  the server—not from hiding a button.
 
 ---
 
@@ -320,15 +406,15 @@ item, currently 10 / 10 / 12 items). Default routine is an 11-step Assamese day
 
 | Component | Choice | Why |
 |-----------|--------|-----|
-| Backend | FastAPI | Async-first; Pydantic validation; development speed; excellent docs |
-| Database | PostgreSQL + pgvector | Single DB for relational + vector (no separate vector store); pgvector for RAG embeddings |
-| Cache/Queue | Redis | Session cache; rate limiting (rate-limit key store) |
-| Mobile | Flutter (Dart) | Single codebase iOS + Android; strong typing; proven for health apps |
-| Dashboard | Flutter Web | Same stack as mobile; no second frontend stack |
-| Auth | JWT | Stateless; scales horizontally; standard for REST APIs |
-| LLM | OpenRouter (free tier, `:free` slugs) | One key, multiple free models with fallback chain; Anthropic alternative |
-| Speech | Bhashini | Government-backed; supports NER languages; pluggable interface |
-| Migrations | Alembic | SQLAlchemy native; reversible; audit trail for schema changes |
+| Backend | FastAPI | Async-first; Pydantic validation; OpenAPI docs |
+| Database | PostgreSQL | Relational store for users, consent, clinical data, and audit rows. The compose image includes pgvector, but current RAG embeddings are stored in a JSON column and scored in Python. |
+| Cache | Redis | Conversation cache and rate-limit backing, with in-process fallback |
+| Mobile | Flutter (Dart) | iOS + Android client with drift/SQLite offline support |
+| Dashboard | Flutter Web | Same language ecosystem, separate app and API client |
+| Auth | REST JWT + app-layer RBAC | No direct client database credentials or table SDK |
+| LLM | OpenRouter default / Anthropic alternative | Configurable free-model fallback chain and deterministic fallback |
+| Speech | Sarvam / AI4Bharat / Bhashini / mock | Operation-specific language gating; default is simulated without credentials |
+| Migrations | Alembic | SQLAlchemy-native chain; current head `0014_reminder_idempotency` |
 
 ---
 
@@ -343,23 +429,21 @@ backend/
 │   │                     # medical doc/chunk, voice_companion_config) — 15 tables
 │   ├── routes/           # auth, patients, games, reminders, compliance, dashboard,
 │   │                     # language, voice_companion, reports, sync
-│   ├── services/         # auth, compliance, dashboard, game, difficulty_engine, content_packs,
-│   │                     # reminder, routine, sync, notification, language, llm_client,
-│   │                     # rag, embedding_provider, document_extraction, report, retention,
-│   │                     # voice_companion
-│   ├── middleware/       # rate_limit.py (fixed-window per-IP, Redis+fallback); auth shim
+│   ├── services/         # auth, compliance, dashboard, game/difficulty, reminders,
+│   │                     # routine, sync, notification, language, LLM/RAG/embeddings,
+│   │                     # document extraction, reports, retention, voice companion
+│   ├── middleware/       # fixed-window per-IP rate limiting (Redis + fallback); auth shim
 │   ├── core/             # security.py (JWT create/verify)
-│   ├── deps.py           # auth deps, patient-access gates, consent gates, permission tiers
-│   ├── jobs.py           # background job loop (generate/escalation/consume/retention)
-│   ├── config.py         # Settings; env validation; placeholder-secret refusal
-│   ├── main.py           # app factory, middleware wiring, lifespan (jobs + env validation)
-│   └── tests/            # 16+ pytest suites (API, security gates, engines, providers)
-├── alembic/              # Alembic migrations (0001_initial_schema)
-├── tests/                # test_auth.py, test_models.py
-├── test_phase2_services.py  # standalone checks (20)
-├── smoke_e2e.py          # live-server E2E walk
-└── requirements.txt      # fastapi, sqlalchemy, alembic, jose, bcrypt, cryptography,
-                          # redis, pgvector, httpx, pypdf, sentence-transformers, transformers...
+│   ├── deps.py           # JWT user, patient-access, consent, and permission-tier gates
+│   ├── jobs.py           # generate/escalation/consume/retention loop
+│   ├── config.py         # Settings, environment loading, production secret/CORS refusal
+│   ├── main.py           # app factory, middleware, lifespan jobs + validation
+│   └── tests/            # pytest API/security/service/provider coverage
+├── alembic/              # migration chain 0001_initial_schema → 0014_reminder_idempotency
+├── tests/                # auth, models, migrations, model/artifact tests
+├── test_phase2_services.py  # standalone service checks
+├── smoke_e2e.py          # live-server E2E walk (writes synthetic records)
+└── requirements.txt      # FastAPI/SQLAlchemy/Alembic, crypto/httpx, ML, pypdf, test deps
 ```
 
 ### Flutter — mobile (patient app)
@@ -371,8 +455,8 @@ mobile/lib/
 ├── models/                   # shared_models.dart (358L), game_models.dart (485L)
 ├── database/                 # app_database.dart (drift) + app_database.g.dart (committed codegen)
 ├── data/                     # local_content_packs.dart (offline NER packs fallback)
-├── games/                    # game_analytics_engine.dart (adaptive difficulty + risk flags,
-│                             # pure Dart), game_labels.dart, game_visuals.dart
+├── games/                    # game_analytics_engine.dart (pure Dart metrics/hint calculator;
+│                             # server owns difficulty), game_labels.dart, game_visuals.dart
 ├── theme/monad_theme.dart    # Monad tokens (see DESIGN.md) — colors, type, spacing, radii
 ├── widgets/                  # trend_chart.dart (unused; available for dashboard)
 ├── services/                 # api_service, auth_session, offline_sync_service, reminder_service,
@@ -388,8 +472,10 @@ mobile/android/app/src/debug/                # debug-only cleartext HTTP to 10.0
 ### Flutter Web — caregiver dashboard
 ```
 dashboard/
-├── lib/main.dart             # single-file app: login, roster, summary tiles, alerts, insights
-└── lib/theme/monad_theme.dart  # Monad tokens (copy of mobile's, minus the game tints)
+├── lib/main.dart             # shell, API client, role/permission-driven views, audit pagination
+├── lib/config.dart           # API_BASE_URL validation; explicit URL required in release
+├── lib/widgets/              # risk screening/intake, RAG upload/picker, Monad components
+└── lib/theme/monad_theme.dart  # Monad tokens (copy of mobile's, minus game tints)
 ```
 
 ### Other
@@ -398,7 +484,7 @@ DESIGN.md                     # Monad style reference — the token source of tr
                               # monad_theme.dart files mirror
 demo-seed/documents/          # 3 synthetic RAG demo docs (discharge summary, prescription, care plan)
 backend/static/               # Monad-styled landing page served at /static
-.github/workflows/ci.yml      # backend (tests + PG migration + E2E smoke) + frontend (codegen + analyze)
+.github/workflows/ci.yml      # backend gates + mobile tests/analyze/codegen + dashboard VM/Chrome tests + web build
 docker-compose.yml            # pgvector/pg16 + redis + backend (no dashboard container)
 ```
 
@@ -406,80 +492,87 @@ docker-compose.yml            # pgvector/pg16 + redis + backend (no dashboard co
 
 ## Testing Strategy
 
-- **Unit:** models, auth (JWT/bcrypt/refresh rotation), providers (language, embeddings, notification), services (reminder engine, retention, sync consumer, RAG, report, compliance) — pytest, SQLite in-memory, `ENVIRONMENT=test`
-- **Security gates:** `test_phase0_fixes.py` (5 P0 regressions: encryption config key, report decrypt, auth on `/language/*`, consent-revoke ownership, game-session IDOR), `test_phase11_gates.py` (cross-patient 403/404, read-audit rows, encrypted docs), `test_phase12_gates.py` (consent scoping, permission tiers, production secret/CORS refusal)
-- **Integration:** `test_api_routes.py` E2E flows; `smoke_e2e.py` for live-server vs real Postgres (companion-config POST treats a 409 as idempotent pass, so re-runs are clean)
-- **Frontend:** mobile `test/game_analytics_engine_test.dart` (difficulty rules + report fields) and `test/widget_test.dart` (model parsing); `test/api_live_test.dart` and `integration_test/app_flow_test.dart` need a running backend/emulator; dashboard single smoke widget test
-- **Commands:** `cd backend && python3 -m pytest app/tests tests -q` · `python3 test_phase2_services.py` · `python3 run_tests.py` · `python3 smoke_e2e.py` · `cd mobile && flutter test`
-- **Demo runs (2026-09-30):** use `backend/.venv-demo` (Python 3.12) with
-  `ENABLE_BACKGROUND_JOBS=false` against the populated Homebrew Postgres
-  `localhost:5432/eldercare` (sysid `7681754862742343790`) — **not** the compose
-  cluster. Full runbook: DEPLOYMENT.md "Run — September 30 demo". Current source
-  (B) requires migration `0009_shadow_difficulty` (not approved/applied; SQLite-only
-  tested) before any restart at HEAD, so startup from new HEAD is blocked pending
-  backup + explicit approval; the pinned schema-0008 server (PID 51348) remains
-  valid until restarted.
+- **Backend unit/API/security:** canonical command is
+  `cd backend && python3 -m pytest app/tests tests -q` (`backend/pytest.ini`
+  defines `app/tests tests`). It includes migration-head checks, access/consent
+  matrices, audit success/failure behavior, RAG provenance/encryption/reindex,
+  providers, games, reminders, retention, and sync.
+- **Standalone:** `cd backend && python3 test_phase2_services.py`.
+- **Live PostgreSQL smoke:** CI starts the API on a clean PostgreSQL 16 database
+  after `alembic upgrade head` and runs `cd backend && python3 smoke_e2e.py`.
+  The script creates synthetic records and does not clean them up.
+- **Mobile:** `cd mobile && flutter test` after `flutter pub get`,
+  `dart run build_runner build --delete-conflicting-outputs`, and
+  `flutter analyze`. Live/integration tests remain opt-in and require a reachable
+  backend/device.
+- **Dashboard:** `cd dashboard && flutter test` for the VM suite,
+  `flutter test --platform chrome` for browser-platform tests, and
+  `flutter build web --release --dart-define=API_BASE_URL=https://api.example.org`
+  for the release web build.
+- **Counts:** do not copy pass totals into architecture documentation. CI output
+  and the canonical commands are the reproducible source of truth.
+
+**Demo database rule (2026-09-30 runbook):** the populated Homebrew database is
+not a test fixture. Verify the documented system identifier and current revision,
+take a fresh backup, and obtain explicit approval before any migration or source
+restart. Never substitute the empty compose cluster for that preflight, and do
+not casually run `alembic upgrade head` against the demo database.
 
 ---
 
-## Remaining Work (reconciled)
-
-**Shipped since the last reconcile (2026-09-06):** single-use refresh-token
-rotation (`0003_refresh_rotation`), Monad design system across mobile +
-dashboard + `backend/static/`, client-side `game_analytics_engine.dart` with
-tests, gentler difficulty grids (2/4/6 pairs; hints through L2), 5 new NER
-content items + an 11th routine step, two game-scoring bug fixes (attempts only
-count resolved attempts; `raw_event_log` reassigned so SQLAlchemy persists it),
-idempotent companion-config step in `smoke_e2e.py`, and a debug-only Android
-cleartext config for `10.0.2.2`/localhost.
+## Remaining Work (reconciled 2026-09-25)
 
 **Genuinely open / deferred:**
-- Live API keys to activate real integrations (OpenRouter `OPENROUTER_API_KEY`,
-  Bhashini `BHASHINI_API_KEY`/`BHASHINI_USER_ID`, Anthropic `ANTHROPIC_API_KEY`)
-  — everything degrades gracefully when absent
-- Mobile voice companion audio path: on-device mic capture + TTS playback need
-  speech plugins (text chat + service-side ASR/TTS are wired); notification
-  permission request call and notification-tap handler pending
-- Mobile per-action game telemetry: screens queue `actions: []` though the
-  `GameAction` table + replay path exist. `game_analytics_engine.dart` computes
-  the same metrics client-side but does not yet feed the server telemetry path.
-- Game art is unsourced: `mobile/assets/games/` holds only a manifest README —
-  32 card PNGs + audio are to be commissioned. Not a blocker: every visual falls
-  back to a theme-colored Material icon via `lib/games/game_visuals.dart`, so a
-  missing file never crashes the UI (add keys to `GameVisuals.availableImages` to
-  activate real art).
-- Real notification channels (SMS/email/APNs/FCM) beyond the `console` provider;
-  data-export for ransomware-style backup/recovery (Phase 12 checklist)
-- `monad_theme.dart` is copied in `mobile/` and `dashboard/` with no shared
-  package, and the copies have already diverged — mobile adds a game extension
-  (pastel `tint*` card-face colors, never color-alone). Shared token edits must
-  land in both files by hand.
-- Dashboard reminder-schedule editing and audit-trail viewer are in; deeper
-  drill-down (per-event reminder history, alert timelines) is next
-- v2: ML-based alert rules, wearable data, dementia-friendly modes
+- Configure and validate real LLM/speech providers. The shipped default remains
+  canned replies, heuristic embeddings, and simulated ASR/NMT/TTS.
+- Complete physical-device validation for microphone capture, audio playback,
+  notification permissions, and app lifecycle behavior.
+- Implement a real notification transport. The current FCM class is an
+  explicit log/failed-audit adapter and confirms no delivery; SMS/email are not
+  implemented.
+- Add in-progress game checkpoint/restore if exact resume after app death is a
+  product requirement. Today only completed rounds/outbox items are durable.
+- Add OCR only as a separately approved scope. Current uploads require selectable
+  PDF text or a text-family file, and the scanned-PDF error says so explicitly.
+- Add database-level audit immutability controls (restricted DB role plus
+  trigger/grant/RLS policy and an operational append-only storage design) if
+  tamper resistance is required. Application retention exclusion is not enough.
+- Operate the RAG reindex workflow for legacy/provenance-mismatched documents and
+  establish a controlled backfill for any legacy plaintext source text.
+- Commission game art/audio where desired; existing Material/icon fallbacks keep
+  the games usable.
+- Keep `monad_theme.dart` copies synchronized manually or introduce a shared
+  package; mobile includes game-only tint extensions.
+- Deeper dashboard drill-down (per-event reminder history, alert timelines),
+  v2 ML activation, wearables, and dementia-friendly modes remain future work.
 
 ---
 
 ## Compliance Verification
 
-**DPDP Act 2023 (implemented + tested):**
-- ✅ Consent capture / scope gates (`ensure_consent`)
-- ✅ Purpose limitation — game_data scope cannot read clinical data
-- ✅ Data retention policy + deletion jobs (`RetentionService`)
-- ✅ Audit trail — read/write audit on all patient-data paths; immutable
-- ✅ Encryption (Fernet field encryption + bcrypt password hashes)
-- ✅ Deletion rights — revoke + 30-day grace hard-delete
-- ✅ Data portability — `GET /compliance/patients/{id}/export`
+**Implemented and tested:**
+- Active consent scope gates (`ensure_consent`) and patient-owner consent grants.
+- Patient-link, role, and clinical-tier enforcement with no direct client table
+  access.
+- Retention maintenance and revoked-consent deletion after the grace period.
+- Broad read-audit and representative write-audit rows, with explicit best-effort
+  and fail-closed tests. Rows are retained by application policy but are **not
+  database-immutable**.
+- Fernet field encryption for symptom/document/chunk PHI plus bcrypt password
+  hashing.
+- Patient export with a fail-closed export-audit precondition.
+- Medical-document ingest/reindex with encrypted chunks, embedding provenance
+  checks, and an audited plaintext-chunk migration path.
 
-**HIPAA-Adjacent** (not required, but best practice):
-- ✅ Access controls (JWT + role-based + no-implicit-access)
-- ✅ Audit logging (endpoint-wide read-audit enforced)
-- ✅ Encryption
-- ✅ Data integrity (SQLAlchemy constraints)
-- ⬜ Backup/recovery + TLS enforcement in front of a real deployment
+**Deployment responsibilities still open:**
+- TLS termination, encrypted backups/restores, key rotation, database credential
+  hardening, database-level audit append-only controls, and monitoring/alerting
+  are infrastructure/operator work; FastAPI does not enforce them by itself.
+- Guardian/joint consent workflows are not implemented even though related enum
+  values exist.
 
-> Implementation is enforced across routes and regression-tested
-> (`test_phase11_gates.py`, `test_phase12_gates.py`), not just designed.
+Implementation is enforced across routes and regression-tested in the access,
+consent, audit-failure, migration, RAG-integrity, and provider suites.
 
 ---
 
