@@ -6,7 +6,6 @@
 /// backend `CADENCE_GRAMMAR`; the wire value itself remains unchanged.
 library;
 
-import 'package:flutter/material.dart' show TimeOfDay;
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:timezone/data/latest_all.dart' as tzdata;
 import 'package:timezone/timezone.dart' as tz;
@@ -33,13 +32,33 @@ class ReminderTime {
   final int minute;
 }
 
+class DeviceTimeZone {
+  const DeviceTimeZone(this.name, this.offset);
+
+  final String name;
+  final Duration offset;
+}
+
+DeviceTimeZone _currentDeviceTimeZone() {
+  final now = DateTime.now();
+  return DeviceTimeZone(now.timeZoneName, now.timeZoneOffset);
+}
+
 class ReminderScheduler {
-  ReminderScheduler._();
+  ReminderScheduler({
+    FlutterLocalNotificationsPlugin? plugin,
+    DeviceTimeZone Function()? deviceTimeZone,
+    DateTime Function()? now,
+  })  : _plugin = plugin ?? FlutterLocalNotificationsPlugin(),
+        _deviceTimeZone = deviceTimeZone ?? _currentDeviceTimeZone,
+        _now = now ?? DateTime.now;
 
-  static final ReminderScheduler instance = ReminderScheduler._();
+  static final ReminderScheduler instance = ReminderScheduler();
+  static const fallbackTimeZoneName = 'Asia/Kolkata';
 
-  final FlutterLocalNotificationsPlugin _plugin =
-      FlutterLocalNotificationsPlugin();
+  final FlutterLocalNotificationsPlugin _plugin;
+  final DeviceTimeZone Function() _deviceTimeZone;
+  final DateTime Function() _now;
   bool _initialized = false;
 
   static List<ReminderTime> parseCadence(String cadence) {
@@ -95,12 +114,32 @@ class ReminderScheduler {
     return List<ReminderTime>.unmodifiable(times);
   }
 
+  /// Uses an IANA location when Dart exposes one and maps IST to the NER
+  /// operating zone. Dart otherwise exposes only an abbreviation, so an
+  /// unknown value deliberately falls back to Asia/Kolkata: this is safe for
+  /// the target NER deployment but can be wrong outside India.
+  static tz.Location resolveTimeZone(DeviceTimeZone deviceTimeZone) {
+    tzdata.initializeTimeZones();
+    final name = deviceTimeZone.name.trim();
+    if (name.isNotEmpty) {
+      try {
+        return tz.getLocation(name);
+      } on tz.LocationNotFoundException {
+        if (name.toUpperCase() == 'IST' &&
+            deviceTimeZone.offset == const Duration(hours: 5, minutes: 30)) {
+          return tz.getLocation(fallbackTimeZoneName);
+        }
+      }
+    }
+    return tz.getLocation(fallbackTimeZoneName);
+  }
+
   /// Must be called once at startup (after `flutter create .` has added the
   /// platform folders). Uses a placeholder icon id for the demo; replace with
   /// your app's notification icon on Android.
   Future<void> initialize() async {
     if (_initialized) return;
-    tzdata.initializeTimeZones();
+    tz.setLocalLocation(resolveTimeZone(_deviceTimeZone()));
     const android = AndroidInitializationSettings('@mipmap/ic_launcher');
     const ios = DarwinInitializationSettings(
       requestAlertPermission: true,
@@ -116,12 +155,12 @@ class ReminderScheduler {
   /// Schedule one daily notification per time token found in the cadence.
   Future<void> scheduleForSchedule(ReminderScheduleModel schedule) async {
     await initialize();
-    for (final time in _parseTimes(schedule.cadence)) {
+    for (final time in parseCadence(schedule.cadence)) {
       await _plugin.zonedSchedule(
         id: schedule.id.hashCode * 31 + time.minute + time.hour * 60,
         title: 'Reminder — ${schedule.reminderType.name.toUpperCase()}',
         body: 'Time for your ${schedule.reminderType.name} routine.',
-        scheduledDate: _nextInstanceOf(time),
+        scheduledDate: nextInstanceOf(time),
         notificationDetails: const NotificationDetails(
           android: AndroidNotificationDetails(
             'reminders',
@@ -139,7 +178,7 @@ class ReminderScheduler {
 
   Future<void> cancelSchedule(ReminderScheduleModel schedule) async {
     await initialize();
-    for (final time in _parseTimes(schedule.cadence)) {
+    for (final time in parseCadence(schedule.cadence)) {
       await _plugin.cancel(
           id: schedule.id.hashCode * 31 + time.minute + time.hour * 60);
     }
@@ -150,12 +189,8 @@ class ReminderScheduler {
     await _plugin.cancelAll();
   }
 
-  List<TimeOfDay> _parseTimes(String cadence) => parseCadence(cadence)
-      .map((time) => TimeOfDay(hour: time.hour, minute: time.minute))
-      .toList(growable: false);
-
-  tz.TZDateTime _nextInstanceOf(TimeOfDay time) {
-    final now = tz.TZDateTime.now(tz.local);
+  tz.TZDateTime nextInstanceOf(ReminderTime time) {
+    final now = tz.TZDateTime.from(_now(), tz.local);
     var scheduled = tz.TZDateTime(
         tz.local, now.year, now.month, now.day, time.hour, time.minute);
     if (scheduled.isBefore(now)) {
