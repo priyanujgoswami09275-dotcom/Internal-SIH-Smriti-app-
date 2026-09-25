@@ -248,6 +248,52 @@ async def risk_screening(
     return RiskScreeningResponse(**result)
 
 
+def _risk_tier(score: float) -> str:
+    """Same thresholds as risk_screening_service.run_inference."""
+    return "low_risk" if score < 33 else "moderate_risk" if score < 67 else "high_risk"
+
+
+@router.get("/{patient_id}/risk-screening", response_model=RiskScreeningResponse)
+async def get_risk_screening(
+    patient_id: UUID,
+    current_user: User = Depends(require_caregiver_or_staff),
+    db: AsyncSession = Depends(get_db),
+):
+    """Latest persisted preliminary screening for rehydration.
+
+    Same gates as POST: caregiver/staff role, clinical permission tier, and
+    active health_data (or all) consent. Read is audited.
+    """
+    await ensure_clinical_access(db, current_user, patient_id)
+    consent = (await db.execute(
+        select(ConsentRecord).where(
+            ConsentRecord.patient_id == patient_id,
+            ConsentRecord.revoked_at.is_(None),
+            ConsentRecord.scope.in_(["health_data", "all"]),
+        ).order_by(ConsentRecord.granted_at.desc(), ConsentRecord.id.desc()).limit(1)
+    )).scalar_one_or_none()
+    if consent is None:
+        raise HTTPException(status_code=403, detail="Active consent required for scope 'health_data'")
+    row = (await db.execute(
+        select(RiskScreening).where(RiskScreening.patient_id == patient_id)
+    )).scalar_one_or_none()
+    await ComplianceService.log_read_access(
+        db, current_user.id, "risk_screening", patient_id,
+        details={"found": row is not None},
+    )
+    if row is None:
+        return RiskScreeningResponse(status="not_assessed")
+    return RiskScreeningResponse(
+        status="ok",
+        risk_score=row.risk_score,
+        probability=row.probability,
+        tier=_risk_tier(row.risk_score),
+        feature_count=32,
+        note="Preliminary screening only; not a clinical diagnosis",
+        model_version=row.model_version,
+    )
+
+
 # ============= Endpoints =============
 
 

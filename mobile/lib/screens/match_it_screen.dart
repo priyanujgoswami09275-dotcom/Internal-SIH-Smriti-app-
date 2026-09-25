@@ -22,6 +22,7 @@ import '../games/game_analytics_engine.dart';
 import '../games/game_labels.dart';
 import '../games/game_visuals.dart';
 import '../games/level_config.dart';
+import '../games/shadow_model_label.dart';
 import '../models/game_models.dart';
 import '../models/shared_models.dart';
 import '../services/api_service.dart';
@@ -312,6 +313,14 @@ class _MatchItScreenState extends State<MatchItScreen> {
             _resultRow('Accuracy', '${finalState.accuracyPct.toStringAsFixed(1)}%'),
             _resultRow('Pairs matched', '${finalState.matchedPairs}/${finalState.totalPairs}'),
             _resultRow('Average response', '${finalState.avgResponseTimeMs.toStringAsFixed(0)} ms'),
+            if (shadowModelLabel(summary) != null) ...[
+              const SizedBox(height: 8),
+              Text(
+                shadowModelLabel(summary)!,
+                style: Monad.monoCaption.copyWith(color: Monad.indigo),
+                textAlign: TextAlign.center,
+              ),
+            ],
             if (summary == null) ...[
               const SizedBox(height: 12),
               Text(

@@ -409,3 +409,49 @@ async def test_screening_erased_after_consent_grace(client, db_session, features
     await RetentionService.run_maintenance(db_session)
     assert not (await db_session.execute(select(all_models.RiskScreening))).scalars().all()
     assert len((await db_session.execute(select(AuditLog))).scalars().all()) == 1
+
+
+@pytest.mark.asyncio
+async def test_get_risk_screening_returns_persisted_row_with_gates(client, db_session):
+    patient, consent = await screening_fixture(db_session)
+    # No row yet → not_assessed (still gated + audited).
+    resp = await client.get(f"/api/v1/patients/{patient.id}/risk-screening")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "not_assessed"
+
+    db_session.add(all_models.RiskScreening(
+        patient_id=patient.id, consent_id=consent.id, probability=0.72, risk_score=72.0,
+        model_version="sha256:test", screened_at=datetime.now(timezone.utc),
+    ))
+    await db_session.commit()
+    resp = await client.get(f"/api/v1/patients/{patient.id}/risk-screening")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["status"] == "ok"
+    assert body["probability"] == 0.72
+    assert body["risk_score"] == 72.0
+    assert body["tier"] == "high_risk"
+    assert body["feature_count"] == 32
+    assert "not a clinical diagnosis" in body["note"]
+    assert body["model_version"] == "sha256:test"
+    audits = (await db_session.execute(
+        select(AuditLog).where(AuditLog.resource_type == "risk_screening")
+    )).scalars().all()
+    assert len(audits) == 2  # not_assessed + ok reads
+    assert all(a.action == "read" for a in audits)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("role,tier,consent,allowed", [
+    ("clinician", None, "health_data", True),
+    ("family_caregiver", "clinical", "health_data", True),
+    ("family_caregiver", "basic", "health_data", False),
+    ("patient", None, "health_data", False),
+    ("clinician", None, "game_data", False),
+])
+async def test_get_risk_screening_enforces_same_gates(role, tier, consent, allowed, client, db_session):
+    patient, _ = await screening_fixture(db_session, role, tier, consent)
+    resp = await client.get(f"/api/v1/patients/{patient.id}/risk-screening")
+    assert resp.status_code == (200 if allowed else 403), resp.text
+    if allowed:
+        assert resp.json()["status"] == "not_assessed"

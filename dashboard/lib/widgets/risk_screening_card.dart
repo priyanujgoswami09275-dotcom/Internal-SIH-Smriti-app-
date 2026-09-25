@@ -51,7 +51,6 @@ class RiskScreeningCard extends StatelessWidget {
     }
 
     final status = result?['status'] as String?;
-    final unavailable = status == 'model_unavailable';
     final ok = status == 'ok';
 
     // Tier colors: calm, never harsh red. Low = teaGreen, moderate = eriGold,
@@ -60,7 +59,6 @@ class RiskScreeningCard extends StatelessWidget {
     String tierLabel = 'Low risk';
     if (ok) {
       final tier = result?['tier'] as String? ?? '';
-      final score = (result?['risk_score'] as num?)?.toDouble();
       if (tier == 'high_risk') {
         tierColor = Monad.terracotta;
         tierLabel = 'Higher risk — follow up';

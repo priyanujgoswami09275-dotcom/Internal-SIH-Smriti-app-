@@ -93,6 +93,20 @@ def test_timestamp_ties_are_ordered_by_id_and_invalid_start_is_refused():
     assert extract_features(rows, "p", "match_it", 1, NOW).reason == "invalid_timestamp"
 
 
+def test_naive_utc_session_timestamps_are_treated_as_utc():
+    """DateTime columns store naive UTC; must not be shifted by server local TZ."""
+    from app.services.adaptive_features import extract_features
+
+    rows = []
+    for i in range(3):
+        completed = (NOW - timedelta(days=i + 1)).replace(tzinfo=None)
+        rows.append(session(str(i), completed_at=completed,
+                             started_at=(completed - timedelta(seconds=60))))
+    result = extract_features(rows, "p", "match_it", 1, NOW)
+    assert result.reason == "eligible"
+    assert result.values is not None
+
+
 def test_no_sensitive_attributes_are_read():
     from app.services.adaptive_features import extract_features
 

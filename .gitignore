@@ -79,3 +79,5 @@ graphify-out/.graphify_*.json
 graphify-out/graph.html
 .env.production
 .claude/settings.json
+.opencode/supabase-auth.json
+.opencode/tui.json

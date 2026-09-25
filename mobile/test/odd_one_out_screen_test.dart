@@ -17,6 +17,7 @@ library;
 import 'dart:convert';
 
 import 'package:eldercare_mobile/games/level_config.dart';
+import 'package:eldercare_mobile/games/shadow_model_label.dart';
 import 'package:eldercare_mobile/models/game_models.dart';
 import 'package:eldercare_mobile/models/shared_models.dart';
 import 'package:eldercare_mobile/screens/odd_one_out_screen.dart';
@@ -344,6 +345,69 @@ void main() {
       expect(summary.nextDifficultyLevel, isNull);
       expect(summary.source, isNull);
       expect(summary.reason, isNull);
+      expect(summary.shadowProbability, isNull);
+      expect(summary.shadowModelVersion, isNull);
+      expect(summary.shadowReason, isNull);
+    });
+
+    test('parses Phase B-01 shadow_* fields from session-complete', () {
+      final summary = GameSessionSummary.fromJson({
+        'session_id': 's1',
+        'game_type': 'match_it',
+        'difficulty_level': 1,
+        'total_attempts': 2,
+        'correct_count': 2,
+        'incorrect_count': 0,
+        'accuracy_pct': 100.0,
+        'avg_response_time_ms': 800.0,
+        'started_at': '2026-09-21T10:00:00',
+        'completed_at': '2026-09-21T10:01:00',
+        'shadow_probability': 0.42,
+        'shadow_model_version': 'adaptive-synthetic-v1',
+        'shadow_reason': 'predicted',
+      });
+      expect(summary.shadowProbability, 0.42);
+      expect(summary.shadowModelVersion, 'adaptive-synthetic-v1');
+      expect(summary.shadowReason, 'predicted');
+      expect(summary.nextDifficultyLevel, isNull);
+      expect(summary.source, isNull);
+    });
+
+    test('shadow label is experimental and never fabricates a probability', () {
+      final predicted = GameSessionSummary.fromJson({
+        'session_id': 's1',
+        'game_type': 'match_it',
+        'difficulty_level': 1,
+        'total_attempts': 1,
+        'correct_count': 1,
+        'incorrect_count': 0,
+        'accuracy_pct': 100.0,
+        'avg_response_time_ms': 500.0,
+        'started_at': '2026-09-21T10:00:00',
+        'completed_at': '2026-09-21T10:01:00',
+        'shadow_probability': 0.42,
+        'shadow_reason': 'predicted',
+      });
+      expect(shadowModelLabel(predicted),
+          'Shadow model (experimental): 42% next-level success');
+
+      final unsupported = GameSessionSummary.fromJson({
+        'session_id': 's2',
+        'game_type': 'odd_one_out',
+        'difficulty_level': 1,
+        'total_attempts': 1,
+        'correct_count': 1,
+        'incorrect_count': 0,
+        'accuracy_pct': 100.0,
+        'avg_response_time_ms': 500.0,
+        'started_at': '2026-09-21T10:00:00',
+        'completed_at': '2026-09-21T10:01:00',
+        'shadow_probability': null,
+        'shadow_reason': 'unsupported_game',
+      });
+      expect(shadowModelLabel(unsupported),
+          'Shadow model: not supported for this game');
+      expect(shadowModelLabel(null), isNull);
     });
   });
 

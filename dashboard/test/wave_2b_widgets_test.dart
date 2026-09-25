@@ -54,6 +54,9 @@ Future<void> _pumpApp(
     if (path.contains('/dashboard/caregivers/')) return jsonRes([_patient], 200);
     if (path.contains('/dashboard/patients/')) return jsonRes(summary, 200);
     if (path.contains('/reminders/schedules/')) return jsonRes([], 200);
+    if (path.endsWith('/risk-screening') && req.method == 'GET') {
+      return jsonRes({'status': 'not_assessed'}, 200);
+    }
     if (path.contains('/compliance/audit-logs')) {
       return auditStatus == 200
           ? jsonRes([], 200)

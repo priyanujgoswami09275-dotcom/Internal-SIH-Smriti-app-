@@ -120,7 +120,8 @@ async def get_recent_sessions(
     limit: int = 20,
 ) -> List[GameSession]:
     """Retrieve recent completed game sessions for a patient."""
-    cutoff_date = datetime.now(timezone.utc) - timedelta(days=days_back)
+    # Naive UTC: GameSession DateTime columns are timezone-naive (UTC wall time).
+    cutoff_date = (datetime.now(timezone.utc) - timedelta(days=days_back)).replace(tzinfo=None)
 
     query = (
         select(GameSession)
@@ -154,7 +155,8 @@ async def evaluate_difficulty(
         - reason: explanation of the adjustment
         - rule_triggered: which rule (if any) triggered the change
     """
-    decision_time = datetime.now(timezone.utc)
+    # Naive UTC so evaluate_shadow history query matches DateTime columns.
+    decision_time = datetime.now(timezone.utc).replace(tzinfo=None)
     if strategy is None:
         strategy = RuleBasedDifficultyStrategy()
     default_rules = type(strategy) is RuleBasedDifficultyStrategy

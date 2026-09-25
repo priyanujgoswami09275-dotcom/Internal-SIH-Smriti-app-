@@ -19,7 +19,8 @@ target_metadata = Base.metadata
 # Override URL from env if set
 url = os.getenv("DATABASE_URL")
 if url:
-    config.set_main_option("sqlalchemy.url", url)
+    # configparser treats % as interpolation — escape for set_main_option
+    config.set_main_option("sqlalchemy.url", url.replace("%", "%%"))
 
 
 def run_migrations_offline() -> None:

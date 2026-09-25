@@ -24,6 +24,7 @@ import '../config/app_config.dart';
 import '../games/game_analytics_engine.dart';
 import '../games/game_visuals.dart';
 import '../games/level_config.dart';
+import '../games/shadow_model_label.dart';
 import '../models/game_models.dart';
 import '../models/shared_models.dart';
 import '../services/api_service.dart';
@@ -435,6 +436,14 @@ class _OddOneOutScreenState extends State<OddOneOutScreen> {
                 _resultRow('Source', resolved.source!),
               if (resolved.reason != null)
                 _resultRow('Reason', resolved.reason!),
+              if (shadowModelLabel(resolved) != null) ...[
+                const SizedBox(height: 8),
+                Text(
+                  shadowModelLabel(resolved)!,
+                  style: Monad.monoCaption.copyWith(color: Monad.indigo),
+                  textAlign: TextAlign.center,
+                ),
+              ],
             ] else ...[
               const SizedBox(height: 12),
               Text(

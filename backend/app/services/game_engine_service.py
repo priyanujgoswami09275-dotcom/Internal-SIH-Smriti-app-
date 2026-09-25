@@ -32,7 +32,7 @@ class GameEngineService:
         session.incorrect_count = incorrect_count
         session.avg_response_time_ms = avg_response_time_ms
         session.accuracy_pct = (correct_count / attempts * 100.0) if attempts > 0 else 0.0
-        session.completed_at = datetime.now(timezone.utc)
+        session.completed_at = datetime.now(timezone.utc).replace(tzinfo=None)
 
         await db.commit()
         await db.refresh(session)

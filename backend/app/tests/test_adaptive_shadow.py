@@ -8,6 +8,11 @@ from app.models.all_models import DifficultyAdjustmentLog, GameSession, GameType
 from app.services import difficulty_engine
 from app.tests.conftest import create_consented_patient, provision_staff_user
 
+AUTH = "/api/v1/auth"
+PATIENTS = "/api/v1/patients"
+COMPLIANCE = "/api/v1/compliance"
+GAMES = "/api/v1/games"
+
 
 async def _staff_headers(client):
     staff = await provision_staff_user()
@@ -112,3 +117,67 @@ async def test_shadow_exception_cannot_prevent_rule_result_or_hold_log(db_sessio
     assert result["shadow_probability"] is None
     assert result["shadow_reason"] == "inference_error"
     assert (await db_session.execute(select(DifficultyAdjustmentLog))).scalar_one().result == "hold"
+
+
+async def _register_patient(client):
+    """Patient account + profile + scope-all consent (mirrors four-game flow)."""
+    import uuid as uuid_mod
+    phone = f"+91{uuid_mod.uuid4().int % 10**9:09d}"
+    resp = await client.post(f"{AUTH}/register", json={
+        "phone": phone, "password": "TestPass123", "role": "patient",
+        "preferred_language": "english"})
+    assert resp.status_code == 201, resp.text
+    resp = await client.post(f"{AUTH}/login", json={"phone": phone, "password": "TestPass123"})
+    assert resp.status_code == 200, resp.text
+    headers = {"Authorization": f"Bearer {resp.json()['access_token']}"}
+    resp = await client.post(PATIENTS, headers=headers, json={
+        "name": "Shadow Complete", "cognitive_baseline": "healthy",
+        "region": "Assam", "district": "Kamrup"})
+    assert resp.status_code == 201, resp.text
+    patient_id = resp.json()["id"]
+    resp = await client.post(f"{COMPLIANCE}/consent", headers=headers, json={
+        "patient_id": patient_id, "consent_type": "patient_self", "scope": "all"})
+    assert resp.status_code == 200, resp.text
+    return headers, patient_id
+
+
+async def test_session_complete_returns_shadow_fields_without_rule_decision(client, db_session, monkeypatch):
+    """Complete path surfaces shadow prediction only — no difficulty decision,
+    no DifficultyAdjustmentLog (rules stay the sole authority)."""
+    from app.routes import games as games_routes
+
+    headers, _pid = await _register_patient(client)
+    start = await client.post(f"{GAMES}/sessions", headers=headers, json={
+        "game_type": "match_it", "difficulty_level": 1})
+    assert start.status_code == 200, start.text
+    session_id = start.json()["session_id"]
+
+    async def prediction(*args, **kwargs):
+        return dict(shadow_probability=0.42, shadow_model_version="test-candidate",
+                    shadow_reason="predicted")
+
+    monkeypatch.setattr(games_routes, "evaluate_shadow", prediction)
+    resp = await client.post(f"{GAMES}/sessions/{session_id}/complete", headers=headers)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert abs(body["shadow_probability"] - 0.42) < 1e-9
+    assert body["shadow_model_version"] == "test-candidate"
+    assert body["shadow_reason"] == "predicted"
+    assert "new_difficulty" not in body
+    assert body.get("source") is None
+    logs = (await db_session.execute(select(DifficultyAdjustmentLog))).scalars().all()
+    assert logs == []  # complete never logs a difficulty decision
+
+
+async def test_session_complete_surfaces_unsupported_shadow_for_odd_one_out(client, db_session):
+    """Odd-One-Out has no learned support: honest shadow_reason, null probability."""
+    headers, _pid = await _register_patient(client)
+    start = await client.post(f"{GAMES}/sessions", headers=headers, json={
+        "game_type": "odd_one_out", "difficulty_level": 1})
+    assert start.status_code == 200, start.text
+    session_id = start.json()["session_id"]
+    resp = await client.post(f"{GAMES}/sessions/{session_id}/complete", headers=headers)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["shadow_probability"] is None
+    assert body["shadow_reason"] == "unsupported_game"

@@ -49,7 +49,9 @@ async def start_game_session(
         patient_id=patient_id,
         game_type=game_type,
         difficulty_level=difficulty_level,
-        started_at=datetime.now(timezone.utc),
+        # Naive UTC: DateTime columns drop tzinfo; adaptive_features.timestamp()
+        # treats naive values as UTC (must not be stored as server-local time).
+        started_at=datetime.now(timezone.utc).replace(tzinfo=None),
         content_pack_id=content_pack_id,
         routine_id=routine_id,
         correct_count=0,
@@ -153,7 +155,7 @@ async def complete_game_session(
     if not session:
         raise ValueError(f"Game session {session_id} not found")
 
-    session.completed_at = datetime.now(timezone.utc)
+    session.completed_at = datetime.now(timezone.utc).replace(tzinfo=None)
 
     # Compute final metrics from raw_event_log
     response_times = [
@@ -188,8 +190,8 @@ async def complete_game_session(
         "incorrect_count": session.incorrect_count,
         "accuracy_pct": accuracy_pct,
         "avg_response_time_ms": avg_response_time_ms,
-        "started_at": session.started_at.isoformat(),
-        "completed_at": session.completed_at.isoformat(),
+        "started_at": iso_utc(session.started_at),
+        "completed_at": iso_utc(session.completed_at),
     }
 
 
@@ -210,8 +212,8 @@ async def get_session_summary(db: AsyncSession, session_id: UUID) -> Dict[str, A
         "attempts": session.attempts,
         "accuracy_pct": session.accuracy_pct,
         "avg_response_time_ms": session.avg_response_time_ms,
-        "started_at": session.started_at.isoformat() if session.started_at else None,
-        "completed_at": session.completed_at.isoformat() if session.completed_at else None,
+        "started_at": iso_utc(session.started_at),
+        "completed_at": iso_utc(session.completed_at),
     }
 
 
@@ -241,7 +243,7 @@ async def get_patient_game_history(
             "difficulty_level": s.difficulty_level,
             "accuracy_pct": s.accuracy_pct,
             "avg_response_time_ms": s.avg_response_time_ms,
-            "completed_at": s.completed_at.isoformat() if s.completed_at else None,
+            "completed_at": iso_utc(s.completed_at),
         }
         for s in sessions
     ]

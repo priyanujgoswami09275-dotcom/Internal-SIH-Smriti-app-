@@ -307,6 +307,22 @@ class Api {
     return <String, dynamic>{};
   }
 
+  /// GET /api/v1/patients/{id}/risk-screening — rehydrate the latest
+  /// persisted screening. Returns null when not assessed or the gate
+  /// denies (403): callers treat that as "no card data", never as an error.
+  static Future<Map<String, dynamic>?> getRiskScreening(
+      String patientId) async {
+    try {
+      final data = await _get('/api/v1/patients/$patientId/risk-screening');
+      if (data is! Map) return null;
+      final map = Map<String, dynamic>.from(data);
+      if (map['status'] == 'not_assessed') return null;
+      return map;
+    } on Exception {
+      return null;
+    }
+  }
+
   /// POST /api/v1/reports/documents/upload as an authed multipart request.
   /// Backend contract (`backend/app/routes/reports.py`): multipart `file`
   /// part + `patient_id` / `doc_type` / `title` fields; staff roles +
@@ -659,6 +675,8 @@ class _DashboardScreenState extends State<_DashboardScreen> {
 
   Future<void> _select(String patientId, {bool silent = false}) async {
     if (!silent) setState(() => _loading = true);
+    // Drop the previous patient's screening immediately (stale-result guard).
+    if (mounted) setState(() => _riskScreeningResult = null);
     try {
       final summary = await Api.summary(patientId);
       // Schedules load lazily too — cheap, and keeps one code path.
@@ -675,6 +693,14 @@ class _DashboardScreenState extends State<_DashboardScreen> {
         _schedules = schedules;
         _loading = false;
       });
+      // Rehydrate risk screening for clinical view only (server gates 403
+      // for basic tier / missing consent — getRiskScreening swallows that).
+      if (summary['view'] == 'clinical') {
+        final risk = await Api.getRiskScreening(patientId);
+        if (mounted && _selectedPatientId == patientId) {
+          setState(() => _riskScreeningResult = risk);
+        }
+      }
     } on Exception catch (e) {
       if (mounted) {
         setState(() {

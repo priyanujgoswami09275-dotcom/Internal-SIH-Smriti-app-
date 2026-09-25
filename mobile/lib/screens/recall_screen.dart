@@ -12,6 +12,7 @@ import 'package:flutter/material.dart';
 
 import '../games/game_analytics_engine.dart';
 import '../games/level_config.dart';
+import '../games/shadow_model_label.dart';
 import '../models/game_models.dart';
 import '../models/shared_models.dart';
 import '../services/api_service.dart';
@@ -265,6 +266,14 @@ class _RecallScreenState extends State<RecallScreen> {
                 '${finalState.correctCount}/${finalState.board.sequence.length}'),
             _resultRow('Average response',
                 '${finalState.avgResponseTimeMs.toStringAsFixed(0)} ms'),
+            if (shadowModelLabel(summary) != null) ...[
+              const SizedBox(height: 8),
+              Text(
+                shadowModelLabel(summary)!,
+                style: Monad.monoCaption.copyWith(color: Monad.indigo),
+                textAlign: TextAlign.center,
+              ),
+            ],
             if (summary == null) ...[
               const SizedBox(height: 12),
               Text(

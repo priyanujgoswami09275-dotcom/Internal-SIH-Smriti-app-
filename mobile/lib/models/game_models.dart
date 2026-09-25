@@ -472,12 +472,18 @@ class GameSessionSummary {
 
   /// Server-assigned continuation (display-only: the client never computes
   /// promotion locally). The patient session-complete endpoint returns
-  /// summary fields only (difficulty evaluation is a separate staff-gated
-  /// endpoint the app never calls), so these stay null for real payloads
-  /// and are set only by explicit construction (tests / future contract).
+  /// summary metrics + nullable Phase B-01 shadow_* fields (shadow-only
+  /// next-level success; rules stay authoritative). next/source/reason are
+  /// not on this endpoint and stay null for real payloads.
   final int? nextDifficultyLevel;
   final String? source;
   final String? reason;
+
+  /// Shadow-only next-level success prediction (experimental; never controls
+  /// difficulty). Null when disabled, unsupported game, or inference failed.
+  final double? shadowProbability;
+  final String? shadowModelVersion;
+  final String? shadowReason;
 
   const GameSessionSummary({
     required this.sessionId,
@@ -493,13 +499,14 @@ class GameSessionSummary {
     this.nextDifficultyLevel,
     this.source,
     this.reason,
+    this.shadowProbability,
+    this.shadowModelVersion,
+    this.shadowReason,
   });
 
-  /// Parses exactly the session-complete summary shape (mirrors what
-  /// recall_screen consumes via typed completeGame): session_id,
-  /// accuracy_pct, total_attempts, correct/incorrect counts. Unknown keys
-  /// (including any next-level/source/reason variants) are ignored — the
-  /// endpoint carries none, so nothing speculative is trusted.
+  /// Parses the session-complete summary shape: metrics + nullable shadow_*
+  /// fields. Unknown keys (including speculative next-level variants) are
+  /// ignored — nothing without a backend source is trusted.
   factory GameSessionSummary.fromJson(Map<String, dynamic> json) {
     return GameSessionSummary(
       sessionId: json['session_id'],
@@ -512,6 +519,9 @@ class GameSessionSummary {
       avgResponseTimeMs: (json['avg_response_time_ms'] as num).toDouble(),
       startedAt: DateTime.parse(json['started_at']),
       completedAt: DateTime.parse(json['completed_at']),
+      shadowProbability: (json['shadow_probability'] as num?)?.toDouble(),
+      shadowModelVersion: json['shadow_model_version'] as String?,
+      shadowReason: json['shadow_reason'] as String?,
     );
   }
 }

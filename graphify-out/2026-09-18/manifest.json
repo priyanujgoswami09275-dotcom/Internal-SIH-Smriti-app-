@@ -78,9 +78,9 @@
     "semantic_hash": ""
   },
   "backend/app/config.py": {
-    "mtime": 1789619935.4776568,
-    "seen": 1789623424.884487,
-    "ast_hash": "c29cd5560c444d7d15d2500c36b0b69b",
+    "mtime": 1789663947.1608014,
+    "seen": 1789686657.5308921,
+    "ast_hash": "fce9e1567fbc1945d99e819d727fce0b",
     "semantic_hash": ""
   },
   "backend/app/core/security.py": {
@@ -138,9 +138,9 @@
     "semantic_hash": ""
   },
   "backend/app/models/all_models.py": {
-    "mtime": 1789627074.899722,
-    "seen": 1789627436.750608,
-    "ast_hash": "30098840c369aaf3ee007f89e16ff5bc",
+    "mtime": 1789663721.6609178,
+    "seen": 1789686657.530899,
+    "ast_hash": "9bcca657ba41c9c059b451bf1f47dbc4",
     "semantic_hash": ""
   },
   "backend/app/models/base.py": {
@@ -186,9 +186,9 @@
     "semantic_hash": ""
   },
   "backend/app/routes/games.py": {
-    "mtime": 1789620234.0908766,
-    "seen": 1789623424.884496,
-    "ast_hash": "bb2ab91fc73ef76f25996cfe37062dc3",
+    "mtime": 1789686449.8392375,
+    "seen": 1789686657.530903,
+    "ast_hash": "03644d61373976fb5141fe9e635aefe7",
     "semantic_hash": ""
   },
   "backend/app/routes/language.py": {
@@ -276,9 +276,9 @@
     "semantic_hash": ""
   },
   "backend/app/services/difficulty_engine.py": {
-    "mtime": 1788522359.0,
-    "seen": 1789623424.884504,
-    "ast_hash": "2c767e3099a1bf3ad66b20ee051bd781",
+    "mtime": 1789663947.1706738,
+    "seen": 1789686657.530918,
+    "ast_hash": "047fdb1306e1b5119c79c8f120d78b0d",
     "semantic_hash": ""
   },
   "backend/app/services/document_extraction.py": {
@@ -624,9 +624,9 @@
     "semantic_hash": ""
   },
   "backend/seed_demo.py": {
-    "mtime": 1788549421.0,
-    "seen": 1789623424.884532,
-    "ast_hash": "91ac6665aa49eb337e99c290733a763b",
+    "mtime": 1789685586.2271109,
+    "seen": 1789686657.530955,
+    "ast_hash": "3479d795698b45e3868d8b30be450fd1",
     "semantic_hash": ""
   },
   "backend/smoke_e2e.py": {
@@ -660,9 +660,9 @@
     "semantic_hash": ""
   },
   "backend/tests/test_migrations.py": {
-    "mtime": 1789633003.9679513,
-    "seen": 1789633042.716104,
-    "ast_hash": "42fcb649dd2b20b6085b2c65a4cb61e2",
+    "mtime": 1789663974.2146227,
+    "seen": 1789686657.5309608,
+    "ast_hash": "1f867892c0e997b4ef3a502a59e0e845",
     "semantic_hash": ""
   },
   "backend/tests/test_models.py": {
@@ -1392,15 +1392,15 @@
     "semantic_hash": ""
   },
   "CLAUDE.md": {
-    "mtime": 1789230894.3573334,
-    "seen": 1789623424.8845959,
-    "ast_hash": "4016c6fec869c9aa710f8b70169eede0",
+    "mtime": 1789685655.8325493,
+    "seen": 1789686657.5310888,
+    "ast_hash": "91b61665eb038603208cb9a39a74bd35",
     "semantic_hash": ""
   },
   "DEPLOYMENT.md": {
-    "mtime": 1789623701.937671,
-    "seen": 1789627436.7507882,
-    "ast_hash": "cb39809a4f30f8396772b46378206898",
+    "mtime": 1789685707.6368377,
+    "seen": 1789686657.53109,
+    "ast_hash": "2736eedd567fe8af8fe41167d5636203",
     "semantic_hash": ""
   },
   "DESIGN.md": {
@@ -1410,9 +1410,9 @@
     "semantic_hash": ""
   },
   "README.md": {
-    "mtime": 1788594232.920029,
-    "seen": 1789623424.884598,
-    "ast_hash": "0174032ce8a265730db1e45cea9567cc",
+    "mtime": 1789685592.4436555,
+    "seen": 1789686657.531091,
+    "ast_hash": "20deab3da2980748eae66bb861b64ef6",
     "semantic_hash": ""
   },
   "backend/app/voice_persona.txt": {
@@ -2400,99 +2400,99 @@
     "semantic_hash": ""
   },
   ".planning/phases/cognitive-games-ml/A-01-PLAN.md": {
-    "mtime": 1789641291.4158192,
-    "seen": 1789642767.302717,
-    "ast_hash": "13db052de77cd9fa517374d1120020e8",
+    "mtime": 1789662363.2029264,
+    "seen": 1789686657.5310788,
+    "ast_hash": "1539f6659b3cce3d83db457fe05a7a69",
     "semantic_hash": ""
   },
   ".planning/phases/cognitive-games-ml/A-02-PLAN.md": {
-    "mtime": 1789642231.5966618,
-    "seen": 1789642767.3027189,
-    "ast_hash": "adf0642ac91e0912398e2b349918122a",
+    "mtime": 1789662363.0318356,
+    "seen": 1789686657.53108,
+    "ast_hash": "d49ce2e52ee296bada1821aa83993c3d",
     "semantic_hash": ""
   },
   ".planning/phases/cognitive-games-ml/B-01-PLAN.md": {
-    "mtime": 1789642163.1464663,
-    "seen": 1789642767.30272,
-    "ast_hash": "86260f7851c37e54fca4ae00bf420027",
+    "mtime": 1789644326.6473465,
+    "seen": 1789686657.53108,
+    "ast_hash": "318e2979f04c36322ca57b2748042810",
     "semantic_hash": ""
   },
   ".planning/phases/cognitive-games-ml/B-02-PLAN.md": {
-    "mtime": 1789642310.9972165,
-    "seen": 1789642767.30272,
-    "ast_hash": "47fc3246f0005a66077d81aa41fb910a",
+    "mtime": 1789644357.0789902,
+    "seen": 1789686657.531081,
+    "ast_hash": "4211692061ec4d4918dd84a47c1bcef3",
     "semantic_hash": ""
   },
   ".planning/phases/cognitive-games-ml/B-03-PLAN.md": {
-    "mtime": 1789625155.0151527,
-    "seen": 1789627436.7507799,
-    "ast_hash": "963759aa6d5831182916f0536522acc0",
+    "mtime": 1789644357.078786,
+    "seen": 1789686657.531082,
+    "ast_hash": "f529e5dc1cc29ee04c0ae34783de7595",
     "semantic_hash": ""
   },
   ".planning/phases/cognitive-games-ml/B-04-PLAN.md": {
-    "mtime": 1789625894.758216,
-    "seen": 1789627436.7507808,
-    "ast_hash": "c168d93ce41ffb20271ee9b595ae4018",
+    "mtime": 1789644357.079246,
+    "seen": 1789686657.531082,
+    "ast_hash": "c85d8d3ba6ef52895b7d6dcb12cc5d31",
     "semantic_hash": ""
   },
   ".planning/phases/cognitive-games-ml/B-05-PLAN.md": {
-    "mtime": 1789625155.245675,
-    "seen": 1789627436.7507808,
-    "ast_hash": "e9f87c8bea5b500b121e13699f0f868a",
+    "mtime": 1789644357.0793657,
+    "seen": 1789686657.531083,
+    "ast_hash": "4789883a42c28f36ffef973a11d65b58",
     "semantic_hash": ""
   },
   ".planning/phases/cognitive-games-ml/B-06-PLAN.md": {
-    "mtime": 1789641848.8431628,
-    "seen": 1789642767.3027232,
-    "ast_hash": "2ce7aa0079d457a49cf3d7765cc524b1",
+    "mtime": 1789644357.0791123,
+    "seen": 1789686657.531083,
+    "ast_hash": "4abb85efeedb6ed7fb230a90363338f6",
     "semantic_hash": ""
   },
   ".planning/phases/cognitive-games-ml/C-01-PLAN.md": {
-    "mtime": 1789642375.316924,
-    "seen": 1789642767.3027232,
-    "ast_hash": "1b643a62b26269bcc7f98bd35110a4d8",
+    "mtime": 1789662400.273823,
+    "seen": 1789686657.531084,
+    "ast_hash": "1cc2b4466e11cbc3a1e50e3a5e68ed67",
     "semantic_hash": ""
   },
   ".planning/phases/cognitive-games-ml/C-02-PLAN.md": {
-    "mtime": 1789625265.7911608,
-    "seen": 1789627436.750783,
-    "ast_hash": "6311f49f82eb141bbbadc2e0cde05967",
+    "mtime": 1789662400.273942,
+    "seen": 1789686657.531085,
+    "ast_hash": "c40b0865ce8509bad95b55b6dd1b90ed",
     "semantic_hash": ""
   },
   ".planning/phases/cognitive-games-ml/C-03-PLAN.md": {
-    "mtime": 1789625373.14736,
-    "seen": 1789627436.750783,
-    "ast_hash": "2a1d06a53bbd0de4ed1c2a24f68c8ba9",
+    "mtime": 1789662400.313697,
+    "seen": 1789686657.531085,
+    "ast_hash": "8419ddc5ea0b23c5d409711072254b9d",
     "semantic_hash": ""
   },
   ".planning/phases/cognitive-games-ml/C-04-PLAN.md": {
-    "mtime": 1789642310.9684556,
-    "seen": 1789642767.302725,
-    "ast_hash": "ff5d9f3e9a0b0e2c95b93338149fd66e",
+    "mtime": 1789662400.33914,
+    "seen": 1789686657.531086,
+    "ast_hash": "6faf3552e550cc952bb9c5b3f91f989c",
     "semantic_hash": ""
   },
   ".planning/phases/cognitive-games-ml/ROADMAP.md": {
-    "mtime": 1789642245.5808086,
-    "seen": 1789642767.3027258,
-    "ast_hash": "f1d887b125e6f9b0e1bb1d37e214ae86",
+    "mtime": 1789662458.1631093,
+    "seen": 1789686657.531086,
+    "ast_hash": "8103535ed9750128211b6819afd81220",
     "semantic_hash": ""
   },
   ".planning/phases/cognitive-games-ml/STATE.md": {
-    "mtime": 1789642745.3049374,
-    "seen": 1789642767.3027258,
-    "ast_hash": "0b9781b9208fbc0a4a479ac2bcc21026",
+    "mtime": 1789686650.358052,
+    "seen": 1789686657.5310872,
+    "ast_hash": "1fa972928776f8dc850a9942f1d9add4",
     "semantic_hash": ""
   },
   ".planning/phases/cognitive-games-ml/cognitive-games-ml-VERIFICATION-CHECKER.md": {
-    "mtime": 1789642252.416892,
-    "seen": 1789642767.302727,
-    "ast_hash": "39a75baa79688e4260a49daef868ba2a",
+    "mtime": 1789662458.401492,
+    "seen": 1789686657.5310872,
+    "ast_hash": "b6ec2113fd9dc90c37fa1b451eed21bb",
     "semantic_hash": ""
   },
   ".planning/phases/cognitive-games-ml/A-01-SUMMARY.md": {
-    "mtime": 1789641839.5082784,
-    "seen": 1789642767.302718,
-    "ast_hash": "b5b2d295d305caa0b8f6ccdab29b6abe",
+    "mtime": 1789662472.8174837,
+    "seen": 1789686657.5310788,
+    "ast_hash": "e1b6ed44aa7fac56cffe45051e309ffe",
     "semantic_hash": ""
   },
   "backend/app/tests/test_grant_authority.py": {
@@ -2511,6 +2511,72 @@
     "mtime": 1789634163.657494,
     "seen": 1789638539.1489348,
     "ast_hash": "47ce0368926466bfbcc5b3c6716c6c27",
+    "semantic_hash": ""
+  },
+  "backend/alembic/versions/0009_shadow_difficulty.py": {
+    "mtime": 1789664057.1785917,
+    "seen": 1789686657.530891,
+    "ast_hash": "75e04d60293998dd4a59290b1bf9013f",
+    "semantic_hash": ""
+  },
+  "backend/app/services/adaptive_features.py": {
+    "mtime": 1789663365.3989284,
+    "seen": 1789686657.530912,
+    "ast_hash": "365b0c14c6d5d8d86c73128a2e3f5f09",
+    "semantic_hash": ""
+  },
+  "backend/app/services/adaptive_shadow.py": {
+    "mtime": 1789663932.5300877,
+    "seen": 1789686657.530913,
+    "ast_hash": "d9a84a74cff9bc51e688259bfec99cd5",
+    "semantic_hash": ""
+  },
+  "backend/app/services/adaptive_training.py": {
+    "mtime": 1789686490.8505852,
+    "seen": 1789686657.530914,
+    "ast_hash": "2e3f1810d7a95d49e5f6a1600e34be59",
+    "semantic_hash": ""
+  },
+  "backend/app/tests/test_adaptive_shadow.py": {
+    "mtime": 1789686440.085109,
+    "seen": 1789686657.5309289,
+    "ast_hash": "73cc357bc30ff1cce22e51d0b94b62ee",
+    "semantic_hash": ""
+  },
+  "backend/tests/test_adaptive_artifact.py": {
+    "mtime": 1789686515.3329542,
+    "seen": 1789686657.5309582,
+    "ast_hash": "874dc6e0d0242646dceb55cd57039a8c",
+    "semantic_hash": ""
+  },
+  "backend/tests/test_adaptive_cli.py": {
+    "mtime": 1789686538.7513576,
+    "seen": 1789686657.5309591,
+    "ast_hash": "da9397c97517360cfdd0eb6e18d4b8ff",
+    "semantic_hash": ""
+  },
+  "backend/tests/test_adaptive_features.py": {
+    "mtime": 1789663443.4615798,
+    "seen": 1789686657.5309591,
+    "ast_hash": "4402018e0021482a6714f14f7e32b35d",
+    "semantic_hash": ""
+  },
+  "backend/tests/test_adaptive_training.py": {
+    "mtime": 1789686515.3327386,
+    "seen": 1789686657.5309598,
+    "ast_hash": "d55eea5b490d13d5ceab87723df2ac42",
+    "semantic_hash": ""
+  },
+  "backend/train_adaptive.py": {
+    "mtime": 1789686509.034397,
+    "seen": 1789686657.530963,
+    "ast_hash": "6e8da2a48946b1d91cded9c01086749b",
+    "semantic_hash": ""
+  },
+  ".planning/phases/cognitive-games-ml/B-REPORT.md": {
+    "mtime": 1789686640.879152,
+    "seen": 1789686657.531084,
+    "ast_hash": "54d33b36da1fca3d505ed672c55653c3",
     "semantic_hash": ""
   }
 }

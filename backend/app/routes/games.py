@@ -5,6 +5,7 @@ Endpoints:
    POST /games/sessions — start a new game
    POST /games/sessions/{session_id}/actions — record an action
    POST /games/sessions/{session_id}/complete — finish and compute metrics
+     (+ nullable shadow_* next-level success fields; rules stay authoritative)
    GET /games/sessions/{session_id} — retrieve session summary
    GET /patients/{patient_id}/games/history — trend data for dashboard
    GET /games/content-packs — list available content packs
@@ -13,7 +14,10 @@ Endpoints:
    GET /patients/{patient_id}/routine — get patient's routine
    GET /routine/board — generate sequencing puzzle
    GET /games/odd-one-out/board — generate Odd-One-Out board (server-held answer)
+   POST /games/difficulty/evaluate — staff rule evaluation (+ shadow fields)
 """
+import logging
+from datetime import datetime, timezone
 from typing import Optional
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException
@@ -33,6 +37,9 @@ from app.models.all_models import GameTypeEnum, PatientProfile, GameSession
 from app.models.user import User
 from app.services import game_service, difficulty_engine, routine_service, content_packs
 from app.services import level_config_service, recall_service, odd_one_out_service
+from app.services.adaptive_shadow import evaluate_shadow
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/games", tags=["games"])
 
@@ -98,7 +105,13 @@ class RecordActionRequest(BaseModel):
 
 
 class SessionSummaryResponse(BaseModel):
-    """Completed game session summary."""
+    """Completed game session summary.
+
+    shadow_* fields are Phase B-01 shadow-only next-level success predictions.
+    They never influence difficulty (rules remain source of truth via
+    POST /games/difficulty/evaluate). Nullable: null when the shadow model is
+    disabled, the game is unsupported, or inference fails.
+    """
     session_id: UUID
     game_type: str
     difficulty_level: int
@@ -109,6 +122,9 @@ class SessionSummaryResponse(BaseModel):
     avg_response_time_ms: float
     started_at: str
     completed_at: str
+    shadow_probability: Optional[float] = None
+    shadow_model_version: Optional[str] = None
+    shadow_reason: Optional[str] = None
 
 
 class GameHistoryItem(BaseModel):
@@ -250,7 +266,8 @@ async def start_game(
     # Snapshot values, then commit: start_game_session only flushes, and reading
     # ORM attributes after commit requires expire_on_commit=False.
     session_id = str(session.id)
-    started_at = session.started_at.isoformat()
+    from app.services.game_service import iso_utc
+    started_at = iso_utc(session.started_at)
     await db.commit()
 
     return {
@@ -347,7 +364,33 @@ async def complete_game(
         summary = await game_service.complete_game_session(db, session_id=sid)
     except ValueError:
         raise HTTPException(status_code=404, detail="Game session not found")
-    return SessionSummaryResponse(**summary)
+    # Shadow-only next-level success prediction (Phase B-01). Prediction
+    # rides as nullable fields; never calls evaluate_difficulty, never
+    # writes DifficultyAdjustmentLog, never changes new_difficulty.
+    shadow = dict(
+        shadow_probability=None,
+        shadow_model_version=None,
+        shadow_reason="inference_error",
+    )
+    try:
+        shadow = await evaluate_shadow(
+            db,
+            summary["patient_id"],
+            summary["game_type"],
+            summary["difficulty_level"],
+            # Naive UTC matches GameSession DateTime columns so the history
+            # query and extract_features.timestamp() agree on the same basis.
+            datetime.now(timezone.utc).replace(tzinfo=None),
+        )
+    except Exception:
+        logger.debug("session=%s shadow inference failed", sid, exc_info=True)
+    logger.debug(
+        "session=%s shadow_reason=%s p=%s",
+        sid,
+        shadow.get("shadow_reason"),
+        shadow.get("shadow_probability"),
+    )
+    return SessionSummaryResponse(**summary, **shadow)
 
 
 @router.get("/sessions/{session_id}", response_model=dict)

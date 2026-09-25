@@ -15,6 +15,54 @@
 6. Configure real notification channel (SMS/FCM/APNs) beyond console.
 7. Clean build artifacts (mobile/build, .dart_tool; backend/.venv) and refresh graph (`graphify update .`).
 
+## Remote HTTPS access (cloud DB + real phones) — 2026-09-24
+
+Target architecture: `Flutter → HTTPS → FastAPI → Supabase PostgreSQL`.
+The backend is fully env-configured — no source changes are needed to expose it
+remotely. Two supported paths:
+
+### A. Quick tunnel (verified working 2026-09-24)
+
+Runs the existing local uvicorn behind a public HTTPS URL; zero account, zero
+cost. Chosen because the repo already anticipates it (`app_config.dart`
+documents a tunnel `API_BASE_URL`) and no cloud-host credentials were available.
+
+```sh
+# 1. Backend must be running (Supabase DATABASE_URL from repo-root .env):
+ENABLE_BACKGROUND_JOBS=false python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --no-access-log
+# 2. Public HTTPS endpoint:
+cloudflared tunnel --url http://localhost:8000 --no-autoupdate
+#    → prints https://<random-words>.trycloudflare.com
+```
+
+Verified through the tunnel against Supabase: /health, CORS preflight,
+register/login, patient access (consent + clinical link), game session +
+complete, history, stats, adaptive shadow (`insufficient_history → predicted`),
+risk screening POST/GET (38/38 checks). Flutter connects with
+`--dart-define=API_BASE_URL=https://<random-words>.trycloudflare.com`
+(HTTPS, so release builds work TLS-only; no cleartext flag needed).
+
+Limits: URL rotates per tunnel start; uptime tied to this machine/process.
+Good for phone testing and the demo; not a durable production host.
+
+### B. Durable host (Docker) — ready, needs an account/service
+
+`backend/Dockerfile` is deployment-ready: python:3.12-slim, pinned deps
+(incl. `scikit-learn==1.6.1` matching the shadow artifact, `joblib==1.6.0`),
+uvicorn on 0.0.0.0:8000, `ml_models/` ships in the image. Works on any
+Docker-capable host (Render/Railway/Fly/VPS). Required environment variables:
+
+- `DATABASE_URL` — Supabase pooler, `postgresql+psycopg://postgres.<ref>:<pw>@aws-0-<region>.pooler.supabase.com:5432/postgres?sslmode=require` (percent-encode the password)
+- `SECRET_KEY`, `ENCRYPTION_KEY` — real values (≥24 / ≥16 chars)
+- `ENVIRONMENT=production` — enables rate limiting; refuses placeholder secrets
+- `CORS_ORIGINS` — comma-separated whitelist (required, `*` refused in production); native Flutter needs no CORS, Flutter **web** dashboard origin must be listed
+- `ADAPTIVE_SHADOW_MODEL=bootstrap.joblib` (keep shadow-only; rules stay authoritative)
+- Optional provider keys (OPENROUTER/BHASHINI/…) as needed
+- Run `python -m alembic upgrade head` once with `DATABASE_URL` exported (process env, not .env)
+
+UTC handling (`options=-c timezone=UTC`, naive-UTC writes) is env-independent
+and unchanged on any host.
+
 ## Run — September 30 demo (authoritative)
 
 The demo runs against the **populated Homebrew PostgreSQL cluster on the host**:
