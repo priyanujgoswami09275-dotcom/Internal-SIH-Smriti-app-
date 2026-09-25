@@ -135,8 +135,10 @@ async def test_escalate_then_missed_and_reprompt(db_session):
 
     # reprompt fan-out uses the notification provider (console mock here)
     provider = ConsoleNotificationProvider()
-    sent = await notify_reprompts(patient.id, result, provider=provider)
-    assert sent == 1
+    delivery = await notify_reprompts(db_session, patient.id, result, provider=provider)
+    assert delivery["recipients_resolved"] == 1
+    assert delivery["confirmed_deliveries"] == 0
+    assert delivery["delivery_state"] == "not_configured"
     assert provider.deliveries[0]["kind"] == "reprompt"
     assert provider.deliveries[0]["reminder_type"] == "medicine"
 

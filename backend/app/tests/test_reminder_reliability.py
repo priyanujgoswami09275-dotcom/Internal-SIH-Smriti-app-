@@ -165,3 +165,180 @@ async def test_concurrent_duplicate_alert_condition_creates_one_alert(db_session
     ).scalars().all()
     assert sum(alert is not None for alert in alerts) == 1
     assert len(rows) == 1
+
+
+@pytest.mark.parametrize("provider_name", ["console", "fcm"])
+async def test_no_real_transport_reports_logged_only(
+    client, db_session, monkeypatch, provider_name
+):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "NOTIFICATION_PROVIDER", provider_name)
+    headers = await _staff_headers(client)
+    patient_payload = await create_consented_patient(client, f"No Transport {provider_name}")
+    patient_id = uuid.UUID(patient_payload["id"])
+    patient = await db_session.get(PatientProfile, patient_id)
+    schedule = ReminderSchedule(
+        patient_id=patient.id,
+        reminder_type=ReminderTypeEnum.MEDICINE,
+        cadence="08:00",
+        created_by=uuid.UUID(headers.get("x-test-user-id", str(uuid.uuid4()))),
+        is_active=True,
+    )
+    staff = (
+        await db_session.execute(
+            select(User).where(User.role == RoleEnum.CLINICIAN)
+        )
+    ).scalars().first()
+    schedule.created_by = staff.id
+    db_session.add(schedule)
+    caregiver = User(
+        phone=f"+91{uuid.uuid4().int % 10**10}",
+        password_hash="x",
+        role=RoleEnum.FAMILY_CAREGIVER,
+    )
+    db_session.add(caregiver)
+    await db_session.flush()
+    db_session.add(
+        CaregiverPatientLink(
+            caregiver_id=caregiver.id,
+            patient_id=patient.id,
+            relationship_type=RelationshipTypeEnum.FAMILY,
+            is_active=True,
+        )
+    )
+    now = datetime.now(timezone.utc)
+    for minutes in (180, 240, 300):
+        db_session.add(
+            ReminderEvent(
+                patient_id=patient.id,
+                schedule_id=schedule.id,
+                scheduled_at=now - timedelta(minutes=minutes),
+                status=ReminderStatusEnum.MISSED,
+            )
+        )
+    await db_session.commit()
+
+    response = await client.post(
+        f"{REMINDERS}/patients/{patient.id}/evaluate-escalations", headers=headers
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["delivery_state"] == "not_configured"
+    assert "not configured" in body["delivery_message"].lower()
+    assert "logged only" in body["delivery_message"].lower()
+    assert body["recipients_resolved"] == 1
+    assert body["confirmed_deliveries"] == 0
+    assert body["notified_recipients"] == 0
+
+
+@pytest.mark.asyncio
+async def test_manual_escalation_uses_job_reprompt_dispatch_with_session(
+    client, db_session, monkeypatch
+):
+    import app.routes.reminders as reminder_routes
+
+    headers = await _staff_headers(client)
+    patient_payload = await create_consented_patient(client, "Manual Reprompt")
+    patient_id = uuid.UUID(patient_payload["id"])
+    staff = (
+        await db_session.execute(
+            select(User).where(User.role == RoleEnum.CLINICIAN)
+        )
+    ).scalars().first()
+    schedule = ReminderSchedule(
+        patient_id=patient_id,
+        reminder_type=ReminderTypeEnum.MEDICINE,
+        cadence="08:00",
+        created_by=staff.id,
+        is_active=True,
+    )
+    db_session.add(schedule)
+    await db_session.flush()
+    db_session.add(
+        ReminderEvent(
+            patient_id=patient_id,
+            schedule_id=schedule.id,
+            scheduled_at=datetime.now(timezone.utc) - timedelta(minutes=15),
+            status=ReminderStatusEnum.PENDING,
+        )
+    )
+    await db_session.commit()
+    observed: list[dict[str, Any]] = []
+
+    async def fake_reprompts(db, patient_id_arg, result, provider=None):
+        observed.append(
+            {
+                "same_session": db is db_session,
+                "patient_id": patient_id_arg,
+                "events": result["reprompt_events"],
+                "has_provider": provider is not None,
+            }
+        )
+        return {
+            "delivery_state": "not_configured",
+            "delivery_message": "Notification transport is not configured; logged only.",
+            "recipients_resolved": 1,
+            "confirmed_deliveries": 0,
+        }
+
+    monkeypatch.setattr(reminder_routes, "notify_reprompts", fake_reprompts, raising=False)
+
+    response = await client.post(
+        f"{REMINDERS}/patients/{patient_id}/evaluate-escalations", headers=headers
+    )
+
+    assert response.status_code == 200, response.text
+    assert len(observed) == 1
+    assert observed[0]["same_session"] is True
+    assert observed[0]["patient_id"] == patient_id
+    assert len(observed[0]["events"]) == 1
+    assert observed[0]["has_provider"] is True
+    body = response.json()
+    assert body["reprompt_delivery_state"] == "not_configured"
+    assert body["reprompt_confirmed_deliveries"] == 0
+
+
+@pytest.mark.asyncio
+async def test_provider_with_db_session_writes_delivery_audit(
+    db_session, monkeypatch
+):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "NOTIFICATION_PROVIDER", "fcm")
+    patient, _ = await _make_patient(db_session, "Audit Delivery")
+    caregiver = User(
+        phone=f"+91{uuid.uuid4().int % 10**10}",
+        password_hash="x",
+        role=RoleEnum.FAMILY_CAREGIVER,
+    )
+    db_session.add(caregiver)
+    await db_session.flush()
+    db_session.add(
+        CaregiverPatientLink(
+            caregiver_id=caregiver.id,
+            patient_id=patient.id,
+            relationship_type=RelationshipTypeEnum.FAMILY,
+            is_active=True,
+        )
+    )
+    alert = AlertFlag(
+        patient_id=patient.id,
+        trigger_type=AlertTriggerTypeEnum.MISSED_REMINDERS,
+        severity=AlertSeverityEnum.CRITICAL,
+        alert_summary="Three medicine reminders missed",
+    )
+    db_session.add(alert)
+    await db_session.commit()
+
+    result = await notify_escalation_results(
+        db_session, patient.id, {"alerts": [alert]}
+    )
+
+    assert result["delivery_state"] == "not_configured"
+    assert result["confirmed_deliveries"] == 0
+    rows = (await db_session.execute(select(NotificationDelivery))).scalars().all()
+    assert len(rows) == 1
+    assert rows[0].recipient_user_id == caregiver.id
+    assert rows[0].status == NotificationDeliveryStatusEnum.FAILED

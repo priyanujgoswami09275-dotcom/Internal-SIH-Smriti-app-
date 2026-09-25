@@ -72,9 +72,11 @@ async def test_fan_out_sends_alert_to_linked_family_and_asha(db_session):
 
     provider = ConsoleNotificationProvider()
     result = {"alerts": [alert]}
-    delivered = await notify_escalation_results(db_session, patient.id, result,
-                                                provider=provider)
-    assert delivered == 2  # one family caregiver + one asha worker
+    delivery = await notify_escalation_results(db_session, patient.id, result,
+                                               provider=provider)
+    assert delivery["recipients_resolved"] == 2
+    assert delivery["confirmed_deliveries"] == 0
+    assert delivery["delivery_state"] == "not_configured"
     assert len(provider.deliveries) == 1
     assert provider.deliveries[0]["kind"] == "alert"
     assert set(provider.deliveries[0]["recipients"]) == {"family_caregiver", "asha_worker"}
@@ -98,9 +100,11 @@ async def test_fan_out_skips_when_no_links(db_session):
     await db_session.flush()
 
     provider = ConsoleNotificationProvider()
-    delivered = await notify_escalation_results(db_session, patient.id, {"alerts": [alert]},
-                                                provider=provider)
-    assert delivered == 0
+    delivery = await notify_escalation_results(db_session, patient.id, {"alerts": [alert]},
+                                               provider=provider)
+    assert delivery["delivery_state"] == "no_recipients"
+    assert delivery["recipients_resolved"] == 0
+    assert delivery["confirmed_deliveries"] == 0
     assert provider.deliveries == []
 
 
@@ -108,8 +112,12 @@ async def test_fan_out_skips_when_no_links(db_session):
 async def test_fan_out_noop_when_no_alerts(db_session):
     patient, _ = await _seed_patient_with_caregivers(db_session)
     provider = ConsoleNotificationProvider()
-    assert await notify_escalation_results(db_session, patient.id, {"alerts": []},
-                                           provider=provider) == 0
+    delivery = await notify_escalation_results(
+        db_session, patient.id, {"alerts": []}, provider=provider
+    )
+    assert delivery["delivery_state"] == "not_applicable"
+    assert delivery["recipients_resolved"] == 0
+    assert delivery["confirmed_deliveries"] == 0
     assert provider.deliveries == []
 
 

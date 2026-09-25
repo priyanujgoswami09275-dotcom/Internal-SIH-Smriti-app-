@@ -92,7 +92,9 @@ async def test_escalation_scan_raises_alert_after_three_misses(db_session):
 
     result = await escalation_scan(db_session)
     assert result["alerts_created"] >= 1
-    assert result["notified"] >= 1  # family caregiver linked
+    assert result["recipients_resolved"] >= 1
+    assert result["notified"] == 0
+    assert result["delivery_state"] == "not_configured"
     flags = (await db_session.execute(
         select(AlertFlag).where(AlertFlag.patient_id == patient.id)
     )).scalars().all()

@@ -176,7 +176,9 @@ class AlertEngine:
         patient_ids = [pid for pid in patient_ids if pid in consented]
 
         alerts_created = 0
-        notified = 0
+        recipients_resolved = 0
+        confirmed_deliveries = 0
+        delivery_states: List[str] = []
         for pid in patient_ids:
             try:
                 result = await AlertEngine.evaluate_patient(db, pid, now=now)
@@ -187,7 +189,10 @@ class AlertEngine:
                         "alerts": new_alerts,
                         "alerts_created": len(new_alerts),
                     }
-                    notified += await notify_escalation_results(db, pid, fan)
+                    delivery = await notify_escalation_results(db, pid, fan)
+                    recipients_resolved += delivery["recipients_resolved"]
+                    confirmed_deliveries += delivery["confirmed_deliveries"]
+                    delivery_states.append(delivery["delivery_state"])
             except Exception:  # noqa: BLE001 — one patient never breaks the pass
                 logger.exception("Alert engine failed for patient %s", pid)
 
@@ -196,8 +201,18 @@ class AlertEngine:
         except Exception:  # noqa: BLE001
             await db.rollback()
             raise
-        return {"patients_evaluated": len(patient_ids),
-                "alerts_created": alerts_created, "notified": notified}
+        unique_states = set(delivery_states)
+        delivery_state = (
+            unique_states.pop() if len(unique_states) == 1 else "mixed"
+        ) if unique_states else "not_applicable"
+        return {
+            "patients_evaluated": len(patient_ids),
+            "alerts_created": alerts_created,
+            "recipients_resolved": recipients_resolved,
+            "confirmed_deliveries": confirmed_deliveries,
+            "delivery_state": delivery_state,
+            "notified": confirmed_deliveries,
+        }
 
 
 # Self-check: python -m app.services.alert_engine
