@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Text, Date, JSON, DateTime, func, ForeignKey, Enum as SQLEnum, Boolean, Integer, Float, UniqueConstraint, CheckConstraint
+from sqlalchemy import Column, String, Text, Date, JSON, DateTime, func, ForeignKey, Enum as SQLEnum, Boolean, Integer, Float, UniqueConstraint, CheckConstraint, Index
 from sqlalchemy.dialects.postgresql import UUID
 import uuid
 from enum import Enum
@@ -350,6 +350,15 @@ class WeeklyReport(Base):
     generated_at = Column(DateTime, default=func.now(), nullable=False)
     report_json = Column(JSON, nullable=False)  # ReportService summary payload
 
+    __table_args__ = (
+        UniqueConstraint(
+            "patient_id",
+            "week_start",
+            name="uq_weekly_reports_patient_week",
+        ),
+    )
+
+
 class UserDeviceToken(Base):
     __tablename__ = "user_device_tokens"
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -358,6 +367,11 @@ class UserDeviceToken(Base):
     phone = Column(String(50), nullable=True)
     platform = Column(String(20), nullable=False, default="android")
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
+
+    __table_args__ = (
+        Index("ix_user_device_tokens_user_id", "user_id"),
+    )
+
 
 class NotificationDeliveryStatusEnum(str, Enum):
     SENT = "sent"
@@ -377,6 +391,15 @@ class NotificationDelivery(Base):
     address = Column(String(500), nullable=True)
     status = Column(SQLEnum(NotificationDeliveryStatusEnum, values_callable=enum_values), nullable=False, default=NotificationDeliveryStatusEnum.SENT)
     created_at = Column(DateTime, default=func.now(), nullable=False)
+
+    __table_args__ = (
+        Index("ix_notification_deliveries_provider", "provider"),
+        Index(
+            "ix_notification_deliveries_recipient_user_id",
+            "recipient_user_id",
+        ),
+    )
+
 
 class RiskScreening(Base):
     __tablename__ = "risk_screenings"

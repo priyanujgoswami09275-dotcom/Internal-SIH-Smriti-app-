@@ -8,6 +8,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
 from app.middleware.rate_limit import RateLimitMiddleware
+from app.models import Base
 from app.models.all_models import (
     AlertFlag,
     AlertSeverityEnum,
@@ -310,3 +311,35 @@ async def test_background_audit_records_non_request_marker(db_session):
     )
 
     assert entry.ip_address == "non-request"
+
+
+def test_model_metadata_matches_production_constraints_and_indexes():
+    weekly_reports = Base.metadata.tables["weekly_reports"]
+    weekly_constraints = {
+        (constraint.name, tuple(column.name for column in constraint.columns))
+        for constraint in weekly_reports.constraints
+        if constraint.name
+    }
+    assert (
+        "uq_weekly_reports_patient_week",
+        ("patient_id", "week_start"),
+    ) in weekly_constraints
+
+    expected_indexes = {
+        "user_device_tokens": {
+            "ix_user_device_tokens_user_id": ("user_id",),
+        },
+        "notification_deliveries": {
+            "ix_notification_deliveries_provider": ("provider",),
+            "ix_notification_deliveries_recipient_user_id": (
+                "recipient_user_id",
+            ),
+        },
+    }
+    for table_name, indexes in expected_indexes.items():
+        table = Base.metadata.tables[table_name]
+        actual = {
+            index.name: tuple(column.name for column in index.columns)
+            for index in table.indexes
+        }
+        assert actual == indexes
