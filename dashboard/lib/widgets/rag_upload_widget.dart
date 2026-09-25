@@ -63,15 +63,16 @@ class _RagUploadWidgetState extends State<RagUploadWidget> {
         return;
       }
       await _uploadBytes(picked.bytes, picked.filename);
-    } catch (e) {
+    } catch (error) {
       if (!mounted) return;
+      final message = error is ApiException
+          ? describeApiError(error)
+          : 'Upload failed: $error';
       setState(() {
         _uploading = false;
-        _lastResult = 'Upload failed: $e';
+        _lastResult = message;
       });
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Upload failed: $e')),
-      );
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
     }
   }
 
@@ -93,15 +94,16 @@ class _RagUploadWidgetState extends State<RagUploadWidget> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Uploaded $filename successfully.')),
       );
-    } catch (e) {
+    } catch (error) {
       if (!mounted) return;
+      final message = error is ApiException
+          ? describeApiError(error)
+          : 'Upload failed: $error';
       setState(() {
         _uploading = false;
-        _lastResult = 'Upload failed: $e';
+        _lastResult = message;
       });
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Upload failed: $e')),
-      );
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
     }
   }
 

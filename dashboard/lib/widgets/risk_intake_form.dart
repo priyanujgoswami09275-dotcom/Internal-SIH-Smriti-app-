@@ -7,17 +7,20 @@ library;
 import 'package:flutter/material.dart';
 import '../main.dart';
 import '../theme/monad_theme.dart';
+import 'risk_screening_card.dart';
 import 'monad/monad_pill_button.dart';
 
 class RiskIntakeForm extends StatefulWidget {
   final String patientId;
   final String patientName;
   final void Function(Map<String, dynamic> result) onResult;
+  final void Function(RiskScreeningState state, String message)? onFailure;
   const RiskIntakeForm({
     super.key,
     required this.patientId,
     required this.patientName,
     required this.onResult,
+    this.onFailure,
   });
 
   @override
@@ -135,9 +138,32 @@ class _RiskIntakeFormState extends State<RiskIntakeForm> {
       );
       widget.onResult(data);
       if (mounted) Navigator.of(context).pop();
-    } catch (e) {
-      if (mounted) setState(() { _error = e.toString(); _loading = false; });
+    } catch (error) {
+      final message = error is ApiException
+          ? describeApiError(error)
+          : 'Screening request failed: $error';
+      final state = _stateForError(error);
+      widget.onFailure?.call(state, message);
+      if (mounted) {
+        setState(() {
+          _error = message;
+          _loading = false;
+        });
+      }
     }
+  }
+
+  RiskScreeningState _stateForError(Object error) {
+    if (error is ApiException) {
+      if (error.isNetworkError) return RiskScreeningState.transportFailure;
+      if (error.statusCode == 403 &&
+          error.message.toLowerCase().contains('consent')) {
+        return RiskScreeningState.consentRequired;
+      }
+      if (error.statusCode == 422) return RiskScreeningState.validationFailed;
+      if (error.isServerError) return RiskScreeningState.inferenceFailed;
+    }
+    return RiskScreeningState.transportFailure;
   }
 
   Widget _field(TextEditingController ctrl, String label, {String? hint}) =>
@@ -170,8 +196,11 @@ class _RiskIntakeFormState extends State<RiskIntakeForm> {
               IconButton(icon: const Icon(Icons.close), onPressed: () => Navigator.of(context).pop()),
             ]),
             const SizedBox(height: 4),
-            Text('32 clinical inputs. Not a diagnosis — preliminary screening only.',
-                style: Monad.monoCaption),
+            Text(
+              '32 clinical inputs. Not a diagnosis — preliminary screening only. '
+              'Experimental — not clinically validated.',
+              style: Monad.monoCaption,
+            ),
             const SizedBox(height: 16),
             Expanded(
               child: SingleChildScrollView(

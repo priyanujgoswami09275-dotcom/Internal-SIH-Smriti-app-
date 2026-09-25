@@ -23,6 +23,54 @@ import 'widgets/rag_upload_widget.dart';
 
 import 'config.dart';
 
+enum ApiErrorKind { network, rateLimited, forbidden, server, http }
+
+class ApiException implements Exception {
+  const ApiException({
+    required this.kind,
+    required this.message,
+    this.statusCode,
+    this.retryAfter,
+  });
+
+  final ApiErrorKind kind;
+  final String message;
+  final int? statusCode;
+  final Duration? retryAfter;
+
+  bool get isNetworkError => kind == ApiErrorKind.network;
+  bool get isRateLimited => kind == ApiErrorKind.rateLimited;
+  bool get isForbidden => kind == ApiErrorKind.forbidden;
+  bool get isServerError => kind == ApiErrorKind.server;
+
+  int? get retryAfterSeconds => retryAfter?.inSeconds;
+
+  @override
+  String toString() => message;
+}
+
+String describeApiError(ApiException error, {String? context}) {
+  if (error.kind == ApiErrorKind.rateLimited) {
+    final wait = error.retryAfter == null
+        ? ''
+        : ' Retry after ${error.retryAfter!.inSeconds} seconds.';
+    return 'Rate limit reached.$wait';
+  }
+  if (error.kind == ApiErrorKind.network) {
+    return 'Network unavailable. Check your connection and retry.';
+  }
+  if (error.kind == ApiErrorKind.forbidden) {
+    if (context == 'audit') {
+      return 'Audit trail request denied by the server (403). ${error.message}';
+    }
+    return 'Access denied by the server (403). ${error.message}';
+  }
+  if (error.kind == ApiErrorKind.server) {
+    return 'Server error (${error.statusCode ?? 500}): ${error.message}. Try again.';
+  }
+  return 'Request failed (${error.statusCode ?? 0}). ${error.message}';
+}
+
 // =====================================================================
 
 // =====================================================================
@@ -142,15 +190,47 @@ class Api {
     return request.send();
   }
 
+  static Future<http.Response> _networkCall(
+      Future<http.Response> Function() send) async {
+    try {
+      return await send();
+    } on ApiException {
+      rethrow;
+    } catch (_) {
+      throw const ApiException(
+        kind: ApiErrorKind.network,
+        message: 'Network request failed. Check your connection and retry.',
+      );
+    }
+  }
+
+  static Future<http.StreamedResponse> _networkSend(
+      Future<http.StreamedResponse> Function() send) async {
+    try {
+      return await send();
+    } on ApiException {
+      rethrow;
+    } catch (_) {
+      throw const ApiException(
+        kind: ApiErrorKind.network,
+        message: 'Network request failed. Check your connection and retry.',
+      );
+    }
+  }
+
   static Future<dynamic> _post(String path,
       {Map<String, dynamic>? body, bool auth = true}) async {
-    return _withRefresh(auth, () => _rawPost(Uri.parse('$apiBaseUrl$path'),
-        headers: _headers(), body: jsonEncode(body ?? const {})));
+    return _withRefresh(
+        auth,
+        () => _networkCall(() => _rawPost(Uri.parse('$apiBaseUrl$path'),
+            headers: _headers(), body: jsonEncode(body ?? const {}))));
   }
 
   static Future<dynamic> _get(String path, {bool auth = true}) async {
-    return _withRefresh(auth,
-        () => _rawGet(Uri.parse('$apiBaseUrl$path'), headers: _headers()));
+    return _withRefresh(
+        auth,
+        () => _networkCall(
+            () => _rawGet(Uri.parse('$apiBaseUrl$path'), headers: _headers())));
   }
 
   /// Shared refresh-retry core at the raw-response level.
@@ -172,16 +252,47 @@ class Api {
 
   /// DELETE with the same refresh-retry as GET/POST. Returns the raw
   /// response so the `deleteSchedule` call-site `_decode` is unchanged.
-  static Future<http.Response> _delete(String path) =>
-      _withRefreshResponse(
-          () => _rawDelete(Uri.parse('$apiBaseUrl$path'), headers: _headers()));
+  static Future<http.Response> _delete(String path) => _withRefreshResponse(
+      () => _networkCall(
+          () => _rawDelete(Uri.parse('$apiBaseUrl$path'), headers: _headers())));
+
+  static Duration? _retryAfter(http.Response res) {
+    final raw = res.headers['retry-after'] ?? res.headers['Retry-After'];
+    if (raw == null || raw.isEmpty) return null;
+    final seconds = int.tryParse(raw);
+    if (seconds != null && seconds >= 0) return Duration(seconds: seconds);
+    final date = DateTime.tryParse(raw);
+    if (date == null) return null;
+    final difference = date.difference(DateTime.now());
+    return difference.isNegative ? Duration.zero : difference;
+  }
 
   static dynamic _decode(http.Response res) {
-    final data = res.body.isEmpty ? null : jsonDecode(res.body);
+    dynamic data;
+    if (res.body.isNotEmpty) {
+      try {
+        data = jsonDecode(res.body);
+      } catch (_) {
+        data = null;
+      }
+    }
     if (res.statusCode >= 200 && res.statusCode < 300) return data;
-    throw Exception((data is Map && data['detail'] != null)
+    final detail = data is Map && data['detail'] != null
         ? data['detail'].toString()
-        : 'HTTP ${res.statusCode}');
+        : 'HTTP ${res.statusCode}';
+    final kind = res.statusCode == 429
+        ? ApiErrorKind.rateLimited
+        : res.statusCode == 403
+            ? ApiErrorKind.forbidden
+            : res.statusCode >= 500
+                ? ApiErrorKind.server
+                : ApiErrorKind.http;
+    throw ApiException(
+      kind: kind,
+      message: detail,
+      statusCode: res.statusCode,
+      retryAfter: _retryAfter(res),
+    );
   }
 
   /// In-flight refresh future: concurrent 401s await the same refresh
@@ -304,9 +415,36 @@ class Api {
     _decode(res);
   }
 
-  static Future<List<Map<String, dynamic>>> auditLogs({int limit = 50}) async {
-    final data = await _get('/api/v1/compliance/audit-logs?limit=$limit');
+  static Future<List<Map<String, dynamic>>> auditLogs({
+    int offset = 0,
+    int limit = 50,
+  }) async {
+    final data = await _get(
+      '/api/v1/compliance/audit-logs?limit=$limit&offset=$offset',
+    );
     return (data as List).cast<Map<String, dynamic>>();
+  }
+
+  static Future<Map<String, dynamic>> riskScreeningConsent(
+      String patientId) async {
+    final data = await _get(
+      '/api/v1/dashboard/patients/$patientId/risk-screening/consent',
+    );
+    return Map<String, dynamic>.from(data as Map);
+  }
+
+  static Future<Map<String, dynamic>?> getRiskScreening(
+      String patientId) async {
+    try {
+      final data = await _get('/api/v1/patients/$patientId/risk-screening');
+      if (data is! Map) return null;
+      final result = Map<String, dynamic>.from(data);
+      if (result['status'] == 'not_assessed') return null;
+      return result;
+    } on ApiException catch (error) {
+      if (error.statusCode == 404) return null;
+      rethrow;
+    }
   }
 
   /// POST /api/v1/patients/{id}/risk-screening with Authorization header
@@ -348,7 +486,7 @@ class Api {
       if (title != null && title.isNotEmpty) req.fields['title'] = title;
       req.files
           .add(http.MultipartFile.fromBytes('file', bytes, filename: filename));
-      final streamed = await _rawSend(req);
+      final streamed = await _networkSend(() => _rawSend(req));
       return http.Response.fromStream(streamed);
     });
   }
@@ -448,6 +586,7 @@ class _TrendPainter extends CustomPainter {
 
 
 void main() async {
+  validateApiConfig();
   WidgetsFlutterBinding.ensureInitialized();
   await Api.init();
   runApp(const CaregiverDashboardApp());
@@ -557,8 +696,10 @@ class _LoginScreenState extends State<_LoginScreen> {
       await Api.login(_phone.text.trim(), _password.text);
       if (!mounted) return;
       widget.onLoggedIn(Api.userId!, Api.role);
-    } on Exception catch (e) {
-      if (mounted) setState(() => _error = '$e');
+    } on ApiException catch (error) {
+      if (mounted) setState(() => _error = describeApiError(error));
+    } on Object catch (error) {
+      if (mounted) setState(() => _error = '$error');
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -630,6 +771,10 @@ class _LoginScreenState extends State<_LoginScreen> {
 // Dashboard
 // =====================================================================
 
+enum _ConsentState { checking, granted, required, unavailable }
+
+enum _SelectionStatus { success, failed, stale }
+
 class _DashboardScreen extends StatefulWidget {
   final String caregiverId;
   final String? role;
@@ -642,16 +787,41 @@ class _DashboardScreen extends StatefulWidget {
 }
 
 class _DashboardScreenState extends State<_DashboardScreen> {
+  static const int _auditPageSize = 50;
+
   List<Map<String, dynamic>>? _patients;
   String? _selectedPatientId;
   Map<String, dynamic>? _summary;
   bool _loading = true;
   String? _error;
+  String? _refreshError;
   List<Map<String, dynamic>>? _schedules;
+  String? _scheduleError;
   List<Map<String, dynamic>>? _auditLogs;
   String? _auditError;
+  int _auditOffset = 0;
+  bool _auditHasNext = false;
+  bool _auditLoading = false;
   Map<String, dynamic>? _riskScreeningResult;
-  bool _isClinicalView(Map s) => s['view'] == 'clinical';
+  RiskScreeningState _riskScreeningState = RiskScreeningState.notAssessed;
+  String? _riskScreeningError;
+  _ConsentState _consentState = _ConsentState.checking;
+  String? _consentError;
+  int _selectionGeneration = 0;
+
+  bool _isClinicalView(Map summary) {
+    final tier = summary['permission_tier'] as String?;
+    if (tier != null) return tier == 'clinical';
+    return summary['view'] == 'clinical';
+  }
+
+  bool _isCurrent(int generation, String patientId) =>
+      mounted && generation == _selectionGeneration && _selectedPatientId == patientId;
+
+  String _errorText(Object error, {String? context}) {
+    if (error is ApiException) return describeApiError(error, context: context);
+    return '$error';
+  }
 
   @override
   void initState() {
@@ -660,56 +830,162 @@ class _DashboardScreenState extends State<_DashboardScreen> {
   }
 
   Future<void> _load() async {
+    final generation = ++_selectionGeneration;
     setState(() {
       _loading = true;
       _error = null;
+      _refreshError = null;
+      _summary = null;
+      _selectedPatientId = null;
+      _schedules = null;
+      _resetPatientState();
     });
     try {
       final patients = await Api.patients(widget.caregiverId);
-      if (!mounted) return;
+      if (!mounted || generation != _selectionGeneration) return;
       setState(() {
         _patients = patients;
-        _loading = false;
+        _loading = patients.isEmpty ? false : _loading;
       });
       if (patients.isNotEmpty) {
         await _select(patients.first['patient_id'] as String, silent: true);
       }
-    } on Exception catch (e) {
-      if (mounted) {
-        setState(() {
-          _loading = false;
-          _error = '$e';
-        });
-      }
+    } catch (error) {
+      if (!mounted || generation != _selectionGeneration) return;
+      setState(() {
+        _loading = false;
+        _error = _errorText(error);
+      });
     }
   }
 
-  Future<void> _select(String patientId, {bool silent = false}) async {
-    if (!silent) setState(() => _loading = true);
+  Future<_SelectionStatus> _select(
+    String patientId, {
+    bool silent = false,
+  }) async {
+    final generation = ++_selectionGeneration;
+    final changed = _selectedPatientId != patientId;
+    if (!mounted) return _SelectionStatus.stale;
+    setState(() {
+      _loading = !silent || changed || _summary == null;
+      _error = null;
+      _refreshError = null;
+      if (changed) {
+        _selectedPatientId = patientId;
+        _summary = null;
+        _schedules = null;
+        _resetPatientState();
+      }
+    });
     try {
       final summary = await Api.summary(patientId);
-      // Schedules load lazily too — cheap, and keeps one code path.
+      if (!_isCurrent(generation, patientId)) return _SelectionStatus.stale;
+
       List<Map<String, dynamic>>? schedules;
+      String? scheduleError;
       try {
         schedules = await Api.schedules(patientId);
-      } catch (_) {
-        schedules = null; // some roles (admin) cannot fetch schedules per-patient
+      } catch (error) {
+        scheduleError = _errorText(error);
       }
-      if (!mounted) return;
+      if (!_isCurrent(generation, patientId)) return _SelectionStatus.stale;
+
+      var consentState = _ConsentState.checking;
+      String? consentError;
+      var riskState = RiskScreeningState.notAssessed;
+      Map<String, dynamic>? riskResult;
+      String? riskError;
+      if (_isClinicalView(summary)) {
+        try {
+          final consent = await Api.riskScreeningConsent(patientId);
+          if (!_isCurrent(generation, patientId)) return _SelectionStatus.stale;
+          consentState = consent['health_data_consent'] == true
+              ? _ConsentState.granted
+              : _ConsentState.required;
+          if (consentState == _ConsentState.granted) {
+            try {
+              riskResult = await Api.getRiskScreening(patientId);
+              if (!_isCurrent(generation, patientId)) {
+                return _SelectionStatus.stale;
+              }
+              riskState = riskResult == null
+                  ? RiskScreeningState.notAssessed
+                  : riskScreeningStateFromResponse(riskResult);
+              if (riskState == RiskScreeningState.consentRequired) {
+                consentState = _ConsentState.required;
+              }
+            } catch (error) {
+              riskState = _riskStateForError(error);
+              riskError = _errorText(error);
+              if (error is ApiException && error.statusCode == 403) {
+                consentState = _ConsentState.required;
+              }
+            }
+          } else {
+            riskState = RiskScreeningState.consentRequired;
+          }
+        } catch (error) {
+          consentState = _ConsentState.unavailable;
+          consentError = _errorText(error);
+          riskState = _riskStateForError(error);
+          riskError = consentError;
+        }
+      } else {
+        consentState = _ConsentState.unavailable;
+      }
+      if (!_isCurrent(generation, patientId)) return _SelectionStatus.stale;
+
       setState(() {
         _selectedPatientId = patientId;
         _summary = summary;
         _schedules = schedules;
         _loading = false;
+        _error = null;
+        _refreshError = null;
+        _consentState = consentState;
+        _consentError = consentError;
+        _riskScreeningResult = riskResult;
+        _riskScreeningState = riskState;
+        _riskScreeningError = riskError;
+        _scheduleError = scheduleError;
       });
-    } on Exception catch (e) {
-      if (mounted) {
-        setState(() {
-          _loading = false;
-          _error = '$e';
-        });
-      }
+      return _SelectionStatus.success;
+    } catch (error) {
+      if (!_isCurrent(generation, patientId)) return _SelectionStatus.stale;
+      final message = _errorText(error);
+      setState(() {
+        _loading = false;
+        if (changed || _summary == null) {
+          _error = message;
+        } else {
+          _refreshError = message;
+        }
+      });
+      return _SelectionStatus.failed;
     }
+  }
+
+  void _resetPatientState() {
+    _riskScreeningResult = null;
+    _riskScreeningState = RiskScreeningState.notAssessed;
+    _riskScreeningError = null;
+    _consentState = _ConsentState.checking;
+    _consentError = null;
+    _scheduleError = null;
+  }
+
+  RiskScreeningState _riskStateForError(Object error) {
+    if (error is ApiException) {
+      if (error.isNetworkError) return RiskScreeningState.transportFailure;
+      if (error.statusCode == 403 &&
+          error.message.toLowerCase().contains('consent')) {
+        return RiskScreeningState.consentRequired;
+      }
+      if (error.statusCode == 422) return RiskScreeningState.validationFailed;
+      if (error.isServerError) return RiskScreeningState.inferenceFailed;
+      if (error.statusCode == 404) return RiskScreeningState.notAssessed;
+    }
+    return RiskScreeningState.transportFailure;
   }
 
   Future<void> _addSchedule(String reminderType, String cadence) async {
@@ -717,67 +993,120 @@ class _DashboardScreenState extends State<_DashboardScreen> {
     if (pid == null) return;
     try {
       await Api.createSchedule(pid, reminderType, cadence);
-      await _select(pid, silent: true);
+    } catch (error) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('$reminderType reminder added at $cadence')));
+          SnackBar(content: Text('Could not add reminder: ${_errorText(error)}')),
+        );
       }
-    } on Exception catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('Could not add: $e')));
-      }
+      return;
+    }
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('$reminderType reminder added at $cadence')),
+    );
+    final outcome = await _select(pid, silent: true);
+    if (outcome == _SelectionStatus.failed && mounted) {
+      ScaffoldMessenger.of(context)
+        ..clearSnackBars()
+        ..showSnackBar(
+          SnackBar(content: Text('Reminder added, but refresh failed: ${_refreshError ?? 'try again'}')),
+        );
     }
   }
 
   Future<void> _removeSchedule(String scheduleId) async {
+    final pid = _selectedPatientId;
+    if (pid == null) return;
     try {
       await Api.deleteSchedule(scheduleId);
-      await _select(_selectedPatientId!, silent: true);
-    } on Exception catch (e) {
+    } catch (error) {
       if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('Could not remove: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not remove reminder: ${_errorText(error)}')),
+        );
       }
+      return;
+    }
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Reminder removed')),
+    );
+    final outcome = await _select(pid, silent: true);
+    if (outcome == _SelectionStatus.failed && mounted) {
+      ScaffoldMessenger.of(context)
+        ..clearSnackBars()
+        ..showSnackBar(
+          SnackBar(content: Text('Reminder removed, but refresh failed: ${_refreshError ?? 'try again'}')),
+        );
     }
   }
 
   Future<void> _toggleAudit() async {
     if (_auditLogs != null) {
       setState(() {
-        _auditLogs = null; // collapse
+        _auditLogs = null;
         _auditError = null;
+        _auditOffset = 0;
+        _auditHasNext = false;
       });
       return;
     }
+    await _loadAuditPage(0);
+  }
+
+  Future<void> _loadAuditPage(int offset) async {
+    if (_auditLoading) return;
+    setState(() {
+      _auditLoading = true;
+      _auditError = null;
+    });
     try {
-      final logs = await Api.auditLogs(limit: 50);
-      if (mounted) {
-        setState(() {
-          _auditLogs = logs;
-          _auditError = null;
-        });
-      }
-    } on Exception catch (e) {
-      // Never inject a fake log row: empty list + a dedicated caption.
-      if (mounted) {
-        setState(() {
-          _auditLogs = [];
-          _auditError = 'Audit view is admin-only ($e)';
-        });
-      }
+      final logs = await Api.auditLogs(
+        offset: offset,
+        limit: _auditPageSize,
+      );
+      if (!mounted) return;
+      setState(() {
+        _auditOffset = offset;
+        _auditLogs = logs;
+        _auditHasNext = logs.length == _auditPageSize;
+        _auditLoading = false;
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _auditLogs ??= [];
+        _auditError = _errorText(error, context: 'audit');
+        _auditLoading = false;
+      });
     }
   }
 
   Future<void> _ack(String alertId) async {
+    final pid = _selectedPatientId;
+    if (pid == null) return;
     try {
       await Api.acknowledge(alertId);
-      await _select(_selectedPatientId!);
-    } on Exception catch (e) {
+    } catch (error) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Failed: $e')));
+          SnackBar(content: Text('Could not acknowledge alert: ${_errorText(error)}')),
+        );
       }
+      return;
+    }
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Alert acknowledged')),
+    );
+    final outcome = await _select(pid, silent: true);
+    if (outcome == _SelectionStatus.failed && mounted) {
+      ScaffoldMessenger.of(context)
+        ..clearSnackBars()
+        ..showSnackBar(
+          SnackBar(content: Text('Alert acknowledged, but refresh failed: ${_refreshError ?? 'try again'}')),
+        );
     }
   }
 
@@ -814,7 +1143,12 @@ class _DashboardScreenState extends State<_DashboardScreen> {
             children: [
               Text(_error!, style: const TextStyle(fontSize: 17)),
               const SizedBox(height: 16),
-              MonadPillButton(label: 'Retry', onPressed: _load),
+              MonadPillButton(
+                label: 'Retry',
+                onPressed: _selectedPatientId == null
+                    ? _load
+                    : () => _select(_selectedPatientId!),
+              ),
             ],
           ),
         ),
@@ -822,9 +1156,17 @@ class _DashboardScreenState extends State<_DashboardScreen> {
     }
     final patients = _patients ?? const [];
     if (patients.isEmpty) {
-      return const Center(
-        child: Text('No patients linked to this account yet.',
-            style: Monad.monoBodyLg),
+      final message = switch (widget.role) {
+        'asha_worker' => 'No patients are assigned to this staff account yet.',
+        'clinician' || 'admin' =>
+          'No patients are available in the clinical roster yet.',
+        _ => 'No patients are linked to this account yet.',
+      };
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Text(message, style: Monad.monoBodyLg, textAlign: TextAlign.center),
+        ),
       );
     }
     final summary = _summary;
@@ -844,15 +1186,55 @@ class _DashboardScreenState extends State<_DashboardScreen> {
             else
               _roster(patients),
             const SizedBox(height: 16),
+            if (_refreshError != null) ...[
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Monad.tintGold,
+                  borderRadius: BorderRadius.circular(Monad.radiusMin),
+                ),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        _refreshError!,
+                        style: Monad.monoBodySm.copyWith(color: Monad.graphite),
+                      ),
+                    ),
+                    TextButton(
+                      onPressed: _selectedPatientId == null
+                          ? _load
+                          : () => _select(_selectedPatientId!),
+                      child: const Text('Retry'),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 12),
+            ],
             ...content,
             if (_auditLogs != null) ...[
               const SizedBox(height: 16),
               if (_auditError != null)
                 Padding(
                   padding: const EdgeInsets.only(bottom: 8),
-                  child: Text(_auditError!,
-                      style:
-                          Monad.monoBodySm.copyWith(color: Monad.crimson)),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          _auditError!,
+                          style: Monad.monoBodySm.copyWith(color: Monad.crimson),
+                        ),
+                      ),
+                      TextButton(
+                        onPressed: _auditLoading
+                            ? null
+                            : () => _loadAuditPage(_auditOffset),
+                        child: const Text('Retry'),
+                      ),
+                    ],
+                  ),
                 ),
               _auditPanel(),
             ],
@@ -895,9 +1277,7 @@ class _DashboardScreenState extends State<_DashboardScreen> {
 
   Widget _summaryContent(Map<String, dynamic> s) {
     final isClinical = _isClinicalView(s);
-    final canUploadDocuments =
-        const {'admin', 'asha_worker', 'clinician'}.contains(widget.role) ||
-            (widget.role == 'family_caregiver' && isClinical);
+    final consentGranted = _consentState == _ConsentState.granted;
     final accuracy = (s['accuracy_pct'] as num? ?? 0).toDouble();
     final compliance = (s['compliance_pct'] as num? ?? 0).toDouble();
     final remindersTotal = (s['reminders_total'] as num? ?? 0).toInt();
@@ -999,12 +1379,23 @@ class _DashboardScreenState extends State<_DashboardScreen> {
           }),
           const SizedBox(height: 12),
         ],
-        // Reminder schedules (caregiver-editable)
-        if (_schedules != null) _schedulesCard(),
+        if (_schedules != null || _scheduleError != null) _schedulesCard(),
         const SizedBox(height: 12),
-        if (canUploadDocuments) ...[
+        if (isClinical && consentGranted) ...[
           const SizedBox(height: 8),
-          RagUploadWidget(patientId: _selectedPatientId ?? ''),
+          RagUploadWidget(
+            key: ValueKey('rag-${_selectedPatientId ?? ''}'),
+            patientId: _selectedPatientId ?? '',
+          ),
+        ] else if (isClinical &&
+            (_consentState == _ConsentState.required ||
+                _consentState == _ConsentState.unavailable)) ...[
+          const SizedBox(height: 8),
+          _consentNotice(
+            _consentState == _ConsentState.required
+                ? 'Medical document upload requires health_data consent.'
+                : 'Medical document upload is unavailable until consent can be verified.',
+          ),
         ],
         const SizedBox(height: 8),
         // Alerts
@@ -1053,48 +1444,59 @@ class _DashboardScreenState extends State<_DashboardScreen> {
               subtitle: Text('Reminder flag: ${flags['high_missed_reminders'] == true ? '3+ missed in 7 days' : 'none'}', style: Monad.monoBodySm),
             ),
           ),
-        // Cognitive risk screening — clinical view only. Basic tier gets a
-        // locked note instead: no card, no button, no dead POST.
         const SizedBox(height: 12),
         if (isClinical) ...[
-          RiskScreeningCard(result: _riskScreeningResult),
+          RiskScreeningCard(
+            result: _riskScreeningResult,
+            state: _riskScreeningState,
+            errorMessage: _riskScreeningError ?? _consentError,
+          ),
           const SizedBox(height: 8),
-          // Intake button — opens 32-field form; feeds endpoint; updates card.
           FilledButton.icon(
             icon: const Icon(Icons.medical_services, size: 18),
             label: const Text('Run Screening (32 inputs)'),
-            onPressed: () => showDialog(
-              context: context,
-              builder: (_) => RiskIntakeForm(
-                patientId: _selectedPatientId ?? '',
-                patientName: '',
-                onResult: (r) => setState(() => _riskScreeningResult = r),
-              ),
-            ),
+            onPressed: consentGranted
+                ? () => showDialog(
+                      context: context,
+                      builder: (_) => RiskIntakeForm(
+                        patientId: _selectedPatientId ?? '',
+                        patientName: s['patient_name'] as String? ?? '',
+                        onResult: (result) => setState(() {
+                          _riskScreeningResult = result;
+                          _riskScreeningState =
+                              riskScreeningStateFromResponse(result);
+                          _riskScreeningError = null;
+                        }),
+                        onFailure: (state, message) => setState(() {
+                          _riskScreeningState = state;
+                          _riskScreeningError = message;
+                        }),
+                      ),
+                    )
+                : null,
           ),
         ] else ...[
-          Container(
-            padding: const EdgeInsets.all(14),
-            decoration: BoxDecoration(
-              color: Monad.tintGold,
-              borderRadius: BorderRadius.circular(Monad.radiusMin),
-              border: Border.all(color: Monad.ash, width: 1),
-            ),
-            child: const Row(children: [
-              Icon(Icons.lock_outline, size: 22, color: Monad.graphite),
-              SizedBox(width: 10),
-              Expanded(
-                child: Text(
-                  'Screening needs clinical tier / health-data consent — '
-                  'run screening is available to linked clinical staff with '
-                  'health-data consent.',
-                  style: Monad.monoBodySm,
-                ),
-              ),
-            ]),
+          _consentNotice(
+            'Clinical screening, trends, and document controls are hidden for this basic server view.',
           ),
         ],
       ],
+    );
+  }
+
+  Widget _consentNotice(String message) {
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Monad.tintGold,
+        borderRadius: BorderRadius.circular(Monad.radiusMin),
+        border: Border.all(color: Monad.ash, width: 1),
+      ),
+      child: Row(children: [
+        const Icon(Icons.lock_outline, size: 22, color: Monad.graphite),
+        const SizedBox(width: 10),
+        Expanded(child: Text(message, style: Monad.monoBodySm)),
+      ]),
     );
   }
 
@@ -1112,6 +1514,13 @@ class _DashboardScreenState extends State<_DashboardScreen> {
             const SizedBox(height: 8),
             Text('Times are local (IST). Format: HH:MM, comma-separated for multiple.',
                 style: Monad.monoCaption),
+            if (_scheduleError != null) ...[
+              const SizedBox(height: 8),
+              Text(
+                'Reminder schedules could not be loaded: $_scheduleError',
+                style: Monad.monoBodySm.copyWith(color: Monad.terracotta),
+              ),
+            ],
             const SizedBox(height: 16),
             for (final s in schedules.cast<Map<String, dynamic>>())
               ListTile(
@@ -1181,28 +1590,73 @@ class _DashboardScreenState extends State<_DashboardScreen> {
 
   Widget _auditPanel() {
     final logs = _auditLogs ?? const <Map<String, dynamic>>[];
+    final previousOffset = _auditOffset <= _auditPageSize
+        ? 0
+        : _auditOffset - _auditPageSize;
     return Card(
       elevation: 0,
       color: Monad.periwinkleMist,
       shape: Monad.softShape,
-      child: Container(
-        constraints: const BoxConstraints(maxHeight: 300),
-        child: ListView.builder(
-          shrinkWrap: true,
-          itemCount: logs.length,
-          itemBuilder: (context, i) {
-            final l = logs[i];
-            return ListTile(
-              dense: true,
-              title: Text('${l['action']} · ${l['resource_type']}',
-                  style: Monad.monoBodySm.copyWith(color: Monad.offBlack)),
-              subtitle: Text(
-                'by ${l['user_id']} · ${l['timestamp']}'
-                '${l['ip_address'] != null ? ' · ${l['ip_address']}' : ''}',
-                style: Monad.monoCaption,
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('AUDIT TRAIL · PAGE ${_auditOffset ~/ _auditPageSize + 1}',
+                style: Monad.monoLabel),
+            const SizedBox(height: 8),
+            if (_auditLoading)
+              const Padding(
+                padding: EdgeInsets.all(16),
+                child: Center(child: CircularProgressIndicator()),
+              )
+            else if (logs.isEmpty)
+              Padding(
+                padding: const EdgeInsets.all(16),
+                child: Text('No audit rows on this page.',
+                    style: Monad.monoBodySm),
+              )
+            else
+              Column(
+                children: [
+                  for (final log in logs.cast<Map<String, dynamic>>()) ...[
+                    ListTile(
+                      dense: true,
+                      title: Text(
+                        '${log['id']} · ${log['action']} · ${log['resource_type']}',
+                        style: Monad.monoBodySm.copyWith(color: Monad.offBlack),
+                      ),
+                      subtitle: Text(
+                        'resource ${log['resource_id']} · by ${log['user_id']} · '
+                        '${log['timestamp']}'
+                        '${log['ip_address'] != null ? ' · ${log['ip_address']}' : ''}\n'
+                        'details: ${log['details'] is Map ? jsonEncode(log['details']) : log['details']?.toString() ?? '{}'}',
+                        style: Monad.monoCaption,
+                      ),
+                    ),
+                  ],
+                ],
               ),
-            );
-          },
+            const SizedBox(height: 8),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                TextButton(
+                  onPressed: _auditOffset == 0 || _auditLoading
+                      ? null
+                      : () => _loadAuditPage(previousOffset),
+                  child: const Text('PREVIOUS'),
+                ),
+                TextButton(
+                  onPressed: !_auditHasNext || _auditLoading
+                      ? null
+                      : () => _loadAuditPage(
+                          _auditOffset + _auditPageSize),
+                  child: const Text('NEXT'),
+                ),
+              ],
+            ),
+          ],
         ),
       ),
     );
