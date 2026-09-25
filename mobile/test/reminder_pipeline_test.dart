@@ -1,4 +1,9 @@
-import 'package:drift/drift.dart' show driftRuntimeOptions;
+import 'package:drift/drift.dart'
+    show
+        HasResultSet,
+        ResultSetImplementation,
+        SimpleSelectStatement,
+        driftRuntimeOptions;
 import 'package:drift/native.dart';
 import 'package:eldercare_mobile/database/app_database.dart';
 import 'package:eldercare_mobile/models/shared_models.dart';
@@ -132,6 +137,18 @@ class _ToggleFailingDatabase extends AppDatabase {
   Future<void> upsertReminderEvent(ReminderEventModel event) async {
     if (failReminderWrites) throw StateError('local database unavailable');
     await super.upsertReminderEvent(event);
+  }
+}
+
+class _FailingReadDatabase extends AppDatabase {
+  _FailingReadDatabase() : super.forTesting(NativeDatabase.memory());
+
+  @override
+  SimpleSelectStatement<T, R> select<T extends HasResultSet, R>(
+    ResultSetImplementation<T, R> table, {
+    bool distinct = false,
+  }) {
+    throw StateError('local database read unavailable');
   }
 }
 
@@ -561,6 +578,31 @@ void main() {
       expect(result.outcome, ReminderAcknowledgmentOutcome.failedToRecord);
       expect(api.acknowledgeCalls, 0);
       expect(await db.pendingSyncItems(accountId: 'user-a'), isEmpty);
+    });
+
+    test('a failed local read returns failed-to-record instead of throwing',
+        () async {
+      final db = _FailingReadDatabase();
+      addTearDown(db.close);
+      final event = _event();
+      final api = _FakeReminderApi(const [])
+        ..acknowledgeError = ApiException('Network error: offline');
+      final service = MobileReminderService(
+        apiService: api,
+        sync: OfflineSyncService(db: db, api: api),
+      );
+
+      final result = await service.acknowledgeReminder(
+        patientId: 'patient-1',
+        eventId: event.id,
+        scheduleId: event.scheduleId,
+        scheduledAt: event.scheduledAt,
+        deliveredAt: event.deliveredAt,
+        method: 'button',
+      );
+
+      expect(result.outcome, ReminderAcknowledgmentOutcome.failedToRecord);
+      expect(api.acknowledgeCalls, 0);
     });
 
     test('an older local acknowledgment does not complete today', () async {

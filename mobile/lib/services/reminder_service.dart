@@ -134,13 +134,22 @@ class MobileReminderService {
     DateTime? scheduledAt,
     DateTime? deliveredAt,
   }) async {
-    final event = await _localEvent(
-      eventId,
-      patientId: patientId,
-      scheduleId: scheduleId,
-      scheduledAt: scheduledAt,
-      deliveredAt: deliveredAt,
-    );
+    ReminderEventModel? event;
+    try {
+      event = await _localEvent(
+        eventId,
+        patientId: patientId,
+        scheduleId: scheduleId,
+        scheduledAt: scheduledAt,
+        deliveredAt: deliveredAt,
+      );
+    } on Object catch (error) {
+      debugPrint('Reminder acknowledgment could not be read locally: $error');
+      return const ReminderAcknowledgmentResult(
+        outcome: ReminderAcknowledgmentOutcome.failedToRecord,
+        acknowledgedAt: null,
+      );
+    }
     if (event == null) {
       return const ReminderAcknowledgmentResult(
         outcome: ReminderAcknowledgmentOutcome.failedToRecord,
@@ -159,6 +168,16 @@ class MobileReminderService {
         acknowledgmentMethod: method,
         status: ReminderStatus.acknowledged,
       ));
+      final stored = await _localEvent(
+        eventId,
+        patientId: patientId,
+        scheduleId: scheduleId,
+        scheduledAt: scheduledAt,
+        deliveredAt: deliveredAt,
+      );
+      if (stored?.acknowledgedAt == null) {
+        throw StateError('Reminder acknowledgment was not stored durably');
+      }
     } on Object catch (error) {
       debugPrint('Reminder acknowledgment could not be stored locally: $error');
       return const ReminderAcknowledgmentResult(
