@@ -334,7 +334,7 @@ class DocumentChunk(Base):
     document_id = Column(UUID(as_uuid=True), ForeignKey("medical_documents.id"), nullable=False)
     patient_id = Column(UUID(as_uuid=True), ForeignKey("patients.id"), nullable=True)
     chunk_text = Column(String(2000), nullable=False)
-    embedding = Column(JSON, nullable=True)  # List of floats or pgvector
+    embedding = Column(JSON, nullable=True)  # Portable float list; Python cosine scan by design.
     page_ref = Column(Integer, default=1, nullable=False)
     created_at = Column(DateTime, default=func.now(), nullable=False)
 

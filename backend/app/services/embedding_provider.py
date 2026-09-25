@@ -20,6 +20,11 @@ backend — if the configured provider is unavailable (package not installed /
 key absent) it logs a warning and returns the heuristic provider, so RAG
 always works. Callers persist provider/model/dimension provenance and reject
 vectors from a different embedding space.
+
+Vector persistence is intentionally a portable JSON float list. A pgvector
+scale-up is not a transparent column swap: it requires a reviewed schema
+migration, a vector-aware storage/provider adapter, an HNSW/IVFFlat benchmark,
+and a complete backfill or reindex before retrieval changes.
 """
 from __future__ import annotations
 

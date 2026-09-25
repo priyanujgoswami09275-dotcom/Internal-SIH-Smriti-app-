@@ -16,8 +16,13 @@ Phase 10 pipeline:
    Claude when configured (LLMClient), otherwise an extractive summary with
    citations. Never diagnoses: always defers to the caregiver/clinician.
 
-Storage stays portable (JSON vector column) so tests run on SQLite and the
-same code works on PostgreSQL; a pgvector index can be layered on later.
+Storage decision: vectors remain portable JSON by design so SQLite tests and
+PostgreSQL use the same path. Retrieval performs a patient-scoped Python cosine
+linear scan, which is acceptable at the current scale. Provider/model/dimension
+provenance and dimension checks prevent cross-space scoring. If scale requires
+approximate nearest-neighbour search, add a reviewed pgvector migration and
+vector-aware storage/provider adapter, choose and benchmark an HNSW/IVFFlat
+index, then backfill or reindex every document before switching retrieval.
 
 Rebuild a patient's index after changing embedding provider/model settings:
 
@@ -404,6 +409,7 @@ class RAGService:
             .outerjoin(DocumentChunk, DocumentChunk.document_id == MedicalDocument.id)
             .where(MedicalDocument.patient_id == patient_id)
         )
+        # Intentional patient-scoped linear scan over portable JSON vectors.
         res = await db.execute(stmt)
         rows = res.all()
 
