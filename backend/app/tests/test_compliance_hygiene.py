@@ -8,6 +8,8 @@ from app.models.all_models import (
     AlertFlag,
     AlertSeverityEnum,
     AlertTriggerTypeEnum,
+    AuditActionEnum,
+    AuditLog,
     CaregiverPatientLink,
     DocumentTypeEnum,
     EmbeddingStatusEnum,
@@ -167,3 +169,79 @@ async def test_export_never_includes_another_patient_data(db_session):
     assert str(other["patient"].id) not in serialized
     assert str(other["owner"].id) not in serialized
     assert str(other["caregiver"].id) not in serialized
+
+
+@pytest.mark.asyncio
+async def test_audit_rows_reject_application_orm_updates_and_deletes(db_session):
+    user = User(
+        phone=f"+91{uuid.uuid4().int % 10**10}",
+        password_hash="x",
+        role=RoleEnum.ADMIN,
+    )
+    db_session.add(user)
+    await db_session.flush()
+    row = AuditLog(
+        user_id=user.id,
+        action=AuditActionEnum.READ,
+        resource_type="patient_profile",
+        resource_id=uuid.uuid4(),
+    )
+    db_session.add(row)
+    await db_session.commit()
+    row_id = row.id
+
+    row.action = AuditActionEnum.WRITE
+    with pytest.raises(RuntimeError, match="append-only"):
+        await db_session.flush()
+    await db_session.rollback()
+
+    stored = await db_session.get(AuditLog, row_id)
+    assert stored is not None
+    assert stored.action == AuditActionEnum.READ
+    await db_session.delete(stored)
+    with pytest.raises(RuntimeError, match="append-only"):
+        await db_session.flush()
+    await db_session.rollback()
+    assert await db_session.get(AuditLog, row_id) is not None
+
+
+@pytest.mark.asyncio
+async def test_admin_audit_api_discloses_its_integrity_scope(client, db_session):
+    from app.tests.conftest import provision_staff_user
+
+    staff = await provision_staff_user(role="admin")
+    db_session.add(
+        AuditLog(
+            user_id=uuid.UUID(staff["id"]),
+            action=AuditActionEnum.READ,
+            resource_type="patient_profile",
+            resource_id=uuid.uuid4(),
+            ip_address="198.51.100.10",
+            details={"operation": "read"},
+        )
+    )
+    await db_session.commit()
+    login = await client.post(
+        "/api/v1/auth/login",
+        json={"phone": staff["phone"], "password": "Passw0rd123"},
+    )
+    assert login.status_code == 200, login.text
+
+    response = await client.get(
+        "/api/v1/compliance/audit-logs",
+        headers={"Authorization": f"Bearer {login.json()['access_token']}"},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.headers["x-audit-integrity-scope"] == "application-orm-append-only"
+    assert response.headers["x-audit-database-enforcement"] == "unverified"
+    assert set(response.json()[0]) == {
+        "id",
+        "user_id",
+        "action",
+        "resource_type",
+        "resource_id",
+        "timestamp",
+        "ip_address",
+        "details",
+    }

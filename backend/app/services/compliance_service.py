@@ -3,7 +3,8 @@
 Provides:
 - AES-256 symmetric field-level encryption for sensitive health data.
 - Explicit consent management & scope verification (patient_self, guardian, joint).
-- Immutable audit logging for patient health data access.
+- Application-ORM append-only audit logging for patient health data access;
+  database-role and Core bulk-statement immutability is not claimed.
 - Right to erasure / revocation processing.
 """
 
@@ -195,7 +196,7 @@ class ComplianceService:
         ip_address: Optional[str] = "127.0.0.1",
         details: Optional[Dict[str, Any]] = None,
     ) -> AuditLog:
-        """Create immutable audit log entry for health record access."""
+        """Append an ORM audit event; database enforcement remains unverified."""
         log_entry = AuditLog(
             user_id=user_id,
             action=action,

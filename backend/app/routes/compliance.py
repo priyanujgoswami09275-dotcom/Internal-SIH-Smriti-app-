@@ -2,7 +2,7 @@
 
 import uuid
 from typing import Optional, List
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -88,6 +88,7 @@ async def list_patient_consents(
 
 @router.get("/audit-logs")
 async def list_audit_logs(
+    response: Response,
     resource_type: Optional[str] = None,
     action: Optional[str] = None,
     limit: int = 100,
@@ -95,11 +96,13 @@ async def list_audit_logs(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_role("admin")),
 ):
-    """Admin-only view of the immutable compliance audit trail.
+    """Admin-only audit view with explicit application-level integrity scope.
 
-    Filters: optional resource_type / action; newest first. The trail itself
-    is never deleted (see RetentionService).
+    Filters: optional resource_type / action; newest first. The response scope
+    is application-ORM append-only; database enforcement is unverified.
     """
+    response.headers["X-Audit-Integrity-Scope"] = "application-orm-append-only"
+    response.headers["X-Audit-Database-Enforcement"] = "unverified"
     limit = min(max(limit, 1), 500)
     offset = max(offset, 0)
     stmt = (
