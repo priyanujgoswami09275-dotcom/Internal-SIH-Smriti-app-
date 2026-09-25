@@ -18,8 +18,8 @@ Local-first design:
 Registry contract: ``get_embedding_provider()`` never raises for a missing
 backend — if the configured provider is unavailable (package not installed /
 key absent) it logs a warning and returns the heuristic provider, so RAG
-always works. The dimension mismatch between providers is the caller's
-concern (vector storage must match the provider that wrote the rows).
+always works. Callers persist provider/model/dimension provenance and reject
+vectors from a different embedding space.
 """
 from __future__ import annotations
 
@@ -63,6 +63,7 @@ class EmbeddingUnavailableError(RuntimeError):
 
 class EmbeddingProvider(ABC):
     name: str = "abstract"
+    model: str = "abstract"
     dimensions: int = 1536
 
     @abstractmethod
@@ -77,6 +78,7 @@ class HeuristicEmbeddingProvider(EmbeddingProvider):
     """Deterministic, dependency-free fallback embedder (md5-TF hashing)."""
 
     name = "heuristic"
+    model = "md5-tf-v1"
 
     def __init__(self, dimensions: Optional[int] = None):
         self.dimensions = dimensions or settings.EMBEDDING_DIMENSIONS
@@ -103,7 +105,7 @@ class LocalSentenceTransformerProvider(EmbeddingProvider):
             raise EmbeddingUnavailableError(
                 "sentence-transformers is not installed. Run: pip install sentence-transformers"
             )
-        self._model_name = model or settings.EMBEDDING_MODEL
+        self.model = model or settings.EMBEDDING_MODEL
         self._encoder = None
         # multilingual-e5-small -> 384 dims; expose so callers can size storage.
         self.dimensions = 384
@@ -112,7 +114,7 @@ class LocalSentenceTransformerProvider(EmbeddingProvider):
         if self._encoder is None:
             from sentence_transformers import SentenceTransformer  # lazy import
 
-            self._encoder = SentenceTransformer(self._model_name)
+            self._encoder = SentenceTransformer(self.model)
         return self._encoder
 
     def embed(self, text: str) -> List[float]:
@@ -131,14 +133,14 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
             raise EmbeddingUnavailableError(
                 "OpenAI embeddings need the 'openai' package and OPENAI_API_KEY"
             )
-        self._model = model or settings.EMBEDDING_MODEL or "text-embedding-3-small"
+        self.model = model or settings.EMBEDDING_MODEL or "text-embedding-3-small"
         self.dimensions = 1536  # text-embedding-3-small; adjust per model
         import openai  # lazy import
 
         self._client = openai.OpenAI(api_key=api_key)
 
     def embed(self, text: str) -> List[float]:
-        resp = self._client.embeddings.create(model=self._model, input=text)
+        resp = self._client.embeddings.create(model=self.model, input=text)
         return list(resp.data[0].embedding)
 
 

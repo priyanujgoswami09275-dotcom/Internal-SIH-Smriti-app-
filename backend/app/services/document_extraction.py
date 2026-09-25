@@ -14,6 +14,19 @@ MAX_EXTRACTED_CHARS = 100_000
 TEXT_EXTENSIONS = {".txt", ".md", ".text", ".csv"}
 
 
+class ExtractedTextLimitError(ValueError):
+    pass
+
+
+def enforce_extracted_text_limit(text: str) -> str:
+    if len(text) > MAX_EXTRACTED_CHARS:
+        raise ExtractedTextLimitError(
+            f"Extracted text is {len(text)} characters; maximum is "
+            f"{MAX_EXTRACTED_CHARS}. Split the document into smaller files and retry."
+        )
+    return text
+
+
 def extract_document_text(filename: str, raw: bytes) -> str:
     """Extract plaintext from an uploaded document's bytes.
 
@@ -49,7 +62,7 @@ def _decode_text(raw: bytes) -> str:
         text = raw.decode("utf-8")
     except UnicodeDecodeError:
         text = raw.decode("latin-1", errors="replace")
-    return text[:MAX_EXTRACTED_CHARS]
+    return enforce_extracted_text_limit(text)
 
 
 def _extract_pdf(raw: bytes) -> str:
@@ -74,7 +87,7 @@ def _extract_pdf(raw: bytes) -> str:
             "No selectable text found in this PDF — it may be a scanned image. "
             "Paste the text instead, or upload a text-based PDF."
         )
-    return text[:MAX_EXTRACTED_CHARS]
+    return enforce_extracted_text_limit(text)
 
 
 # Optional CLI self-check:  python -m app.services.document_extraction

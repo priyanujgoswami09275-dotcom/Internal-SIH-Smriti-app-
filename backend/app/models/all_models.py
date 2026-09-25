@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Date, JSON, DateTime, func, ForeignKey, Enum as SQLEnum, Boolean, Integer, Float, UniqueConstraint, CheckConstraint
+from sqlalchemy import Column, String, Text, Date, JSON, DateTime, func, ForeignKey, Enum as SQLEnum, Boolean, Integer, Float, UniqueConstraint, CheckConstraint
 from sqlalchemy.dialects.postgresql import UUID
 import uuid
 from enum import Enum
@@ -187,12 +187,22 @@ class ReminderEvent(Base):
     schedule_id = Column(UUID(as_uuid=True), ForeignKey("reminder_schedules.id"), nullable=False)
     patient_id = Column(UUID(as_uuid=True), ForeignKey("patients.id"), nullable=False)
     scheduled_at = Column(DateTime, nullable=False)
+    occurrence_key = Column(String(16), nullable=True)
     delivered_at = Column(DateTime, nullable=True)
     acknowledged_at = Column(DateTime, nullable=True)
     acknowledgment_method = Column(SQLEnum(AcknowledgmentMethodEnum, values_callable=enum_values), nullable=True)
     status = Column(SQLEnum(ReminderStatusEnum, values_callable=enum_values), nullable=False, default=ReminderStatusEnum.PENDING)
     synced_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "patient_id",
+            "schedule_id",
+            "occurrence_key",
+            name="uq_reminder_events_patient_schedule_occurrence",
+        ),
+    )
 
 class AlertTriggerTypeEnum(str, Enum):
     MISSED_REMINDERS = "missed_reminders"
@@ -210,12 +220,22 @@ class AlertFlag(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     patient_id = Column(UUID(as_uuid=True), ForeignKey("patients.id"), nullable=False)
     trigger_type = Column(SQLEnum(AlertTriggerTypeEnum, values_callable=enum_values), nullable=False)
+    dedup_key = Column(String(8), nullable=True)
     threshold_detail = Column(JSON, nullable=True)
     severity = Column(SQLEnum(AlertSeverityEnum, values_callable=enum_values), nullable=False)
     alert_summary = Column(String(500), nullable=True)
     created_at = Column(DateTime, default=func.now(), nullable=False)
     acknowledged_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
     acknowledged_at = Column(DateTime, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "patient_id",
+            "trigger_type",
+            "dedup_key",
+            name="uq_alert_flags_patient_trigger_dedup",
+        ),
+    )
 
 class SyncResourceTypeEnum(str, Enum):
     GAME_SESSION = "game_session"
@@ -289,8 +309,23 @@ class MedicalDocument(Base):
     file_ref = Column(String(500), nullable=False)
     doc_type = Column(SQLEnum(DocumentTypeEnum, values_callable=enum_values), nullable=False, default=DocumentTypeEnum.REPORT)
     embedding_status = Column(SQLEnum(EmbeddingStatusEnum, values_callable=enum_values), nullable=False, default=EmbeddingStatusEnum.PENDING)
-    extracted_text = Column(String(10000), nullable=True)
+    extracted_text = Column(Text, nullable=True)
+    embedding_provider = Column(String(50), nullable=True)
+    embedding_model = Column(String(255), nullable=True)
+    embedding_dimensions = Column(Integer, nullable=True)
     created_at = Column(DateTime, default=func.now(), nullable=False)
+
+    __table_args__ = (
+        CheckConstraint(
+            "embedding_dimensions IS NULL OR embedding_dimensions > 0",
+            name="ck_medical_documents_embedding_dimensions_positive",
+        ),
+        CheckConstraint(
+            "(embedding_provider IS NULL AND embedding_model IS NULL AND embedding_dimensions IS NULL) "
+            "OR (embedding_provider IS NOT NULL AND embedding_model IS NOT NULL AND embedding_dimensions IS NOT NULL)",
+            name="ck_medical_documents_embedding_provenance_complete",
+        ),
+    )
 
 class DocumentChunk(Base):
     __tablename__ = "document_chunks"
