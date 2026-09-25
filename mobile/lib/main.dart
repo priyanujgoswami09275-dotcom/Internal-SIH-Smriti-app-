@@ -6,6 +6,8 @@
 ///                        reminders / voice companion / caregiver dashboard
 library;
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 
@@ -22,6 +24,7 @@ import 'screens/voice_companion_screen.dart';
 import 'services/api_service.dart';
 import 'services/auth_session.dart';
 import 'services/offline_sync_service.dart';
+import 'services/reminder_service.dart';
 import 'theme/monad_theme.dart';
 import 'widgets/dev_role_menu.dart';
 import 'widgets/monad/monad_pill_button.dart';
@@ -262,6 +265,7 @@ class HomeShell extends StatefulWidget {
 
 class _HomeShellState extends State<HomeShell> {
   final ApiService _api = ApiService.instance;
+  final MobileReminderService _reminders = MobileReminderService();
 
   String? _patientId;
   String? _profileError;
@@ -279,6 +283,7 @@ class _HomeShellState extends State<HomeShell> {
   @override
   void dispose() {
     OfflineSyncService.instance.stop();
+    unawaited(_reminders.stop());
     super.dispose();
   }
 
@@ -293,9 +298,13 @@ class _HomeShellState extends State<HomeShell> {
       }
       try {
         final profile = await _api.myPatient();
+        final patientId = profile?.id;
+        if (patientId != null) {
+          unawaited(_reminders.reconcileOnStartup(patientId));
+        }
         if (!mounted) return;
         setState(() {
-          _patientId = profile?.id;
+          _patientId = patientId;
           _resolvingProfile = false;
         });
         return;

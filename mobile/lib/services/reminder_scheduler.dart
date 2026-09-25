@@ -6,6 +6,9 @@
 /// backend `CADENCE_GRAMMAR`; the wire value itself remains unchanged.
 library;
 
+import 'dart:convert';
+
+import 'package:flutter/foundation.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:timezone/data/latest_all.dart' as tzdata;
 import 'package:timezone/timezone.dart' as tz;
@@ -25,6 +28,10 @@ final RegExp _timeToken = RegExp(
   caseSensitive: false,
 );
 
+String _formatTime(ReminderTime time) =>
+    '${time.hour.toString().padLeft(2, '0')}:'
+    '${time.minute.toString().padLeft(2, '0')}';
+
 class ReminderTime {
   const ReminderTime({required this.hour, required this.minute});
 
@@ -39,6 +46,48 @@ class DeviceTimeZone {
   final Duration offset;
 }
 
+class ScheduledReminderNotification {
+  const ScheduledReminderNotification({
+    required this.id,
+    required this.scheduleId,
+    required this.signature,
+    required this.title,
+    required this.body,
+    required this.scheduledAt,
+  });
+
+  final int id;
+  final String scheduleId;
+  final String signature;
+  final String title;
+  final String body;
+  final tz.TZDateTime scheduledAt;
+}
+
+abstract interface class ReminderNotificationGateway {
+  Future<void> initialize(TargetPlatform platform);
+
+  Future<List<ScheduledReminderNotification>> pendingNotifications();
+
+  Future<void> schedule(ScheduledReminderNotification notification);
+
+  Future<void> cancel(int id);
+
+  Future<void> cancelAll();
+}
+
+class ReminderReconciliationResult {
+  const ReminderReconciliationResult({
+    required this.scheduledCount,
+    required this.canceledCount,
+    required this.unchangedCount,
+  });
+
+  final int scheduledCount;
+  final int canceledCount;
+  final int unchangedCount;
+}
+
 DeviceTimeZone _currentDeviceTimeZone() {
   final now = DateTime.now();
   return DeviceTimeZone(now.timeZoneName, now.timeZoneOffset);
@@ -46,17 +95,20 @@ DeviceTimeZone _currentDeviceTimeZone() {
 
 class ReminderScheduler {
   ReminderScheduler({
-    FlutterLocalNotificationsPlugin? plugin,
+    ReminderNotificationGateway? gateway,
+    TargetPlatform? platform,
     DeviceTimeZone Function()? deviceTimeZone,
     DateTime Function()? now,
-  })  : _plugin = plugin ?? FlutterLocalNotificationsPlugin(),
+  })  : _gateway = gateway ?? _PluginReminderNotificationGateway(),
+        _platform = platform ?? defaultTargetPlatform,
         _deviceTimeZone = deviceTimeZone ?? _currentDeviceTimeZone,
         _now = now ?? DateTime.now;
 
   static final ReminderScheduler instance = ReminderScheduler();
   static const fallbackTimeZoneName = 'Asia/Kolkata';
 
-  final FlutterLocalNotificationsPlugin _plugin;
+  final ReminderNotificationGateway _gateway;
+  final TargetPlatform _platform;
   final DeviceTimeZone Function() _deviceTimeZone;
   final DateTime Function() _now;
   bool _initialized = false;
@@ -134,59 +186,118 @@ class ReminderScheduler {
     return tz.getLocation(fallbackTimeZoneName);
   }
 
-  /// Must be called once at startup (after `flutter create .` has added the
-  /// platform folders). Uses a placeholder icon id for the demo; replace with
-  /// your app's notification icon on Android.
+  static int notificationIdFor(String scheduleId, ReminderTime time) {
+    var hash = 0x811c9dc5;
+    final value = '$scheduleId:${time.hour.toString().padLeft(2, '0')}:'
+        '${time.minute.toString().padLeft(2, '0')}';
+    for (final codeUnit in value.codeUnits) {
+      hash ^= codeUnit;
+      hash = (hash * 0x01000193) & 0x7fffffff;
+    }
+    return hash;
+  }
+
   Future<void> initialize() async {
     if (_initialized) return;
     tz.setLocalLocation(resolveTimeZone(_deviceTimeZone()));
-    const android = AndroidInitializationSettings('@mipmap/ic_launcher');
-    const ios = DarwinInitializationSettings(
-      requestAlertPermission: true,
-      requestBadgePermission: true,
-      requestSoundPermission: true,
-    );
-    await _plugin.initialize(
-      settings: const InitializationSettings(android: android, iOS: ios),
-    );
+    await _gateway.initialize(_platform);
     _initialized = true;
   }
 
-  /// Schedule one daily notification per time token found in the cadence.
-  Future<void> scheduleForSchedule(ReminderScheduleModel schedule) async {
+  Future<ReminderReconciliationResult> scheduleForSchedule(
+      ReminderScheduleModel schedule) async {
     await initialize();
-    for (final time in parseCadence(schedule.cadence)) {
-      await _plugin.zonedSchedule(
-        id: schedule.id.hashCode * 31 + time.minute + time.hour * 60,
-        title: 'Reminder — ${schedule.reminderType.name.toUpperCase()}',
-        body: 'Time for your ${schedule.reminderType.name} routine.',
-        scheduledDate: nextInstanceOf(time),
-        notificationDetails: const NotificationDetails(
-          android: AndroidNotificationDetails(
-            'reminders',
-            'Daily reminders',
-            channelDescription: 'Medicine, water, food and exercise reminders',
-            importance: Importance.high,
-            priority: Priority.high,
-          ),
-          iOS: DarwinNotificationDetails(),
-        ),
-        androidScheduleMode: AndroidScheduleMode.inexactAllowWhileIdle,
-      );
+    final notifications = _notificationsFor(schedule);
+    for (final notification in notifications) {
+      await _gateway.schedule(notification);
     }
+    return ReminderReconciliationResult(
+      scheduledCount: notifications.length,
+      canceledCount: 0,
+      unchangedCount: 0,
+    );
+  }
+
+  Future<ReminderReconciliationResult> reconcile(
+      List<ReminderScheduleModel> schedules) async {
+    await initialize();
+    final desired = <int, ScheduledReminderNotification>{};
+    for (final schedule in schedules.where((value) => value.isActive)) {
+      for (final notification in _notificationsFor(schedule)) {
+        if (desired.containsKey(notification.id)) {
+          throw StateError(
+              'Reminder notification id collision for ${schedule.id}');
+        }
+        desired[notification.id] = notification;
+      }
+    }
+
+    var canceledCount = 0;
+    var unchangedCount = 0;
+    final matchedIds = <int>{};
+    final pending = await _gateway.pendingNotifications();
+    for (final notification in pending) {
+      final expected = desired[notification.id];
+      final matches = expected != null &&
+          expected.scheduleId == notification.scheduleId &&
+          expected.signature == notification.signature;
+      if (!matches || !matchedIds.add(notification.id)) {
+        await _gateway.cancel(notification.id);
+        canceledCount++;
+      } else {
+        unchangedCount++;
+      }
+    }
+
+    var scheduledCount = 0;
+    for (final entry in desired.entries) {
+      if (matchedIds.contains(entry.key)) continue;
+      await _gateway.schedule(entry.value);
+      scheduledCount++;
+    }
+    return ReminderReconciliationResult(
+      scheduledCount: scheduledCount,
+      canceledCount: canceledCount,
+      unchangedCount: unchangedCount,
+    );
   }
 
   Future<void> cancelSchedule(ReminderScheduleModel schedule) async {
     await initialize();
+    final pending = await _gateway.pendingNotifications();
+    final ids = <int>{};
+    for (final notification in pending) {
+      if (notification.scheduleId == schedule.id) ids.add(notification.id);
+    }
     for (final time in parseCadence(schedule.cadence)) {
-      await _plugin.cancel(
-          id: schedule.id.hashCode * 31 + time.minute + time.hour * 60);
+      ids.add(notificationIdFor(schedule.id, time));
+    }
+    for (final id in ids) {
+      await _gateway.cancel(id);
     }
   }
 
   Future<void> cancelAll() async {
     if (!_initialized) return;
-    await _plugin.cancelAll();
+    await _gateway.cancelAll();
+  }
+
+  List<ScheduledReminderNotification> _notificationsFor(
+      ReminderScheduleModel schedule) {
+    final times = parseCadence(schedule.cadence);
+    final signature = '${schedule.reminderType.name}|'
+        '${times.map(_formatTime).join(',')}';
+    return [
+      for (final time in times)
+        ScheduledReminderNotification(
+          id: notificationIdFor(schedule.id, time),
+          scheduleId: schedule.id,
+          signature: signature,
+          title: 'Reminder — ${schedule.reminderType.name.toUpperCase()}',
+          body: 'Time for your ${schedule.reminderType.name} routine.',
+          scheduledAt: nextInstanceOf(time),
+        ),
+    ];
   }
 
   tz.TZDateTime nextInstanceOf(ReminderTime time) {
@@ -198,4 +309,101 @@ class ReminderScheduler {
     }
     return scheduled;
   }
+}
+
+class _PluginReminderNotificationGateway
+    implements ReminderNotificationGateway {
+  _PluginReminderNotificationGateway()
+      : _plugin = FlutterLocalNotificationsPlugin();
+
+  static const _payloadVersion = 1;
+
+  final FlutterLocalNotificationsPlugin _plugin;
+
+  @override
+  Future<void> initialize(TargetPlatform platform) async {
+    const android = AndroidInitializationSettings('@mipmap/ic_launcher');
+    const ios = DarwinInitializationSettings(
+      requestAlertPermission: true,
+      requestBadgePermission: true,
+      requestSoundPermission: true,
+    );
+    await _plugin.initialize(
+      settings: const InitializationSettings(android: android, iOS: ios),
+    );
+  }
+
+  @override
+  Future<List<ScheduledReminderNotification>> pendingNotifications() async {
+    final pending = await _plugin.pendingNotificationRequests();
+    return pending.map(_decodePending).toList(growable: false);
+  }
+
+  @override
+  Future<void> schedule(ScheduledReminderNotification notification) async {
+    await _plugin.zonedSchedule(
+      id: notification.id,
+      title: notification.title,
+      body: notification.body,
+      scheduledDate: notification.scheduledAt,
+      notificationDetails: const NotificationDetails(
+        android: AndroidNotificationDetails(
+          'reminders',
+          'Daily reminders',
+          channelDescription: 'Medicine, water, food and exercise reminders',
+          importance: Importance.high,
+          priority: Priority.high,
+        ),
+        iOS: DarwinNotificationDetails(),
+      ),
+      androidScheduleMode: AndroidScheduleMode.inexactAllowWhileIdle,
+      matchDateTimeComponents: DateTimeComponents.time,
+      payload: jsonEncode({
+        'version': _payloadVersion,
+        'schedule_id': notification.scheduleId,
+        'signature': notification.signature,
+      }),
+    );
+  }
+
+  @override
+  Future<void> cancel(int id) => _plugin.cancel(id: id);
+
+  @override
+  Future<void> cancelAll() => _plugin.cancelAll();
+
+  ScheduledReminderNotification _decodePending(
+      PendingNotificationRequest request) {
+    try {
+      final payload = jsonDecode(request.payload ?? '') as Map<String, dynamic>;
+      if (payload['version'] == _payloadVersion &&
+          payload['schedule_id'] is String &&
+          payload['signature'] is String) {
+        return ScheduledReminderNotification(
+          id: request.id,
+          scheduleId: payload['schedule_id'] as String,
+          signature: payload['signature'] as String,
+          title: request.title ?? '',
+          body: request.body ?? '',
+          scheduledAt: tz.TZDateTime.utc(1970),
+        );
+      }
+    } on FormatException {
+      return _unknownPending(request);
+    } on TypeError {
+      return _unknownPending(request);
+    }
+    return _unknownPending(request);
+  }
+
+  ScheduledReminderNotification _unknownPending(
+          PendingNotificationRequest request) =>
+      ScheduledReminderNotification(
+        id: request.id,
+        scheduleId: '',
+        signature: '',
+        title: request.title ?? '',
+        body: request.body ?? '',
+        scheduledAt: tz.TZDateTime.utc(1970),
+      );
 }

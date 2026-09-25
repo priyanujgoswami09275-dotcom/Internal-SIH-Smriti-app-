@@ -16,7 +16,6 @@ import '../patient_localizations.dart';
 import '../services/api_service.dart';
 import '../services/auth_session.dart';
 import '../services/reminder_phrases.dart';
-import '../services/reminder_scheduler.dart';
 import '../services/reminder_service.dart';
 import '../services/tts_cache.dart';
 import '../services/voice_audio_service.dart';
@@ -88,11 +87,6 @@ class _RemindersScreenState extends State<RemindersScreen> {
       final schedules = await _reminders.getSchedules(widget.patientId);
 
       final events = await _reminders.getTodaysEvents(widget.patientId);
-      for (final schedule in schedules) {
-        ReminderScheduler.instance
-            .scheduleForSchedule(schedule)
-            .catchError((_) {});
-      }
       final open = <String, ReminderEventModel>{};
       for (final e in events) {
         if (e.status == ReminderStatus.pending ||

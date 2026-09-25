@@ -9,20 +9,52 @@ import 'package:flutter/foundation.dart';
 import '../models/shared_models.dart';
 import 'api_service.dart';
 import 'offline_sync_service.dart';
+import 'reminder_scheduler.dart';
 
 class MobileReminderService {
   final ApiService apiService;
   final OfflineSyncService sync;
+  final ReminderScheduler scheduler;
+  int _startupGeneration = 0;
 
-  MobileReminderService({ApiService? apiService, OfflineSyncService? sync})
-      : apiService = apiService ?? ApiService.instance,
-        sync = sync ?? OfflineSyncService.instance;
+  ReminderReconciliationResult? lastScheduleReconciliation;
+
+  MobileReminderService({
+    ApiService? apiService,
+    OfflineSyncService? sync,
+    ReminderScheduler? scheduler,
+  })  : apiService = apiService ?? ApiService.instance,
+        sync = sync ?? OfflineSyncService.instance,
+        scheduler = scheduler ?? ReminderScheduler.instance;
 
   Future<List<ReminderScheduleModel>> getSchedules(String patientId) async {
+    final schedules = await _fetchSchedules(patientId);
+    lastScheduleReconciliation = await scheduler.reconcile(schedules);
+    return schedules;
+  }
+
+  Future<void> reconcileOnStartup(String patientId) async {
+    final generation = ++_startupGeneration;
+    try {
+      final schedules = await _fetchSchedules(patientId);
+      if (generation != _startupGeneration) return;
+      lastScheduleReconciliation = await scheduler.reconcile(schedules);
+    } on Exception catch (error) {
+      debugPrint('Reminder startup reconciliation failed: $error');
+    }
+  }
+
+  Future<void> stop() async {
+    _startupGeneration++;
+    lastScheduleReconciliation = null;
+    await scheduler.cancelAll();
+  }
+
+  Future<List<ReminderScheduleModel>> _fetchSchedules(String patientId) async {
     try {
       return await apiService.reminderSchedules(patientId);
-    } catch (e) {
-      debugPrint('Reminder fetch failed (offline?): $e');
+    } catch (error) {
+      debugPrint('Reminder fetch failed (offline?): $error');
       rethrow;
     }
   }
@@ -50,7 +82,8 @@ class MobileReminderService {
       await apiService.acknowledgeReminder(eventId, method: method);
       return true;
     } catch (e) {
-      debugPrint('Ack could not reach server (offline?), queueing for sync: $e');
+      debugPrint(
+          'Ack could not reach server (offline?), queueing for sync: $e');
       try {
         await sync.enqueueReminderAck(
           patientId: patientId,
