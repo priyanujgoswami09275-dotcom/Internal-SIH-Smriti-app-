@@ -1,22 +1,20 @@
-/// File cache for synthesized reminder speech.
-///
-/// Identical (text, language) pairs synthesize once: the audio bytes are
-/// stored under a stable hash key in the temp directory and replayed from
-/// disk afterwards. Every failure degrades to null so callers fall back
-/// to text display — TTS must never break the reminder flow.
-library;
-
 import 'dart:io';
 import 'dart:typed_data';
+
+class TtsResult {
+  const TtsResult({this.bytes, this.error});
+
+  final Uint8List? bytes;
+  final Object? error;
+
+  bool get hasAudio => bytes != null && bytes!.isNotEmpty;
+}
 
 class TtsCache {
   final Future<Uint8List> Function(String text, String language) synthesize;
 
   TtsCache({required this.synthesize});
 
-  /// Stable filename key for (text, language): FNV-1a hex (dependency-free
-  /// and stable across runs, unlike hashCode). Masked to 63 bits so Dart's
-  /// signed 64-bit ints never produce a '-' prefix.
   static const int _fnvPrime = 0x100000001b3;
   static const int _mask63 = 0x7FFFFFFFFFFFFFFF;
 
@@ -32,33 +30,35 @@ class TtsCache {
 
   Future<File> _fileFor(String text, String language) async {
     return File(
-        '${Directory.systemTemp.path}/smriti_tts_${cacheKey(text, language)}.wav');
+      '${Directory.systemTemp.path}/smriti_tts_${cacheKey(text, language)}.wav',
+    );
   }
 
-  /// Cached audio bytes, or null when unavailable (caller shows text).
-  Future<Uint8List?> speechFor(String text, String language) async {
-    if (text.trim().isEmpty) return null;
+  Future<TtsResult> speechResult(String text, String language) async {
+    if (text.trim().isEmpty) {
+      return const TtsResult();
+    }
     try {
       final cached = await _fileFor(text, language);
       if (await cached.exists()) {
         final bytes = await cached.readAsBytes();
-        if (bytes.isNotEmpty) return bytes;
+        if (bytes.isNotEmpty) return TtsResult(bytes: bytes);
       }
-    } catch (_) {
-      // Fall through to synthesis.
-    }
+    } catch (_) {}
     try {
       final bytes = await synthesize(text, language);
-      if (bytes.isEmpty) return null;
-      try {
-        await (await _fileFor(text, language))
-            .writeAsBytes(bytes, flush: true);
-      } catch (_) {
-        // Cache write failure must not lose the freshly synthesized audio.
+      if (bytes.isEmpty) {
+        return TtsResult(error: StateError('TTS returned empty audio'));
       }
-      return bytes;
-    } catch (_) {
-      return null;
+      try {
+        await (await _fileFor(text, language)).writeAsBytes(bytes, flush: true);
+      } catch (_) {}
+      return TtsResult(bytes: bytes);
+    } catch (error) {
+      return TtsResult(error: error);
     }
   }
+
+  Future<Uint8List?> speechFor(String text, String language) async =>
+      (await speechResult(text, language)).bytes;
 }

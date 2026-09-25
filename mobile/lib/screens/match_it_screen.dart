@@ -25,6 +25,7 @@ import '../games/level_config.dart';
 import '../models/game_models.dart';
 import '../models/shared_models.dart';
 import '../services/api_service.dart';
+import '../services/auth_session.dart';
 import '../services/match_it_service.dart';
 import '../services/offline_sync_service.dart';
 import '../theme/monad_theme.dart';
@@ -65,6 +66,10 @@ class _MatchItScreenState extends State<MatchItScreen> {
   final MatchItService _logic = MatchItService();
   final GameAnalyticsEngine _engine = GameAnalyticsEngine.instance;
 
+  String get _languageCode =>
+      AuthSession.instance.user?.preferredLanguage ?? 'english';
+  String _label(String key) => GameLabels.of(_languageCode, key);
+
   int _difficulty = 1;
   MatchItGameState? _game;
   String? _sessionId;
@@ -72,6 +77,7 @@ class _MatchItScreenState extends State<MatchItScreen> {
   Timer? _flipReset;
   Timer? _stuckTimer;
   bool _offline = false;
+  bool _exitConfirmed = false;
 
   /// Set while the adaptive engine's subtle hint is showing.
   bool _hinting = false;
@@ -355,20 +361,20 @@ class _MatchItScreenState extends State<MatchItScreen> {
         shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(Monad.radiusCard),
             side: const BorderSide(color: Monad.ash)),
-        title: Text('Game completed', style: Monad.subheading),
+        title: Text(_label('game.gameCompleted'), style: Monad.subheading),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            _resultRow(
-                'Accuracy', '${finalState.accuracyPct.toStringAsFixed(1)}%'),
-            _resultRow('Pairs matched',
+            _resultRow(_label('game.accuracy'),
+                '${finalState.accuracyPct.toStringAsFixed(1)}%'),
+            _resultRow(_label('game.pairsMatched'),
                 '${finalState.matchedPairs}/${finalState.totalPairs}'),
-            _resultRow('Average response',
+            _resultRow(_label('game.averageResponse'),
                 '${finalState.avgResponseTimeMs.toStringAsFixed(0)} ms'),
             if (summary == null) ...[
               const SizedBox(height: 12),
               Text(
-                'Offline: result will sync when you reconnect.',
+                _label('game.offlineResult'),
                 style: Monad.monoBodySm.copyWith(color: Monad.crimson),
               ),
             ],
@@ -377,14 +383,14 @@ class _MatchItScreenState extends State<MatchItScreen> {
         actions: [
           TextButton(
             onPressed: () => Navigator.of(context).pop(),
-            child: const Text('Back'),
+            child: Text(_label('game.back')),
           ),
           ElevatedButton(
             onPressed: () {
               Navigator.of(context).pop();
               _restart();
             },
-            child: const Text('Play Again'),
+            child: Text(_label('game.playAgain')),
           ),
         ],
       ),
@@ -416,96 +422,131 @@ class _MatchItScreenState extends State<MatchItScreen> {
     _startGame();
   }
 
+  Future<void> _requestExit(BuildContext context) async {
+    if (_exitConfirmed) {
+      Navigator.of(context).pop();
+      return;
+    }
+    final leave = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(_label('game.leaveTitle')),
+        content: Text(_label('game.leaveBody')),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: Text(_label('game.keepPlaying')),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: Text(_label('game.leaveGame')),
+          ),
+        ],
+      ),
+    );
+    if (leave == true && context.mounted) {
+      setState(() => _exitConfirmed = true);
+      Navigator.of(context).pop();
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final game = _game;
-    return Scaffold(
-      appBar: AppBar(
-        title: Text('Match It: ${widget.packName}'),
-        centerTitle: false,
-        actions: [
-          if (game != null)
-            Padding(
-              padding: const EdgeInsets.only(right: 16),
-              child: Center(
-                child: Text(
-                  '${game.matchedPairs}/${game.totalPairs}',
-                  style: Monad.monoLabel,
+    return PopScope<void>(
+      canPop: _exitConfirmed,
+      onPopInvokedWithResult: (didPop, result) {
+        if (!didPop) _requestExit(context);
+      },
+      child: Scaffold(
+        appBar: AppBar(
+          title: Text('${_label('home.matchTitle')}: ${widget.packName}'),
+          centerTitle: false,
+          actions: [
+            if (game != null)
+              Padding(
+                padding: const EdgeInsets.only(right: 16),
+                child: Center(
+                  child: Text(
+                    '${game.matchedPairs}/${game.totalPairs}',
+                    style: Monad.monoLabel,
+                  ),
                 ),
               ),
-            ),
-        ],
-      ),
-      body: _error != null
-          ? Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  const Icon(Icons.cloud_off, size: 64, color: Monad.smoke),
-                  const SizedBox(height: 12),
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 32),
-                    child: Text(
-                      _error!,
-                      textAlign: TextAlign.center,
-                      style: Monad.monoBodyLg,
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                  ElevatedButton(
-                    onPressed: _startGame,
-                    child: const Text('Try Again'),
-                  ),
-                ],
-              ),
-            )
-          : game == null
-              ? Center(
-                  child: Text(
-                    GameLabels.of('en', 'common.loading'),
-                    style: Monad.monoBodyLg,
-                  ),
-                )
-              : Column(
+          ],
+        ),
+        body: _error != null
+            ? Center(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
                   children: [
-                    // Persistent, unmissable home control on every screen.
-                    SafeArea(
-                      child: Padding(
-                        padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
-                        child: Row(
-                          children: [
-                            OutlinedButton.icon(
-                              onPressed: () => Navigator.of(context).maybePop(),
-                              icon: const Icon(Icons.home, size: 22),
-                              label: Text(GameLabels.of('en', 'common.home')),
-                              style: Monad.ghostPill(),
-                            ),
-                          ],
-                        ),
+                    const Icon(Icons.cloud_off, size: 64, color: Monad.smoke),
+                    const SizedBox(height: 12),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 32),
+                      child: Text(
+                        _error!,
+                        textAlign: TextAlign.center,
+                        style: Monad.monoBodyLg,
                       ),
                     ),
-                    Expanded(
-                      child: GridView.builder(
-                        padding: const EdgeInsets.all(16),
-                        // Columns per spec grids: L1 2x2, L2 4x2, L3 4x3.
-                        // 2 columns keeps L1 touch targets huge (>=120dp).
-                        gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                          crossAxisCount: game.totalPairs <= 2 ? 2 : 4,
-                          crossAxisSpacing: 12,
-                          mainAxisSpacing: 12,
-                          childAspectRatio: 0.85,
-                        ),
-                        itemCount: game.cards.length,
-                        itemBuilder: (context, index) => _CardView(
-                          card: game.cards[index],
-                          hinting:
-                              _hinting && _isHintCard(game, game.cards[index]),
-                          onTap: () => _onCardTap(game.cards[index]),
-                        ),
-                      ),
+                    const SizedBox(height: 16),
+                    ElevatedButton(
+                      onPressed: _startGame,
+                      child: Text(_label('common.retry')),
                     ),
                   ],
                 ),
+              )
+            : game == null
+                ? Center(
+                    child: Text(
+                      _label('common.loading'),
+                      style: Monad.monoBodyLg,
+                    ),
+                  )
+                : Column(
+                    children: [
+                      // Persistent, unmissable home control on every screen.
+                      SafeArea(
+                        child: Padding(
+                          padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+                          child: Row(
+                            children: [
+                              OutlinedButton.icon(
+                                onPressed: () => _requestExit(context),
+                                icon: const Icon(Icons.home, size: 22),
+                                label: Text(_label('common.home')),
+                                style: Monad.ghostPill(),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                      Expanded(
+                        child: GridView.builder(
+                          padding: const EdgeInsets.all(16),
+                          // Columns per spec grids: L1 2x2, L2 4x2, L3 4x3.
+                          // 2 columns keeps L1 touch targets huge (>=120dp).
+                          gridDelegate:
+                              SliverGridDelegateWithFixedCrossAxisCount(
+                            crossAxisCount: game.totalPairs <= 2 ? 2 : 4,
+                            crossAxisSpacing: 12,
+                            mainAxisSpacing: 12,
+                            childAspectRatio: 0.85,
+                          ),
+                          itemCount: game.cards.length,
+                          itemBuilder: (context, index) => _CardView(
+                            card: game.cards[index],
+                            hinting: _hinting &&
+                                _isHintCard(game, game.cards[index]),
+                            onTap: () => _onCardTap(game.cards[index]),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+      ),
     );
   }
 

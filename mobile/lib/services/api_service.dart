@@ -40,6 +40,42 @@ class ApiException implements Exception {
 }
 
 /// Token pair returned by the backend auth endpoints.
+class SpeechRecognitionResult {
+  const SpeechRecognitionResult({
+    required this.text,
+    required this.provider,
+    required this.simulated,
+  });
+
+  final String text;
+  final String provider;
+  final bool simulated;
+}
+
+class SpeechSynthesisResult {
+  const SpeechSynthesisResult({
+    required this.bytes,
+    required this.provider,
+    required this.simulated,
+  });
+
+  final Uint8List bytes;
+  final String provider;
+  final bool simulated;
+}
+
+class TranslationResult {
+  const TranslationResult({
+    required this.text,
+    required this.provider,
+    required this.simulated,
+  });
+
+  final String text;
+  final String provider;
+  final bool simulated;
+}
+
 class AuthTokens {
   final String accessToken;
   final String refreshToken;
@@ -138,6 +174,7 @@ class ApiService {
     Map<String, dynamic>? body,
     Map<String, String>? query,
     bool includeAuth = true,
+    bool notifyUnauthorized = true,
   }) async {
     final uri = _uri(path, query);
     final headers = _headers(includeAuth: includeAuth);
@@ -163,10 +200,16 @@ class ApiService {
       final refreshed = await _tryRefresh();
       if (refreshed) {
         return _send(method, path,
-            body: body, query: query, includeAuth: includeAuth);
+            body: body,
+            query: query,
+            includeAuth: includeAuth,
+            notifyUnauthorized: notifyUnauthorized);
       }
     }
-    if (response.statusCode == 401 && includeAuth && !_inUnauthorizedHandler) {
+    if (response.statusCode == 401 &&
+        includeAuth &&
+        notifyUnauthorized &&
+        !_inUnauthorizedHandler) {
       _inUnauthorizedHandler = true;
       try {
         await onUnauthorized?.call();
@@ -204,9 +247,26 @@ class ApiService {
     String path, {
     Map<String, String>? query,
     bool includeAuth = true,
+  }) =>
+      _getJson(
+        path,
+        query: query,
+        includeAuth: includeAuth,
+      );
+
+  Future<dynamic> _getJson(
+    String path, {
+    Map<String, String>? query,
+    bool includeAuth = true,
+    bool notifyUnauthorized = true,
   }) async {
-    final res =
-        await _send('GET', path, query: query, includeAuth: includeAuth);
+    final res = await _send(
+      'GET',
+      path,
+      query: query,
+      includeAuth: includeAuth,
+      notifyUnauthorized: notifyUnauthorized,
+    );
     return _decode(res);
   }
 
@@ -323,7 +383,11 @@ class ApiService {
 
   Future<PatientModel?> myPatient() async {
     try {
-      final data = await getJson('${AppConfig.apiV1}/patients/me');
+      final data = await _getJson(
+        '${AppConfig.apiV1}/patients/me',
+        notifyUnauthorized: false,
+      );
+
       return PatientModel.fromJson(data as Map<String, dynamic>);
     } on ApiException catch (e) {
       if (e.statusCode == 404) return null; // no profile yet
@@ -539,8 +603,22 @@ class ApiService {
     return RoutineBoard.fromServerJson(data as Map<String, dynamic>);
   }
 
+  Future<List<PatientGameHistoryItem>> patientGameHistory(
+      {int limit = 10}) async {
+    final data = await getJson(
+      '${AppConfig.apiV1}/games/me/history',
+      query: {'limit': '$limit'},
+    );
+    return (data as List)
+        .map((item) => PatientGameHistoryItem.fromJson(
+              Map<String, dynamic>.from(item as Map),
+            ))
+        .toList();
+  }
+
   // =====================================================================
   // Reminders
+
   // =====================================================================
 
   Future<List<ReminderScheduleModel>> reminderSchedules(
@@ -616,7 +694,7 @@ class ApiService {
   /// Transcribe recorded audio via POST /language/asr.
   /// [audioBase64] must be base64 wav (16kHz mono preferred).
   /// Throws [ApiException] on 400 (unsupported language) or 502 (provider).
-  Future<String> transcribeAudio({
+  Future<SpeechRecognitionResult> transcribeAudio({
     required String audioBase64,
     required String language,
   }) async {
@@ -624,7 +702,12 @@ class ApiService {
       '${AppConfig.apiV1}/language/asr',
       body: {'audio_base64': audioBase64, 'source_language': language},
     );
-    return (data as Map<String, dynamic>)['recognized_text'] as String? ?? '';
+    final map = data as Map<String, dynamic>;
+    return SpeechRecognitionResult(
+      text: map['recognized_text'] as String? ?? '',
+      provider: map['provider'] as String? ?? 'unknown',
+      simulated: map['simulated'] as bool? ?? false,
+    );
   }
 
   /// Synthesize [text] via POST /language/tts; returns raw audio bytes
@@ -634,12 +717,46 @@ class ApiService {
     required String text,
     required String language,
   }) async {
+    final result = await synthesizeSpeechResult(text: text, language: language);
+    return result.bytes;
+  }
+
+  Future<SpeechSynthesisResult> synthesizeSpeechResult({
+    required String text,
+    required String language,
+  }) async {
     final data = await postJson(
       '${AppConfig.apiV1}/language/tts',
       body: {'text': text, 'target_language': language},
     );
-    final b64 = (data as Map<String, dynamic>)['audio_base64'] as String? ?? '';
-    return base64Decode(b64);
+    final map = data as Map<String, dynamic>;
+    final encoded = map['audio_base64'] as String? ?? '';
+    return SpeechSynthesisResult(
+      bytes: base64Decode(encoded),
+      provider: map['provider'] as String? ?? 'unknown',
+      simulated: map['simulated'] as bool? ?? false,
+    );
+  }
+
+  Future<TranslationResult> translateText({
+    required String text,
+    required String sourceLanguage,
+    required String targetLanguage,
+  }) async {
+    final data = await postJson(
+      '${AppConfig.apiV1}/language/translate',
+      body: {
+        'text': text,
+        'source_language': sourceLanguage,
+        'target_language': targetLanguage,
+      },
+    );
+    final map = data as Map<String, dynamic>;
+    return TranslationResult(
+      text: map['translated_text'] as String? ?? text,
+      provider: map['provider'] as String? ?? 'unknown',
+      simulated: map['simulated'] as bool? ?? false,
+    );
   }
 
   /// Full difficulty map for LevelConfig sync (GET /games/level-config).

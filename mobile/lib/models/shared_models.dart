@@ -155,6 +155,21 @@ class UserModel {
         preferredLanguage: json['preferred_language'] as String? ?? 'english',
       );
 
+  UserModel copyWith({
+    String? id,
+    String? phone,
+    String? email,
+    Role? role,
+    String? preferredLanguage,
+  }) =>
+      UserModel(
+        id: id ?? this.id,
+        phone: phone ?? this.phone,
+        email: email ?? this.email,
+        role: role ?? this.role,
+        preferredLanguage: preferredLanguage ?? this.preferredLanguage,
+      );
+
   Map<String, dynamic> toJson() => {
         'id': id,
         'phone': phone,
@@ -189,7 +204,8 @@ class PatientModel {
         id: json['id'] as String,
         userId: json['user_id'] as String?,
         name: json['name'] as String? ?? 'Elder',
-        cognitiveBaseline: baselineFromApi(json['cognitive_baseline'] as String? ?? 'healthy'),
+        cognitiveBaseline:
+            baselineFromApi(json['cognitive_baseline'] as String? ?? 'healthy'),
         region: json['region'] as String?,
         district: json['district'] as String?,
       );
@@ -233,7 +249,8 @@ class GameSessionModel {
     this.completedAt,
   });
 
-  factory GameSessionModel.fromJson(Map<String, dynamic> json) => GameSessionModel(
+  factory GameSessionModel.fromJson(Map<String, dynamic> json) =>
+      GameSessionModel(
         id: json['id'] as String,
         patientId: json['patient_id'] as String,
         gameType: gameTypeFromApi(json['game_type'] as String? ?? 'match_it'),
@@ -249,9 +266,41 @@ class GameSessionModel {
       );
 }
 
-// =====================================================================
-// Reminders
-// =====================================================================
+class PatientGameHistoryItem {
+  final String sessionId;
+  final String gameType;
+  final int difficultyLevel;
+  final int score;
+  final int totalAttempts;
+  final double? accuracyPct;
+  final double? avgResponseTimeMs;
+  final DateTime? completedAt;
+
+  const PatientGameHistoryItem({
+    required this.sessionId,
+    required this.gameType,
+    required this.difficultyLevel,
+    required this.score,
+    required this.totalAttempts,
+    this.accuracyPct,
+    this.avgResponseTimeMs,
+    this.completedAt,
+  });
+
+  factory PatientGameHistoryItem.fromJson(Map<String, dynamic> json) =>
+      PatientGameHistoryItem(
+        sessionId: json['session_id'] as String,
+        gameType: json['game_type'] as String,
+        difficultyLevel: json['difficulty_level'] as int? ?? 1,
+        score: json['score'] as int? ?? 0,
+        totalAttempts: json['total_attempts'] as int? ?? 0,
+        accuracyPct: (json['accuracy_pct'] as num?)?.toDouble(),
+        avgResponseTimeMs: (json['avg_response_time_ms'] as num?)?.toDouble(),
+        completedAt: json['completed_at'] == null
+            ? null
+            : DateTime.parse(json['completed_at'] as String),
+      );
+}
 
 class ReminderScheduleModel {
   final String id;
@@ -274,7 +323,8 @@ class ReminderScheduleModel {
       ReminderScheduleModel(
         id: json['id'] as String,
         patientId: json['patient_id'] as String,
-        reminderType: reminderTypeFromApi(json['reminder_type'] as String? ?? 'medicine'),
+        reminderType:
+            reminderTypeFromApi(json['reminder_type'] as String? ?? 'medicine'),
         cadence: json['cadence'] as String? ?? '',
         isActive: json['is_active'] as bool? ?? true,
         createdAt: DateTime.parse(json['created_at'] as String),
@@ -304,7 +354,8 @@ class ReminderEventModel {
     this.syncedAt,
   });
 
-  factory ReminderEventModel.fromJson(Map<String, dynamic> json) => ReminderEventModel(
+  factory ReminderEventModel.fromJson(Map<String, dynamic> json) =>
+      ReminderEventModel(
         id: json['id'] as String,
         scheduleId: json['schedule_id'] as String,
         patientId: json['patient_id'] as String,

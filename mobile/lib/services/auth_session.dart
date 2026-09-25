@@ -62,7 +62,8 @@ class AuthSession extends ChangeNotifier {
   }
 
   Future<void> login({required String phone, required String password}) async {
-    final tokens = await ApiService.instance.login(phone: phone, password: password);
+    final tokens =
+        await ApiService.instance.login(phone: phone, password: password);
     await _applyTokens(tokens);
   }
 
@@ -95,6 +96,15 @@ class AuthSession extends ChangeNotifier {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_kAccess, tokens.accessToken);
     await prefs.setString(_kRefresh, tokens.refreshToken);
+    await prefs.setString(_kUser, jsonEncode(_user!.toJson()));
+    notifyListeners();
+  }
+
+  Future<void> setPreferredLanguage(String language) async {
+    final user = _user;
+    if (user == null) return;
+    _user = user.copyWith(preferredLanguage: language);
+    final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_kUser, jsonEncode(_user!.toJson()));
     notifyListeners();
   }
