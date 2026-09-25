@@ -79,6 +79,19 @@ ENABLE_BACKGROUND_JOBS=false .venv-demo/bin/python -m uvicorn app.main:app --hos
 generation/escalation jobs fire against the demo data. Enabling them later is a
 separate, explicit choice.
 
+### Dashboard (caregiver web app)
+
+From the `dashboard/` directory, set the deployed HTTPS API origin explicitly and
+build with the required release define:
+
+```sh
+export API_BASE_URL=https://api.your-domain.example
+flutter build web --release --dart-define=API_BASE_URL="$API_BASE_URL"
+```
+
+A release build without `--dart-define=API_BASE_URL` fails during configuration;
+the development default remains `http://localhost:8000`.
+
 ### Mobile (patient app)
 
 From the `mobile/` directory:
