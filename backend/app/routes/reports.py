@@ -12,8 +12,13 @@ from app.database import get_db
 from app.deps import ensure_clinical_access, ensure_consent
 from app.models.all_models import DocumentTypeEnum, MedicalDocument, User
 from app.services.compliance_service import ComplianceService
-from app.services.document_extraction import MAX_UPLOAD_BYTES, extract_document_text
-from app.services.rag_service import RAGService
+from app.services.datetime_utils import iso_utc
+from app.services.document_extraction import (
+    ExtractedTextLimitError,
+    MAX_UPLOAD_BYTES,
+    extract_document_text,
+)
+from app.services.rag_service import EmbeddingCompatibilityError, RAGService
 from app.services.report_service import ReportService
 from app.services.llm_client import LLMClient
 
@@ -72,17 +77,20 @@ async def ingest_medical_document(
     """
     await ensure_clinical_access(db, current_user, req.patient_id)
     await ensure_consent(db, req.patient_id, "health_data")
-    doc = await RAGService.ingest_document(
-        db=db,
-        patient_id=req.patient_id,
-        uploaded_by=current_user.id,
-        file_ref=req.file_ref,
-        doc_type=req.doc_type,
-        extracted_text=req.extracted_text,
-        title=req.title,
-        chunk_size=req.chunk_size,
-        chunk_overlap=req.chunk_overlap,
-    )
+    try:
+        doc = await RAGService.ingest_document(
+            db=db,
+            patient_id=req.patient_id,
+            uploaded_by=current_user.id,
+            file_ref=req.file_ref,
+            doc_type=req.doc_type,
+            extracted_text=req.extracted_text,
+            title=req.title,
+            chunk_size=req.chunk_size,
+            chunk_overlap=req.chunk_overlap,
+        )
+    except ExtractedTextLimitError as exc:
+        raise HTTPException(status_code=status.HTTP_413_CONTENT_TOO_LARGE, detail=str(exc))
     return {
         "message": "Document ingested and embedded successfully",
         "document_id": str(doc.id),
@@ -110,7 +118,7 @@ async def upload_medical_document(
     raw = await file.read()
     if len(raw) > MAX_UPLOAD_BYTES:
         raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
             detail=f"File exceeds the {MAX_UPLOAD_BYTES // (1024*1024)} MB limit.",
         )
     if not raw:
@@ -118,6 +126,8 @@ async def upload_medical_document(
 
     try:
         extracted_text = extract_document_text(file.filename or "document", raw)
+    except ExtractedTextLimitError as exc:
+        raise HTTPException(status_code=status.HTTP_413_CONTENT_TOO_LARGE, detail=str(exc))
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
@@ -151,13 +161,16 @@ async def query_medical_documents(
     await ensure_clinical_access(db, current_user, req.patient_id)
     await ensure_consent(db, req.patient_id, "health_data")
     await ComplianceService.log_read_access(db, current_user.id, "medical_document", req.patient_id)
-    results = await RAGService.query_medical_context(
-        db=db,
-        patient_id=req.patient_id,
-        query=req.query,
-        top_k=req.top_k,
-        min_similarity=req.min_similarity,
-    )
+    try:
+        results = await RAGService.query_medical_context(
+            db=db,
+            patient_id=req.patient_id,
+            query=req.query,
+            top_k=req.top_k,
+            min_similarity=req.min_similarity,
+        )
+    except EmbeddingCompatibilityError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
     return {"query": req.query, "matches": results}
 
 
@@ -175,14 +188,17 @@ async def answer_medical_question(
     await ensure_clinical_access(db, current_user, req.patient_id)
     await ensure_consent(db, req.patient_id, "health_data")
     await ComplianceService.log_read_access(db, current_user.id, "medical_document", req.patient_id)
-    result = await RAGService.answer_question(
-        db=db,
-        patient_id=req.patient_id,
-        question=req.question,
-        top_k=req.top_k,
-        min_similarity=req.min_similarity,
-        llm=LLMClient(),
-    )
+    try:
+        result = await RAGService.answer_question(
+            db=db,
+            patient_id=req.patient_id,
+            question=req.question,
+            top_k=req.top_k,
+            min_similarity=req.min_similarity,
+            llm=LLMClient(),
+        )
+    except EmbeddingCompatibilityError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
     return result
 
 
@@ -226,7 +242,7 @@ async def list_patient_documents(
                 if hasattr(embedding_status, "value")
                 else str(embedding_status)
             ),
-            "created_at": created_at.isoformat() if created_at else None,
+            "created_at": iso_utc(created_at),
         }
         for doc_id, title, file_ref, doc_type, embedding_status, created_at in res.all()
     ]
@@ -251,8 +267,8 @@ async def get_latest_weekly_report(
     return {
         "report_id": str(report.id),
         "patient_id": str(report.patient_id),
-        "week_start": report.week_start.isoformat(),
-        "generated_at": report.generated_at.isoformat(),
+        "week_start": iso_utc(report.week_start),
+        "generated_at": iso_utc(report.generated_at),
         "report": report.report_json,
     }
 

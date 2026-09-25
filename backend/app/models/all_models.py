@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Date, JSON, DateTime, func, ForeignKey, Enum as SQLEnum, Boolean, Integer, Float, UniqueConstraint, CheckConstraint
+from sqlalchemy import Column, String, Text, Date, JSON, DateTime, func, ForeignKey, Enum as SQLEnum, Boolean, Integer, Float, UniqueConstraint, CheckConstraint, Index
 from sqlalchemy.dialects.postgresql import UUID
 import uuid
 from enum import Enum
@@ -66,8 +66,10 @@ class GameSession(Base):
     difficulty_level = Column(Integer, nullable=False, default=1)
     content_pack_id = Column(String(100), nullable=True)
     routine_id = Column(String(100), nullable=True)
+    idempotency_key = Column(String(200), nullable=True)
     started_at = Column(DateTime, default=func.now(), nullable=False)
     completed_at = Column(DateTime, nullable=True)
+    replay_completed_at = Column(DateTime, nullable=True)
     attempts = Column(Integer, nullable=False, default=0)
     correct_count = Column(Integer, nullable=False, default=0)
     incorrect_count = Column(Integer, nullable=False, default=0)
@@ -75,7 +77,45 @@ class GameSession(Base):
     avg_response_time_ms = Column(Float, nullable=True)
     raw_event_log = Column(JSON, nullable=True)
     board_snapshot = Column(JSON, nullable=True)
+    server_state = Column(JSON, nullable=True)
+    completion_idempotency_key = Column(String(200), nullable=True)
+    completion_result = Column(JSON, nullable=True)
     created_at = Column(DateTime, default=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "patient_id",
+            "idempotency_key",
+            name="uq_game_sessions_patient_idempotency_key",
+        ),
+        UniqueConstraint(
+            "completion_idempotency_key",
+            name="uq_game_sessions_completion_idempotency_key",
+        ),
+    )
+
+
+class GameAction(Base):
+    __tablename__ = "game_actions"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    session_id = Column(UUID(as_uuid=True), ForeignKey("game_sessions.id"), nullable=False)
+    idempotency_key = Column(String(200), nullable=False)
+    action_type = Column(String(100), nullable=False)
+    action_data = Column(JSON, nullable=False)
+    is_correct = Column(Boolean, nullable=True)
+    response_time_ms = Column(Integer, nullable=True)
+    server_fields = Column(JSON, nullable=True)
+    created_at = Column(DateTime, default=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "session_id",
+            "idempotency_key",
+            name="uq_game_actions_session_idempotency_key",
+        ),
+    )
+
 
 class DifficultyAdjustmentLog(Base):
     __tablename__ = "difficulty_adjustment_logs"
@@ -147,12 +187,22 @@ class ReminderEvent(Base):
     schedule_id = Column(UUID(as_uuid=True), ForeignKey("reminder_schedules.id"), nullable=False)
     patient_id = Column(UUID(as_uuid=True), ForeignKey("patients.id"), nullable=False)
     scheduled_at = Column(DateTime, nullable=False)
+    occurrence_key = Column(String(16), nullable=True)
     delivered_at = Column(DateTime, nullable=True)
     acknowledged_at = Column(DateTime, nullable=True)
     acknowledgment_method = Column(SQLEnum(AcknowledgmentMethodEnum, values_callable=enum_values), nullable=True)
     status = Column(SQLEnum(ReminderStatusEnum, values_callable=enum_values), nullable=False, default=ReminderStatusEnum.PENDING)
     synced_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "patient_id",
+            "schedule_id",
+            "occurrence_key",
+            name="uq_reminder_events_patient_schedule_occurrence",
+        ),
+    )
 
 class AlertTriggerTypeEnum(str, Enum):
     MISSED_REMINDERS = "missed_reminders"
@@ -170,12 +220,22 @@ class AlertFlag(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     patient_id = Column(UUID(as_uuid=True), ForeignKey("patients.id"), nullable=False)
     trigger_type = Column(SQLEnum(AlertTriggerTypeEnum, values_callable=enum_values), nullable=False)
+    dedup_key = Column(String(8), nullable=True)
     threshold_detail = Column(JSON, nullable=True)
     severity = Column(SQLEnum(AlertSeverityEnum, values_callable=enum_values), nullable=False)
     alert_summary = Column(String(500), nullable=True)
     created_at = Column(DateTime, default=func.now(), nullable=False)
     acknowledged_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
     acknowledged_at = Column(DateTime, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "patient_id",
+            "trigger_type",
+            "dedup_key",
+            name="uq_alert_flags_patient_trigger_dedup",
+        ),
+    )
 
 class SyncResourceTypeEnum(str, Enum):
     GAME_SESSION = "game_session"
@@ -195,11 +255,20 @@ class SyncQueue(Base):
     resource_type = Column(SQLEnum(SyncResourceTypeEnum, values_callable=enum_values), nullable=False)
     operation = Column(SQLEnum(SyncOperationEnum, values_callable=enum_values), nullable=False)
     resource_id = Column(UUID(as_uuid=True), nullable=False)
+    idempotency_key = Column(String(36), nullable=False, default=lambda: str(uuid.uuid4()))
     payload = Column(JSON, nullable=False)
     created_at = Column(DateTime, default=func.now(), nullable=False)
     synced_at = Column(DateTime, nullable=True)
     retry_count = Column(Integer, default=0, nullable=False)
     last_error = Column(String(500), nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "patient_id",
+            "idempotency_key",
+            name="uq_sync_queue_patient_idempotency_key",
+        ),
+    )
 
 class SymptomEntrySourceEnum(str, Enum):
     MANUAL_CAREGIVER = "manual_caregiver"
@@ -240,8 +309,23 @@ class MedicalDocument(Base):
     file_ref = Column(String(500), nullable=False)
     doc_type = Column(SQLEnum(DocumentTypeEnum, values_callable=enum_values), nullable=False, default=DocumentTypeEnum.REPORT)
     embedding_status = Column(SQLEnum(EmbeddingStatusEnum, values_callable=enum_values), nullable=False, default=EmbeddingStatusEnum.PENDING)
-    extracted_text = Column(String(10000), nullable=True)
+    extracted_text = Column(Text, nullable=True)
+    embedding_provider = Column(String(50), nullable=True)
+    embedding_model = Column(String(255), nullable=True)
+    embedding_dimensions = Column(Integer, nullable=True)
     created_at = Column(DateTime, default=func.now(), nullable=False)
+
+    __table_args__ = (
+        CheckConstraint(
+            "embedding_dimensions IS NULL OR embedding_dimensions > 0",
+            name="ck_medical_documents_embedding_dimensions_positive",
+        ),
+        CheckConstraint(
+            "(embedding_provider IS NULL AND embedding_model IS NULL AND embedding_dimensions IS NULL) "
+            "OR (embedding_provider IS NOT NULL AND embedding_model IS NOT NULL AND embedding_dimensions IS NOT NULL)",
+            name="ck_medical_documents_embedding_provenance_complete",
+        ),
+    )
 
 class DocumentChunk(Base):
     __tablename__ = "document_chunks"
@@ -250,7 +334,7 @@ class DocumentChunk(Base):
     document_id = Column(UUID(as_uuid=True), ForeignKey("medical_documents.id"), nullable=False)
     patient_id = Column(UUID(as_uuid=True), ForeignKey("patients.id"), nullable=True)
     chunk_text = Column(String(2000), nullable=False)
-    embedding = Column(JSON, nullable=True)  # List of floats or pgvector
+    embedding = Column(JSON, nullable=True)  # Portable float list; Python cosine scan by design.
     page_ref = Column(Integer, default=1, nullable=False)
     created_at = Column(DateTime, default=func.now(), nullable=False)
 
@@ -266,6 +350,15 @@ class WeeklyReport(Base):
     generated_at = Column(DateTime, default=func.now(), nullable=False)
     report_json = Column(JSON, nullable=False)  # ReportService summary payload
 
+    __table_args__ = (
+        UniqueConstraint(
+            "patient_id",
+            "week_start",
+            name="uq_weekly_reports_patient_week",
+        ),
+    )
+
+
 class UserDeviceToken(Base):
     __tablename__ = "user_device_tokens"
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -274,6 +367,11 @@ class UserDeviceToken(Base):
     phone = Column(String(50), nullable=True)
     platform = Column(String(20), nullable=False, default="android")
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
+
+    __table_args__ = (
+        Index("ix_user_device_tokens_user_id", "user_id"),
+    )
+
 
 class NotificationDeliveryStatusEnum(str, Enum):
     SENT = "sent"
@@ -293,6 +391,15 @@ class NotificationDelivery(Base):
     address = Column(String(500), nullable=True)
     status = Column(SQLEnum(NotificationDeliveryStatusEnum, values_callable=enum_values), nullable=False, default=NotificationDeliveryStatusEnum.SENT)
     created_at = Column(DateTime, default=func.now(), nullable=False)
+
+    __table_args__ = (
+        Index("ix_notification_deliveries_provider", "provider"),
+        Index(
+            "ix_notification_deliveries_recipient_user_id",
+            "recipient_user_id",
+        ),
+    )
+
 
 class RiskScreening(Base):
     __tablename__ = "risk_screenings"

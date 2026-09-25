@@ -227,14 +227,35 @@ async def test_phase8to10_routes_wired(client):
 
 
 @pytest.mark.asyncio
-async def test_sync_batch_endpoint(client):
+async def test_sync_batch_endpoint_rejects_unmaterialized_types(client):
     phone = f"+91{uuid.uuid4().int % 10**9:09d}"
     await _register(client, phone)
     headers, _ = await _login(client, phone)
 
-    # Patient self-registers a profile so sync has a valid patient_id
     profile = await _create_patient(client, headers, "Deepak Nath")
     patient_id = profile["id"]
+
+    for resource_type in ("game_session", "reminder_event"):
+        resp = await client.post(
+            f"{SYNC}",
+            json={
+                "patient_id": patient_id,
+                "items": [
+                    {
+                        "resource_type": resource_type,
+                        "operation": "create",
+                        "resource_id": str(uuid.uuid4()),
+                        "payload": {},
+                    }
+                ],
+            },
+            headers=headers,
+        )
+        assert resp.status_code == 422
+        assert resp.json()["detail"] == (
+            f"Unsupported sync resource_type/operation: {resource_type}/create. "
+            "Only offline_symptom/create is supported"
+        )
 
     resp = await client.post(
         f"{SYNC}",
@@ -242,31 +263,12 @@ async def test_sync_batch_endpoint(client):
             "patient_id": patient_id,
             "items": [
                 {
-                    "resource_type": "game_session",
+                    "resource_type": "not_a_resource",
                     "operation": "create",
                     "resource_id": str(uuid.uuid4()),
-                    "payload": {"game_type": "match_it", "score": 90},
-                },
-                {
-                    "resource_type": "reminder_event",
-                    "operation": "create",
-                    "resource_id": str(uuid.uuid4()),
-                    "payload": {"reminder_type": "medicine", "acknowledged": True},
-                },
+                    "payload": {},
+                }
             ],
-        },
-        headers=headers,
-    )
-    assert resp.status_code == 200, resp.text
-    assert resp.json()["synced"] == 2
-    assert resp.json()["errors"] == []
-
-    # Invalid resource_type is rejected with 422
-    resp = await client.post(
-        f"{SYNC}",
-        json={
-            "patient_id": patient_id,
-            "items": [{"resource_type": "not_a_resource", "operation": "create", "resource_id": str(uuid.uuid4()), "payload": {}}],
         },
         headers=headers,
     )

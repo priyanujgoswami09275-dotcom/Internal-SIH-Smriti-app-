@@ -142,10 +142,10 @@ async def _register_patient(client):
 
 
 async def test_session_complete_returns_shadow_fields_without_rule_decision(client, db_session, monkeypatch):
-    """Complete path surfaces shadow prediction only — no difficulty decision,
-    no DifficultyAdjustmentLog (rules stay the sole authority)."""
-    from app.routes import games as games_routes
-
+    """Complete path surfaces the shadow prediction, and the shadow value never
+    influences the rule-based difficulty decision (rules stay the sole
+    authority). Difficulty itself IS evaluated and logged on completion so the
+    patient path can progress; that decision comes from the rules only."""
     headers, _pid = await _register_patient(client)
     start = await client.post(f"{GAMES}/sessions", headers=headers, json={
         "game_type": "match_it", "difficulty_level": 1})
@@ -156,7 +156,9 @@ async def test_session_complete_returns_shadow_fields_without_rule_decision(clie
         return dict(shadow_probability=0.42, shadow_model_version="test-candidate",
                     shadow_reason="predicted")
 
-    monkeypatch.setattr(games_routes, "evaluate_shadow", prediction)
+    # The merged contract evaluates the shadow model inside the authoritative
+    # difficulty evaluation, so patch that seam rather than the route.
+    monkeypatch.setattr(difficulty_engine, "evaluate_shadow", prediction)
     resp = await client.post(f"{GAMES}/sessions/{session_id}/complete", headers=headers)
     assert resp.status_code == 200, resp.text
     body = resp.json()
@@ -164,9 +166,15 @@ async def test_session_complete_returns_shadow_fields_without_rule_decision(clie
     assert body["shadow_model_version"] == "test-candidate"
     assert body["shadow_reason"] == "predicted"
     assert "new_difficulty" not in body
-    assert body.get("source") is None
+    # The decision source is the rule engine, never the shadow model.
+    assert body["difficulty_source"] == "rule_fallback"
+    assert body["rule_version"] == "rules-85-50-v1"
+    # With zero scored actions the rules hold the level; the shadow value (0.42)
+    # did not move it.
+    assert body["recommended_level"] == 1
     logs = (await db_session.execute(select(DifficultyAdjustmentLog))).scalars().all()
-    assert logs == []  # complete never logs a difficulty decision
+    assert len(logs) == 1
+    assert logs[0].metadata.get("shadow_probability") == 0.42
 
 
 async def test_session_complete_surfaces_unsupported_shadow_for_odd_one_out(client, db_session):

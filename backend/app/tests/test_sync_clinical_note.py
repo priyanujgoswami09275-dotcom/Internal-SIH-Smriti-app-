@@ -1,10 +1,8 @@
 """Wave 2 Batch D — clinical notes ride the offline_symptom pipeline.
 
 The mobile `ClinicalNotesScreen` enqueues notes as `offline_symptom`/`create`
-items (no new enum, no migration). This test posts that exact envelope to
-`POST /api/v1/sync` and runs `consume_sync_queue`, proving save → server row
-exists end-to-end. No backend source change is expected for this to pass; if
-any source change is needed, stop and report instead of expanding scope.
+items (no new enum). This test posts that envelope to `POST /api/v1/sync` and
+runs `consume_sync_queue`, proving save → server row exists end-to-end.
 """
 import uuid
 from datetime import datetime, timezone
@@ -50,9 +48,19 @@ async def test_clinical_note_envelope_materializes_symptom_log(
         headers=headers)
     assert prof.status_code == 201, prof.text
     patient_id = prof.json()["id"]
+    consent = await client.post(
+        "/api/v1/compliance/consent",
+        headers=headers,
+        json={
+            "patient_id": patient_id,
+            "consent_type": "patient_self",
+            "scope": "health_data",
+        },
+    )
+    assert consent.status_code == 200, consent.text
 
-    # Exact mobile envelope: entered_by + manual_asha source + 1-5 severity +
-    # notes + recorded_at, with a client-generated UUID resource_id.
+    # Mobile envelope: entered_by + manual_asha source + 1-5 severity +
+    # notes + recorded_at, with client-generated resource and idempotency UUIDs.
     notes = "Patient walked slower than usual; mild ankle swelling observed."
     resp = await client.post(SYNC, headers=headers, json={
         "patient_id": patient_id,
@@ -60,6 +68,7 @@ async def test_clinical_note_envelope_materializes_symptom_log(
             "resource_type": "offline_symptom",
             "operation": "create",
             "resource_id": str(uuid.uuid4()),
+            "idempotency_key": str(uuid.uuid4()),
             "payload": {
                 "entered_by": entered_by,
                 "source": "manual_asha",

@@ -9,6 +9,8 @@ from app.models.all_models import (
     AuditActionEnum,
     AuditLog,
     CaregiverPatientLink,
+    ConsentRecord,
+    ConsentTypeEnum,
     PatientProfile,
     SymptomLog,
 )
@@ -136,6 +138,11 @@ async def test_sync_materialization_writes_symptom_audit(db_session):
 @pytest.mark.asyncio
 async def test_sync_api_overwrites_spoofed_symptom_author(client, db_session):
     patient, authenticated_actor = await _linked_family_actor(db_session, "basic")
+    db_session.add(ConsentRecord(
+        patient_id=patient.id,
+        consent_type=ConsentTypeEnum.PATIENT_SELF,
+        scope="health_data",
+    ))
     spoofed_actor = User(password_hash="x", role=RoleEnum.ASHA_WORKER)
     db_session.add(spoofed_actor)
     await db_session.commit()
@@ -149,6 +156,7 @@ async def test_sync_api_overwrites_spoofed_symptom_author(client, db_session):
                     "resource_type": "offline_symptom",
                     "operation": "create",
                     "resource_id": str(uuid.uuid4()),
+                    "idempotency_key": str(uuid.uuid4()),
                     "payload": {
                         "entered_by": str(spoofed_actor.id),
                         "notes": "sensitive symptom note",

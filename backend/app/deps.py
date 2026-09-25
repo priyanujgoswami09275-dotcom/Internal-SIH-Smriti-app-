@@ -40,7 +40,7 @@ async def get_current_user(
     db: AsyncSession = Depends(get_db),
 ) -> User:
     payload = AuthService.verify_token(credentials.credentials)
-    if payload is None:
+    if payload is None or payload.get("typ") != "access":
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
     user_id = payload.get("sub")
     if user_id is None:

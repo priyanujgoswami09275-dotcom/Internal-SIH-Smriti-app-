@@ -5,7 +5,6 @@ Endpoints:
    POST /games/sessions — start a new game
    POST /games/sessions/{session_id}/actions — record an action
    POST /games/sessions/{session_id}/complete — finish and compute metrics
-     (+ nullable shadow_* next-level success fields; rules stay authoritative)
    GET /games/sessions/{session_id} — retrieve session summary
    GET /patients/{patient_id}/games/history — trend data for dashboard
    GET /games/content-packs — list available content packs
@@ -14,15 +13,13 @@ Endpoints:
    GET /patients/{patient_id}/routine — get patient's routine
    GET /routine/board — generate sequencing puzzle
    GET /games/odd-one-out/board — generate Odd-One-Out board (server-held answer)
-   POST /games/difficulty/evaluate — staff rule evaluation (+ shadow fields)
 """
-import logging
-from datetime import datetime, timezone
 from typing import Optional
+from datetime import datetime, timedelta, timezone
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from sqlalchemy import select
 from app.core.security import require_role
@@ -37,9 +34,12 @@ from app.models.all_models import GameTypeEnum, PatientProfile, GameSession
 from app.models.user import User
 from app.services import game_service, difficulty_engine, routine_service, content_packs
 from app.services import level_config_service, recall_service, odd_one_out_service
-from app.services.adaptive_shadow import evaluate_shadow
-
-logger = logging.getLogger(__name__)
+from app.services.datetime_utils import iso_utc
+from app.services.dashboard_service import (
+    GAME_METRIC_SCOPE,
+    build_daily_trends,
+    get_game_analytics,
+)
 
 router = APIRouter(prefix="/games", tags=["games"])
 
@@ -85,6 +85,36 @@ async def _ensure_owned_session(
     return session
 
 
+async def _ensure_board_session(
+    db: AsyncSession,
+    current_user: User,
+    session_id: Optional[UUID],
+    game_type: GameTypeEnum,
+    difficulty_level: int,
+    *,
+    patient_id: Optional[UUID] = None,
+    content_pack_id: Optional[str] = None,
+) -> Optional[GameSession]:
+    if session_id is None:
+        return None
+    session = await _ensure_owned_session(db, current_user, session_id)
+    if session.completed_at is not None:
+        raise HTTPException(status_code=409, detail="Game session is already completed")
+    if session.game_type != game_type:
+        raise HTTPException(status_code=422, detail="session game_type does not match board")
+    if session.difficulty_level != difficulty_level:
+        raise HTTPException(status_code=422, detail="difficulty_level does not match session")
+    if patient_id is not None and session.patient_id != patient_id:
+        raise HTTPException(status_code=422, detail="patient_id does not match session")
+    if (
+        content_pack_id is not None
+        and session.content_pack_id is not None
+        and session.content_pack_id != content_pack_id
+    ):
+        raise HTTPException(status_code=422, detail="pack_id does not match session")
+    return session
+
+
 # ============= Schemas =============
 
 
@@ -94,23 +124,34 @@ class StartGameRequest(BaseModel):
     difficulty_level: int = 1
     content_pack_id: Optional[str] = None  # For Match It
     routine_id: Optional[str] = None  # For Routine Sequencing
+    idempotency_key: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
 
 
 class RecordActionRequest(BaseModel):
     """Record a single player action."""
-    action_type: str
+    action_type: str = Field(min_length=1, max_length=100)
     action_data: dict
     is_correct: Optional[bool] = None
-    response_time_ms: Optional[int] = None
+    response_time_ms: Optional[int] = Field(default=None, ge=0)
+    idempotency_key: Optional[str] = Field(default=None, min_length=1, max_length=200)
+
+
+class CompleteGameRequest(BaseModel):
+    idempotency_key: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    expected_action_ids: list[str] = Field(default_factory=list, max_length=1000)
+    completed_at: Optional[datetime] = None
 
 
 class SessionSummaryResponse(BaseModel):
     """Completed game session summary.
 
-    shadow_* fields are Phase B-01 shadow-only next-level success predictions.
-    They never influence difficulty (rules remain source of truth via
-    POST /games/difficulty/evaluate). Nullable: null when the shadow model is
-    disabled, the game is unsupported, or inference fails.
+    recommended_level / difficulty_* / rule_* come from the rule-based
+    difficulty authority. The shadow_* fields are Phase B-01 shadow-only
+    next-level success predictions: they never influence difficulty (rules
+    stay authoritative) and are null when the shadow model is disabled, the
+    game is unsupported, or inference fails.
     """
     session_id: UUID
     game_type: str
@@ -122,6 +163,13 @@ class SessionSummaryResponse(BaseModel):
     avg_response_time_ms: float
     started_at: str
     completed_at: str
+    explanation: Optional[str] = None
+    idempotent_replay: bool = False
+    recommended_level: int
+    difficulty_reason: str
+    difficulty_source: Optional[str] = None
+    rule_triggered: Optional[str] = None
+    rule_version: Optional[str] = None
     shadow_probability: Optional[float] = None
     shadow_model_version: Optional[str] = None
     shadow_reason: Optional[str] = None
@@ -132,6 +180,17 @@ class GameHistoryItem(BaseModel):
     session_id: UUID
     game_type: str
     difficulty_level: int
+    accuracy_pct: Optional[float] = None
+    avg_response_time_ms: Optional[float] = None
+    completed_at: Optional[str]
+
+
+class PatientGameHistoryItem(BaseModel):
+    session_id: UUID
+    game_type: str
+    difficulty_level: int
+    score: int
+    total_attempts: int
     accuracy_pct: Optional[float] = None
     avg_response_time_ms: Optional[float] = None
     completed_at: Optional[str]
@@ -200,15 +259,13 @@ class OddOneOutItem(BaseModel):
 
 
 class OddOneOutBoardResponse(BaseModel):
-    """Generated Odd-One-Out board. The answer stays server-side in
-    ``session.board_snapshot`` and is never serialized here."""
+    """Generated Odd-One-Out board without answer or explanation fields."""
     game_type: str
     difficulty_level: int
     items: list[OddOneOutItem]
     item_count: int
     target_seconds: int
     group_label: str
-    explanation: str
 
 
 class DifficultyEvaluationResponse(BaseModel):
@@ -255,24 +312,27 @@ async def start_game(
             detail=f"Invalid game_type '{request.game_type}'. Must be one of: "
             + ", ".join(e.value for e in GameTypeEnum),
         )
-    session = await game_service.start_game_session(
+    session, idempotent_replay = await game_service.start_game_session_with_replay(
         db,
         patient_id=patient_id,
         game_type=game_type,
         difficulty_level=request.difficulty_level,
         content_pack_id=request.content_pack_id,
         routine_id=request.routine_id,
+        idempotency_key=request.idempotency_key,
+        started_at=request.started_at,
+        completed_at=request.completed_at,
     )
     # Snapshot values, then commit: start_game_session only flushes, and reading
     # ORM attributes after commit requires expire_on_commit=False.
     session_id = str(session.id)
-    from app.services.game_service import iso_utc
     started_at = iso_utc(session.started_at)
     await db.commit()
 
     return {
         "session_id": session_id,
         "started_at": started_at,
+        "idempotent_replay": idempotent_replay,
     }
 
 
@@ -292,62 +352,35 @@ async def record_action(
             detail=f"Invalid session_id '{session_id}': must be a valid UUID",
         )
     session = await _ensure_owned_session(db, current_user, sid)
-    is_correct = request.is_correct
+    action_data = request.action_data or {}
     response_time_ms = request.response_time_ms
-    server_fields: dict = {}
-    if (
-        session.game_type == GameTypeEnum.ODD_ONE_OUT
-        and request.action_type == "select_odd_item"
-    ):
-        # Server-truth scoring: correctness derives from the stored board
-        # snapshot, never from client claims. Other games honor the client
-        # verdict as before.
-        snapshot = session.board_snapshot or {}
-        answer_item_id = snapshot.get("answer_item_id")
-        if not answer_item_id:
-            raise HTTPException(
-                status_code=422,
-                detail="no server board for this session; fetch board first",
-            )
-        action_data = request.action_data or {}
-        if response_time_ms is None:
-            response_time_ms = action_data.get("response_time_ms")
-        verdict = odd_one_out_service.score_odd_one_out(
-            action_data.get("selected_item_id"), answer_item_id
+    if response_time_ms is None:
+        response_time_ms = action_data.get("response_time_ms")
+    try:
+        event, idempotent_replay = await game_service.record_game_action(
+            db,
+            session_id=sid,
+            action_type=request.action_type,
+            action_data=action_data,
+            response_time_ms=response_time_ms,
+            idempotency_key=request.idempotency_key,
         )
-        is_correct = verdict["correct"]
-        server_fields = {
-            "error_category": verdict["error_category"],
-            "opportunity": verdict["opportunity"],
-        }
-    event = await game_service.record_game_action(
-        db,
-        session_id=sid,
-        action_type=request.action_type,
-        action_data=request.action_data,
-        is_correct=is_correct,
-        response_time_ms=response_time_ms,
-    )
-    if server_fields:
-        # Persist the server verdict + error_category in the stored event.
-        # Reassign — don't mutate — so change detection persists on flush.
-        updated_log = list(session.raw_event_log or [])
-        if updated_log:
-            patched = dict(updated_log[-1])
-            patched.update(server_fields)
-            updated_log[-1] = patched
-            session.raw_event_log = updated_log
-            await db.flush()
-    await db.commit()  # record_game_action only flushes; persist before returning
-    if server_fields:
-        event = {**event, **server_fields}
-
-    return {"status": "recorded", "event": event}
+    except game_service.GameActionValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except game_service.GameSessionCompletedError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    await db.commit()
+    return {
+        "status": "recorded",
+        "event": event,
+        "idempotent_replay": idempotent_replay,
+    }
 
 
 @router.post("/sessions/{session_id}/complete", response_model=SessionSummaryResponse)
 async def complete_game(
     session_id: str,
+    request: Optional[CompleteGameRequest] = None,
     current_user: User = Depends(require_patient),
     db: AsyncSession = Depends(get_db),
 ):
@@ -360,37 +393,25 @@ async def complete_game(
             detail=f"Invalid session_id '{session_id}': must be a valid UUID",
         )
     await _ensure_owned_session(db, current_user, sid)
+    completion_request = request or CompleteGameRequest()
     try:
-        summary = await game_service.complete_game_session(db, session_id=sid)
+        summary, idempotent_replay = await game_service.complete_game_session(
+            db,
+            session_id=sid,
+            idempotency_key=completion_request.idempotency_key,
+            expected_action_ids=completion_request.expected_action_ids,
+            completed_at=completion_request.completed_at,
+        )
+    except game_service.GameActionBarrierError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except game_service.GameCompletionConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
     except ValueError:
         raise HTTPException(status_code=404, detail="Game session not found")
-    # Shadow-only next-level success prediction (Phase B-01). Prediction
-    # rides as nullable fields; never calls evaluate_difficulty, never
-    # writes DifficultyAdjustmentLog, never changes new_difficulty.
-    shadow = dict(
-        shadow_probability=None,
-        shadow_model_version=None,
-        shadow_reason="inference_error",
+    return SessionSummaryResponse(
+        **summary,
+        idempotent_replay=idempotent_replay,
     )
-    try:
-        shadow = await evaluate_shadow(
-            db,
-            summary["patient_id"],
-            summary["game_type"],
-            summary["difficulty_level"],
-            # Naive UTC matches GameSession DateTime columns so the history
-            # query and extract_features.timestamp() agree on the same basis.
-            datetime.now(timezone.utc).replace(tzinfo=None),
-        )
-    except Exception:
-        logger.debug("session=%s shadow inference failed", sid, exc_info=True)
-    logger.debug(
-        "session=%s shadow_reason=%s p=%s",
-        sid,
-        shadow.get("shadow_reason"),
-        shadow.get("shadow_probability"),
-    )
-    return SessionSummaryResponse(**summary, **shadow)
 
 
 @router.get("/sessions/{session_id}", response_model=dict)
@@ -421,6 +442,53 @@ async def get_session(
         await ComplianceService.log_read_access(
             db, current_user.id, "game_session", session_id)
     return session_summary
+
+
+@router.get("/me/history", response_model=list[PatientGameHistoryItem])
+async def get_my_history(
+    limit: int = 10,
+    current_user: User = Depends(require_patient),
+    db: AsyncSession = Depends(get_db),
+):
+    """Retrieve the authenticated patient's own recent game sessions."""
+    from app.services.compliance_service import ComplianceService
+
+    patient = (
+        await db.execute(
+            select(PatientProfile).where(PatientProfile.user_id == current_user.id)
+        )
+    ).scalar_one_or_none()
+    if patient is None:
+        raise HTTPException(status_code=404, detail="No patient profile linked to this account")
+    await ensure_consent(db, patient.id, "game_data")
+    await ComplianceService.log_read_access(
+        db, current_user.id, "game_history", str(patient.id)
+    )
+    limit = min(max(limit, 1), 500)
+    sessions = (
+        await db.execute(
+            select(GameSession)
+            .where(
+                GameSession.patient_id == patient.id,
+                GameSession.completed_at.is_not(None),
+            )
+            .order_by(GameSession.completed_at.desc())
+            .limit(limit)
+        )
+    ).scalars().all()
+    return [
+        PatientGameHistoryItem(
+            session_id=session.id,
+            game_type=session.game_type.value,
+            difficulty_level=session.difficulty_level,
+            score=session.correct_count or 0,
+            total_attempts=session.attempts or 0,
+            accuracy_pct=session.accuracy_pct,
+            avg_response_time_ms=session.avg_response_time_ms,
+            completed_at=iso_utc(session.completed_at),
+        )
+        for session in sessions
+    ]
 
 
 @router.get("/patients/{patient_id}/history", response_model=list[GameHistoryItem])
@@ -460,13 +528,12 @@ async def get_patient_stats(
     current_user: User = Depends(require_staff),
     db: AsyncSession = Depends(get_db),
 ):
-    """Accuracy + response-time trends across both games (clinical-tier view).
+    """Completed-session accuracy and response-time trends (clinical view).
 
-    Aggregates completed sessions per day: overall accuracy, average response
-    time, sessions played. Audited read.
+    The legacy ``overall`` aggregate remains available and is explicitly
+    labeled as pooled across all completed game types. ``game_metrics`` and
+    each trend entry provide per-game detail without changing the old keys.
     """
-    from datetime import timedelta, datetime, timezone
-    from collections import defaultdict
     from app.services.compliance_service import ComplianceService
 
     pid = _parse_pid(patient_id)
@@ -475,56 +542,28 @@ async def get_patient_stats(
     await ComplianceService.log_read_access(db, current_user.id, "game_stats", pid)
 
     days = max(1, min(days, 90))
-    since = datetime.now(timezone.utc) - timedelta(days=days)
-    stmt = (
-        select(GameSession)
-        .where(GameSession.patient_id == pid, GameSession.started_at >= since)
-        .order_by(GameSession.started_at.asc())
+    now = datetime.now(timezone.utc)
+    since = now - timedelta(days=days)
+    analytics = await get_game_analytics(db, pid, since, now)
+    aggregate = analytics["aggregate"]
+    trend = build_daily_trends(
+        analytics["sessions"],
+        now,
+        days,
+        include_empty=False,
+        include_deltas=True,
     )
-    sessions = (await db.execute(stmt)).scalars().all()
 
-    by_day: dict = defaultdict(lambda: {"attempts": 0, "correct": 0, "times": [], "games": 0})
-    for s in sessions:
-        day = (s.started_at if s.started_at.tzinfo else s.started_at.replace(
-            tzinfo=timezone.utc)).astimezone(timezone.utc).date().isoformat()
-        d = by_day[day]
-        d["attempts"] += s.attempts or 0
-        d["correct"] += s.correct_count or 0
-        if s.avg_response_time_ms is not None:
-            d["times"].append(s.avg_response_time_ms)
-        d["games"] += 1
-
-    trend = []
-    prev_accuracy = None
-    for day in sorted(by_day):
-        d = by_day[day]
-        accuracy = round(d["correct"] / d["attempts"] * 100.0, 1) if d["attempts"] else None
-        entry = {
-            "date": day,
-            "games": d["games"],
-            "accuracy_pct": accuracy,
-            "avg_response_time_ms": round(sum(d["times"]) / len(d["times"]), 1)
-            if d["times"] else None,
-        }
-        if accuracy is not None and prev_accuracy is not None:
-            entry["accuracy_delta_pct"] = round(accuracy - prev_accuracy, 1)
-        if accuracy is not None:
-            prev_accuracy = accuracy
-        trend.append(entry)
-
-    total_attempts = sum(d["attempts"] for d in by_day.values())
-    total_correct = sum(d["correct"] for d in by_day.values())
-    all_times = [t for d in by_day.values() for t in d["times"]]
     return {
         "patient_id": str(pid),
         "window_days": days,
         "overall": {
-            "sessions": len(sessions),
-            "accuracy_pct": round(total_correct / total_attempts * 100.0, 1)
-            if total_attempts else None,
-            "avg_response_time_ms": round(sum(all_times) / len(all_times), 1)
-            if all_times else None,
+            "sessions": aggregate["games_played"],
+            "accuracy_pct": aggregate["accuracy_pct"],
+            "avg_response_time_ms": aggregate["avg_response_time_ms"],
+            "metric_scope": GAME_METRIC_SCOPE,
         },
+        "game_metrics": analytics["by_game"],
         "trend": trend,
     }
 
@@ -555,6 +594,7 @@ async def list_content_packs(current_user: User = Depends(get_current_user)):
 async def generate_match_it_board(
     pack_id: str,
     difficulty_level: int = 1,
+    session_id: Optional[UUID] = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -565,14 +605,30 @@ async def generate_match_it_board(
     Patient scoping + consent are enforced at session start, not on the
     static board.
     """
+    session = await _ensure_board_session(
+        db,
+        current_user,
+        session_id,
+        GameTypeEnum.MATCH_IT,
+        difficulty_level,
+        content_pack_id=pack_id,
+    )
+    if session is not None and isinstance(session.board_snapshot, dict):
+        return MatchItBoardResponse(**session.board_snapshot)
     params = await level_config_service.get_level_params(
         db, "match_it", difficulty_level
     )
-    board = content_packs.generate_match_it_board(
-        pack_id=pack_id,
-        difficulty_level=difficulty_level,
-        pair_count=params.get("pairs", 2),
-    )
+    try:
+        board = content_packs.generate_match_it_board(
+            pack_id=pack_id,
+            difficulty_level=difficulty_level,
+            pair_count=params.get("pairs", 2),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    if session is not None:
+        session.board_snapshot = board
+        await db.commit()
     return MatchItBoardResponse(**board)
 
 
@@ -657,6 +713,7 @@ async def get_patient_routine(
 async def generate_routine_board(
     patient_id: str,
     difficulty_level: int = 1,
+    session_id: Optional[UUID] = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -670,25 +727,42 @@ async def generate_routine_board(
         )
     await ensure_patient_access(db, current_user, pid)
     await ensure_consent(db, pid, "game_data")
+    session = await _ensure_board_session(
+        db,
+        current_user,
+        session_id,
+        GameTypeEnum.ROUTINE_SEQUENCING,
+        difficulty_level,
+        patient_id=pid,
+    )
+    if session is not None and isinstance(session.board_snapshot, dict):
+        return RoutineSequencingBoardResponse(**session.board_snapshot)
     routine = await routine_service.get_patient_routine(
         db, patient_id=pid
     )
     params = await level_config_service.get_level_params(
         db, "routine_sequencing", difficulty_level
     )
-    board = routine_service.generate_routine_sequencing_board(
-        routine,
-        difficulty_level=difficulty_level,
-        step_count=params.get("steps", 3),
-        include_icons=params.get("icons", True),
-        include_hints=params.get("hints", difficulty_level <= 2),
-    )
+    try:
+        board = routine_service.generate_routine_sequencing_board(
+            routine,
+            difficulty_level=difficulty_level,
+            step_count=params.get("steps", 3),
+            include_icons=params.get("icons", True),
+            include_hints=params.get("hints", difficulty_level <= 2),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    if session is not None:
+        session.board_snapshot = board
+        await db.commit()
     return RoutineSequencingBoardResponse(**board)
 
 
 @router.get("/recall/board", response_model=NumberRecallBoardResponse)
 async def generate_number_recall_board(
     difficulty_level: int = 1,
+    session_id: Optional[UUID] = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -699,6 +773,15 @@ async def generate_number_recall_board(
     Patient scoping + consent are enforced at session start, not on the
     static board.
     """
+    session = await _ensure_board_session(
+        db,
+        current_user,
+        session_id,
+        GameTypeEnum.NUMBER_RECALL,
+        difficulty_level,
+    )
+    if session is not None and isinstance(session.board_snapshot, dict):
+        return NumberRecallBoardResponse(**session.board_snapshot)
     params = await level_config_service.get_level_params(
         db, "number_recall", difficulty_level
     )
@@ -707,6 +790,9 @@ async def generate_number_recall_board(
         sequence_length=params.get("sequence_length", 3),
         show_seconds_per_item=params.get("show_seconds_per_item", 2),
     )
+    if session is not None:
+        session.board_snapshot = board
+        await db.commit()
     return NumberRecallBoardResponse(**board)
 
 
@@ -719,9 +805,14 @@ async def generate_odd_one_out_board(
 ):
     """Generate an Odd-One-Out board for an owned session (counts from level
     config). Same gate as start_game: caller-owned session + active
-    `game_data` consent. The full board (including `answer_item_id`) is stored
-    on `session.board_snapshot`; the response withholds the answer."""
-    session = await _ensure_owned_session(db, current_user, session_id)
+    `game_data` consent. The answer is held only in private server state."""
+    session = await _ensure_board_session(
+        db,
+        current_user,
+        session_id,
+        GameTypeEnum.ODD_ONE_OUT,
+        difficulty_level,
+    )
     res = await db.execute(
         select(PatientProfile).where(PatientProfile.user_id == current_user.id)
     )
@@ -736,24 +827,19 @@ async def generate_odd_one_out_board(
         raise HTTPException(
             status_code=422, detail="difficulty_level must be 1, 2, or 3"
         )
+    if isinstance(session.board_snapshot, dict) and isinstance(session.server_state, dict):
+        return OddOneOutBoardResponse(**session.board_snapshot)
     params = await level_config_service.get_level_params(
         db, "odd_one_out", difficulty_level
     )
     board = odd_one_out_service.generate_odd_one_out_board(
         difficulty_level, items=params.get("items"),
     )
-    # Reassign — don't mutate — so SQLAlchemy persists the snapshot on commit.
-    session.board_snapshot = dict(board)
+    public_board = odd_one_out_service.public_odd_one_out_board(board)
+    session.board_snapshot = public_board
+    session.server_state = odd_one_out_service.odd_one_out_server_state(board)
     await db.commit()
-    return OddOneOutBoardResponse(
-        game_type=board["game_type"],
-        difficulty_level=board["difficulty_level"],
-        items=board["items"],
-        item_count=board["item_count"],
-        target_seconds=board["target_seconds"],
-        group_label=board["group_label"],
-        explanation=board["explanation"],
-    )
+    return OddOneOutBoardResponse(**public_board)
 
 
 @router.post("/difficulty/evaluate", response_model=DifficultyEvaluationResponse)

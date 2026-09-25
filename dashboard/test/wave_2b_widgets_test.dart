@@ -124,7 +124,7 @@ void main() {
 
     expect(
         find.textContaining(
-            'Screening needs clinical tier / health-data consent'),
+            'Clinical screening, trends, and document controls are hidden'),
         findsOneWidget);
     expect(find.text('Run Screening (32 inputs)'), findsNothing);
   });
@@ -149,16 +149,14 @@ void main() {
 
     await tester.tap(find.byTooltip('Compliance audit trail (admin)'));
     await tester.pumpAndSettle();
-    // The caption renders at the bottom of the scrollable audit section —
-    // scroll it into view so the sliver builds its element.
-    await tester.scrollUntilVisible(
-      find.textContaining('Audit view is admin-only'),
-      300,
-      scrollable: find.byType(Scrollable).first,
+    await tester.dragUntilVisible(
+      find.textContaining('Audit trail request denied by the server'),
+      find.byType(Scrollable).first,
+      const Offset(0, -500),
     );
     await tester.pumpAndSettle();
 
-    expect(find.textContaining('Audit view is admin-only'), findsOneWidget);
+    expect(find.textContaining('Audit trail request denied by the server'), findsOneWidget);
     expect(find.text('null · null'), findsNothing);
   });
 }

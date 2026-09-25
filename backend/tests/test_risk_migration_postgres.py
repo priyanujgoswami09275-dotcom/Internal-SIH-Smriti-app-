@@ -17,6 +17,7 @@ MIGRATIONS = Path(__file__).resolve().parents[1] / "alembic"
 TEMP_ROOT = Path("/var/folders/p6/skhrv32s2nl4mtknn7s6mj9c0000gn/T/opencode")
 PG_BIN = Path("/opt/homebrew/bin")
 REVISION = "0008_risk_screening"
+HEAD = "0014_reminder_idempotency"
 PREVIOUS = "0007_number_recall"
 pytestmark = pytest.mark.skipif(
     os.environ.get("RUN_RISK_MIGRATION_POSTGRES") != "1",
@@ -111,8 +112,8 @@ def migration_database(postgres_url, monkeypatch):
         config.set_main_option("sqlalchemy.url", rendered.replace("%", "%%"))
         engine = sa.create_engine(url, poolclass=sa.pool.NullPool)
         script = ScriptDirectory.from_config(config)
-        assert script.get_heads() == [REVISION]
-        print(f"Single Alembic head: {REVISION} ({len(REVISION)} characters)")
+        assert script.get_heads() == [HEAD]
+        print(f"Single Alembic head: {HEAD} ({len(HEAD)} characters)")
         assert script.get_revision(REVISION).down_revision == PREVIOUS
         assert all(len(revision.revision) <= 32 for revision in script.walk_revisions())
         command.upgrade(config, PREVIOUS)

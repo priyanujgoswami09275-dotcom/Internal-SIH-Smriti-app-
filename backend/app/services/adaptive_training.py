@@ -11,6 +11,7 @@ from app.services.adaptive_features import (
     Features, INPUT_NAMES, SCHEMA_VERSION, extract_features, game_name, number,
     session_origin, timestamp,
 )
+from app.services.datetime_utils import iso_utc
 from app.services.level_config_service import default_params
 
 
@@ -116,7 +117,7 @@ def synthetic_examples(seed=42):
                 completed = when - timedelta(days=index + 1)
                 errors = int(round(weakness * 20))
                 events = [dict(action_type=action, action_data={"position": i}, is_correct=i >= errors,
-                               timestamp=(completed - timedelta(seconds=20 - i)).isoformat(), origin="synthetic")
+                               timestamp=iso_utc(completed - timedelta(seconds=20 - i)), origin="synthetic")
                           for i in range(20)]
                 if rng.random() < 0.1:
                     events = [{"origin": "synthetic"}]

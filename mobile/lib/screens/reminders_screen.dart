@@ -10,29 +10,38 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../config/app_config.dart';
 import '../models/shared_models.dart';
+import '../patient_localizations.dart';
 import '../services/api_service.dart';
 import '../services/auth_session.dart';
 import '../services/reminder_phrases.dart';
-import '../services/reminder_scheduler.dart';
 import '../services/reminder_service.dart';
 import '../services/tts_cache.dart';
 import '../services/voice_audio_service.dart';
+import '../services/voice_languages.dart';
 import '../theme/monad_theme.dart';
 import '../widgets/monad/monad_pill_button.dart';
 
 class RemindersScreen extends StatefulWidget {
   final String patientId;
+  final MobileReminderService? reminderService;
+  final ApiService? apiService;
 
-  const RemindersScreen({super.key, required this.patientId});
+  const RemindersScreen({
+    super.key,
+    required this.patientId,
+    this.reminderService,
+    this.apiService,
+  });
 
   @override
   State<RemindersScreen> createState() => _RemindersScreenState();
 }
 
 class _RemindersScreenState extends State<RemindersScreen> {
-  final MobileReminderService _reminders = MobileReminderService();
-  final ApiService _api = ApiService.instance;
+  late final MobileReminderService _reminders;
+  late final ApiService _api;
   final VoiceAudioService _voice = VoiceAudioService();
   late final TtsCache _tts = TtsCache(
     synthesize: (text, language) =>
@@ -44,6 +53,7 @@ class _RemindersScreenState extends State<RemindersScreen> {
   Map<String, ReminderEventModel> _openEventBySchedule = {};
   bool _loading = true;
   String? _error;
+  bool _ttsAvailable = false;
   final Set<String> _justAcked = {};
 
   /// Card currently speaking (null when silent). Playback failures stay
@@ -60,6 +70,8 @@ class _RemindersScreenState extends State<RemindersScreen> {
   @override
   void initState() {
     super.initState();
+    _reminders = widget.reminderService ?? MobileReminderService();
+    _api = widget.apiService ?? ApiService.instance;
     _ttsDoneSub = _voice.onReplyComplete.listen((_) {
       if (mounted) setState(() => _speakingScheduleId = null);
     });
@@ -80,16 +92,15 @@ class _RemindersScreenState extends State<RemindersScreen> {
       _error = null;
     });
     try {
+      await _loadTtsCapability();
       final schedules = await _reminders.getSchedules(widget.patientId);
+
       final events = await _reminders.getTodaysEvents(widget.patientId);
-      for (final schedule in schedules) {
-        ReminderScheduler.instance
-            .scheduleForSchedule(schedule)
-            .catchError((_) {});
-      }
       final open = <String, ReminderEventModel>{};
       for (final e in events) {
-        if (e.status == ReminderStatus.pending ||
+        if (e.status == ReminderStatus.acknowledged) {
+          _justAcked.add(e.scheduleId);
+        } else if (e.status == ReminderStatus.pending ||
             e.status == ReminderStatus.escalated) {
           final existing = open[e.scheduleId];
           if (existing == null || e.scheduledAt.isAfter(existing.scheduledAt)) {
@@ -112,35 +123,55 @@ class _RemindersScreenState extends State<RemindersScreen> {
           break;
         }
       }
-    } on Exception catch (e) {
+    } on Exception catch (_) {
       if (!mounted) return;
       setState(() {
         _loading = false;
-        _error = 'Could not load reminders. $e';
+        _error = context.tr('reminders.error');
       });
+    }
+  }
+
+  Future<void> _loadTtsCapability() async {
+    try {
+      final data = await _api.getJson('${AppConfig.apiV1}/language/status');
+      final capabilities = LanguageCapabilityStatus.fromJson(
+        Map<String, dynamic>.from(data as Map),
+      );
+      if (mounted) {
+        setState(() => _ttsAvailable = capabilities.supports(
+              'tts',
+              _voiceLanguage,
+            ));
+      }
+    } on Exception {
+      if (mounted) setState(() => _ttsAvailable = false);
     }
   }
 
   /// Speak the reminder for [schedule] (cached TTS, text stays as fallback).
   /// Tapping the active card's speaker stops playback instead.
   Future<void> _speakSchedule(ReminderScheduleModel schedule) async {
+    if (!_ttsAvailable) return;
     if (_speakingScheduleId == schedule.id) {
       await _voice.stopPlayback();
       if (mounted) setState(() => _speakingScheduleId = null);
       return;
     }
     setState(() => _speakingScheduleId = schedule.id);
-    final audio = await _tts.speechFor(
+    final result = await _tts.speechResult(
       reminderPhrase(schedule.reminderType, _voiceLanguage),
       _voiceLanguage,
     );
     if (!mounted) return;
-    if (audio == null) {
-      // TTS unavailable for this phrase — the card text is the fallback.
+    if (!result.hasAudio) {
       setState(() => _speakingScheduleId = null);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(context.tr('voice.ttsUnavailable'))),
+      );
       return;
     }
-    await _voice.playReply(audio);
+    await _voice.playReply(result.bytes!);
   }
 
   Future<void> _handleAcknowledge(ReminderScheduleModel schedule) async {
@@ -150,22 +181,35 @@ class _RemindersScreenState extends State<RemindersScreen> {
       await _voice.stopPlayback();
       _speakingScheduleId = null;
     }
-    final reachedServer = await _reminders.acknowledgeReminder(
+    final result = await _reminders.acknowledgeReminder(
       patientId: widget.patientId,
       eventId: openEvent.id,
+      scheduleId: openEvent.scheduleId,
+      scheduledAt: openEvent.scheduledAt,
+      deliveredAt: openEvent.deliveredAt,
       method: 'button',
     );
     if (!mounted) return;
-    setState(() {
-      _justAcked.add(schedule.id);
-      _openEventBySchedule.remove(schedule.id);
-    });
+    final failed =
+        result.outcome == ReminderAcknowledgmentOutcome.failedToRecord;
+    if (!failed) {
+      setState(() {
+        _justAcked.add(schedule.id);
+        _openEventBySchedule.remove(schedule.id);
+      });
+    }
+    final label = _typeLabel(context, schedule.reminderType);
+    final message = switch (result.outcome) {
+      ReminderAcknowledgmentOutcome.sentToServer =>
+        '$label done — saved to your care record.',
+      ReminderAcknowledgmentOutcome.queuedOffline =>
+        '$label done on this phone — waiting to sync.',
+      ReminderAcknowledgmentOutcome.failedToRecord =>
+        '$label could not be saved. Please try again.',
+    };
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text(
-          '${schedule.reminderType.name.toUpperCase()} done — well done! '
-          '${reachedServer ? '' : '(offline — will sync)'}',
-        ),
+        content: Text(message),
         duration: const Duration(seconds: 3),
       ),
     );
@@ -201,29 +245,29 @@ class _RemindersScreenState extends State<RemindersScreen> {
     }
   }
 
-  static String _assameseFor(ReminderType type) {
+  String _typeLabel(BuildContext context, ReminderType type) {
     switch (type) {
       case ReminderType.medicine:
-        return 'ঔষধ';
+        return context.tr('reminders.medicine');
       case ReminderType.water:
-        return 'পানী';
+        return context.tr('reminders.water');
       case ReminderType.food:
-        return 'খাদ্য';
+        return context.tr('reminders.food');
       case ReminderType.exercise:
-        return 'চলাচল';
+        return context.tr('reminders.exercise');
     }
   }
 
-  static String _descriptionFor(ReminderType type) {
+  String _descriptionFor(BuildContext context, ReminderType type) {
     switch (type) {
       case ReminderType.medicine:
-        return 'Time to take your medicine';
+        return context.tr('reminders.medicineDescription');
       case ReminderType.water:
-        return 'Stay hydrated — drink water';
+        return context.tr('reminders.waterDescription');
       case ReminderType.food:
-        return 'Remember your meals';
+        return context.tr('reminders.foodDescription');
       case ReminderType.exercise:
-        return 'Light movement helps your mind';
+        return context.tr('reminders.exerciseDescription');
     }
   }
 
@@ -288,7 +332,10 @@ class _RemindersScreenState extends State<RemindersScreen> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       // Type pill + assamese (icon + label + tint together)
-                      Row(
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 4,
+                        crossAxisAlignment: WrapCrossAlignment.center,
                         children: [
                           Container(
                             padding: const EdgeInsets.symmetric(
@@ -299,25 +346,19 @@ class _RemindersScreenState extends State<RemindersScreen> {
                                   side: BorderSide(color: Monad.ash, width: 1)),
                             ),
                             child: Text(
-                              schedule.reminderType.name.toUpperCase(),
+                              _typeLabel(context, schedule.reminderType),
                               style: Monad.monoBodySm.copyWith(
                                   color: Monad.offBlack,
                                   fontWeight: FontWeight.w500),
                             ),
-                          ),
-                          const SizedBox(width: 8),
-                          Text(
-                            _assameseFor(schedule.reminderType),
-                            style: Monad.monoCaption
-                                .copyWith(color: Monad.offBlack),
                           ),
                         ],
                       ),
                       const SizedBox(height: 8),
                       Text(
                         done
-                            ? '✓ Done today'
-                            : _descriptionFor(schedule.reminderType),
+                            ? '✓ ${context.tr('reminders.done')}'
+                            : _descriptionFor(context, schedule.reminderType),
                         style: Monad.patientBody,
                       ),
                       const SizedBox(height: 4),
@@ -352,9 +393,11 @@ class _RemindersScreenState extends State<RemindersScreen> {
                           border: Border.all(color: Monad.ash, width: 1),
                         ),
                         child: IconButton(
-                          tooltip: _speakingScheduleId == schedule.id
-                              ? 'Stop voice'
-                              : 'Hear reminder',
+                          tooltip: !_ttsAvailable
+                              ? context.tr('voice.ttsUnavailable')
+                              : _speakingScheduleId == schedule.id
+                                  ? context.tr('reminders.stop')
+                                  : context.tr('reminders.hear'),
                           icon: Icon(
                             _speakingScheduleId == schedule.id
                                 ? Icons.stop
@@ -362,7 +405,9 @@ class _RemindersScreenState extends State<RemindersScreen> {
                             color: Monad.offBlack,
                             size: 24,
                           ),
-                          onPressed: () => _speakSchedule(schedule),
+                          onPressed: _ttsAvailable
+                              ? () => _speakSchedule(schedule)
+                              : null,
                         ),
                       ),
                     Expanded(
@@ -375,7 +420,9 @@ class _RemindersScreenState extends State<RemindersScreen> {
                           size: 24,
                         ),
                         label: Text(
-                          hasOpenEvent ? 'I Did This  কৰিলোঁ' : 'Not Due Now',
+                          hasOpenEvent
+                              ? context.tr('reminders.didThis')
+                              : context.tr('reminders.notDue'),
                           style: Monad.monoButtonLabel.copyWith(fontSize: 20),
                         ),
                         // Secondary (offBlack) pill — the screen keeps lakeBlue
@@ -420,7 +467,8 @@ class _RemindersScreenState extends State<RemindersScreen> {
                     const Icon(Icons.check_circle,
                         color: Monad.offBlack, size: 24),
                     const SizedBox(width: 10),
-                    Text('Well done! — ধন্যবাদ', style: Monad.patientBody),
+                    Text(context.tr('reminders.wellDone'),
+                        style: Monad.patientBody),
                   ],
                 ),
               ),
@@ -434,7 +482,7 @@ class _RemindersScreenState extends State<RemindersScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Daily Reminders'),
+        title: Text(context.tr('reminders.title')),
         centerTitle: false,
       ),
       body: _loading
@@ -442,8 +490,7 @@ class _RemindersScreenState extends State<RemindersScreen> {
           : _error != null
               ? _messageView(Icons.cloud_off, _error!, retry: _load)
               : _schedules == null || _schedules!.isEmpty
-                  ? _messageView(Icons.alarm_on,
-                      'No reminders yet — your caregiver will set them up.')
+                  ? _messageView(Icons.alarm_on, context.tr('reminders.empty'))
                   : RefreshIndicator(
                       onRefresh: _load,
                       color: Monad.lakeBlue,
@@ -451,9 +498,17 @@ class _RemindersScreenState extends State<RemindersScreen> {
                         padding: const EdgeInsets.symmetric(
                             horizontal: 20, vertical: 8),
                         children: [
+                          if (!_ttsAvailable)
+                            Padding(
+                              padding: const EdgeInsets.only(bottom: 12),
+                              child: Text(
+                                context.tr('voice.ttsUnavailable'),
+                                style: Monad.monoBodySm,
+                              ),
+                            ),
                           _buildSectionHeader(
-                            'Your Day',
-                            subtitle: 'Tap when you complete each one',
+                            context.tr('reminders.day'),
+                            subtitle: context.tr('reminders.subtitle'),
                           ),
                           ...(_schedules!.map((s) => _buildCard(s))),
                           const SizedBox(height: 32),
@@ -484,7 +539,10 @@ class _RemindersScreenState extends State<RemindersScreen> {
             Text(text, textAlign: TextAlign.center, style: Monad.patientBody),
             if (retry != null) ...[
               const SizedBox(height: 20),
-              MonadPillButton(label: 'Try Again', onPressed: retry),
+              MonadPillButton(
+                label: context.tr('reminders.retry'),
+                onPressed: retry,
+              ),
             ],
           ],
         ),

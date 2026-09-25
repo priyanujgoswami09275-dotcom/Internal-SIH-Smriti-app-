@@ -40,6 +40,42 @@ class ApiException implements Exception {
 }
 
 /// Token pair returned by the backend auth endpoints.
+class SpeechRecognitionResult {
+  const SpeechRecognitionResult({
+    required this.text,
+    required this.provider,
+    required this.simulated,
+  });
+
+  final String text;
+  final String provider;
+  final bool simulated;
+}
+
+class SpeechSynthesisResult {
+  const SpeechSynthesisResult({
+    required this.bytes,
+    required this.provider,
+    required this.simulated,
+  });
+
+  final Uint8List bytes;
+  final String provider;
+  final bool simulated;
+}
+
+class TranslationResult {
+  const TranslationResult({
+    required this.text,
+    required this.provider,
+    required this.simulated,
+  });
+
+  final String text;
+  final String provider;
+  final bool simulated;
+}
+
 class AuthTokens {
   final String accessToken;
   final String refreshToken;
@@ -59,6 +95,35 @@ class AuthTokens {
 }
 
 class ApiService {
+  static String actionIdempotencyKey({
+    required String sessionId,
+    required int actionIndex,
+    required String actionId,
+  }) =>
+      _boundedIdempotencyKey('game-action', [
+        sessionId,
+        '$actionIndex',
+        actionId,
+      ]);
+
+  static String completionIdempotencyKey(String sessionId) =>
+      _boundedIdempotencyKey('game-complete', [sessionId]);
+
+  static String _boundedIdempotencyKey(
+    String prefix,
+    List<String> parts,
+  ) {
+    final raw = [prefix, ...parts].join(':');
+    if (raw.length <= 200) return raw;
+    var hash = 0xcbf29ce484222325;
+    for (final codeUnit in raw.codeUnits) {
+      hash ^= codeUnit;
+      hash = (hash * 0x100000001b3) & 0xFFFFFFFFFFFFFFFF;
+    }
+    return '${raw.substring(0, 160)}:'
+        '${hash.toRadixString(16).padLeft(16, '0')}';
+  }
+
   final String baseUrl;
   String? authToken;
   String? refreshToken;
@@ -109,6 +174,7 @@ class ApiService {
     Map<String, dynamic>? body,
     Map<String, String>? query,
     bool includeAuth = true,
+    bool notifyUnauthorized = true,
   }) async {
     final uri = _uri(path, query);
     final headers = _headers(includeAuth: includeAuth);
@@ -133,10 +199,17 @@ class ApiService {
     if (response.statusCode == 401 && includeAuth && refreshToken != null) {
       final refreshed = await _tryRefresh();
       if (refreshed) {
-        return _send(method, path, body: body, query: query, includeAuth: includeAuth);
+        return _send(method, path,
+            body: body,
+            query: query,
+            includeAuth: includeAuth,
+            notifyUnauthorized: notifyUnauthorized);
       }
     }
-    if (response.statusCode == 401 && includeAuth && !_inUnauthorizedHandler) {
+    if (response.statusCode == 401 &&
+        includeAuth &&
+        notifyUnauthorized &&
+        !_inUnauthorizedHandler) {
       _inUnauthorizedHandler = true;
       try {
         await onUnauthorized?.call();
@@ -174,8 +247,26 @@ class ApiService {
     String path, {
     Map<String, String>? query,
     bool includeAuth = true,
+  }) =>
+      _getJson(
+        path,
+        query: query,
+        includeAuth: includeAuth,
+      );
+
+  Future<dynamic> _getJson(
+    String path, {
+    Map<String, String>? query,
+    bool includeAuth = true,
+    bool notifyUnauthorized = true,
   }) async {
-    final res = await _send('GET', path, query: query, includeAuth: includeAuth);
+    final res = await _send(
+      'GET',
+      path,
+      query: query,
+      includeAuth: includeAuth,
+      notifyUnauthorized: notifyUnauthorized,
+    );
     return _decode(res);
   }
 
@@ -202,6 +293,33 @@ class ApiService {
       }
     } catch (_) {}
     throw ApiException(detail, statusCode: res.statusCode);
+  }
+
+  bool _isUnsupportedIdempotencyKey(ApiException error) {
+    if (error.statusCode != 422) return false;
+    final message = error.message.toLowerCase();
+    return message.contains('idempotency') ||
+        message.contains('extra') ||
+        message.contains('unexpected');
+  }
+
+  Future<dynamic> _postJsonWithOptionalIdempotency(
+    String path, {
+    required Map<String, dynamic> body,
+    String? idempotencyKey,
+  }) async {
+    final requestBody = <String, dynamic>{...body};
+    if (idempotencyKey != null && idempotencyKey.isNotEmpty) {
+      requestBody['idempotency_key'] = idempotencyKey;
+    }
+    try {
+      return await postJson(path, body: requestBody);
+    } on ApiException catch (error) {
+      if (idempotencyKey == null || !_isUnsupportedIdempotencyKey(error)) {
+        rethrow;
+      }
+      return postJson(path, body: body);
+    }
   }
 
   // =====================================================================
@@ -231,7 +349,8 @@ class ApiService {
     return login(phone: phone, password: password);
   }
 
-  Future<AuthTokens> login({required String phone, required String password}) async {
+  Future<AuthTokens> login(
+      {required String phone, required String password}) async {
     final data = await postJson(
       '${AppConfig.apiV1}/auth/login',
       body: {'phone': phone, 'password': password},
@@ -264,7 +383,11 @@ class ApiService {
 
   Future<PatientModel?> myPatient() async {
     try {
-      final data = await getJson('${AppConfig.apiV1}/patients/me');
+      final data = await _getJson(
+        '${AppConfig.apiV1}/patients/me',
+        notifyUnauthorized: false,
+      );
+
       return PatientModel.fromJson(data as Map<String, dynamic>);
     } on ApiException catch (e) {
       if (e.statusCode == 404) return null; // no profile yet
@@ -326,7 +449,8 @@ class ApiService {
   /// (403), or the request fails: callers treat that as "no data yet".
   Future<Map<String, dynamic>?> getRiskScreening(String patientId) async {
     try {
-      final data = await getJson('${AppConfig.apiV1}/patients/$patientId/risk-screening');
+      final data = await getJson(
+          '${AppConfig.apiV1}/patients/$patientId/risk-screening');
       if (data is! Map) return null;
       final map = Map<String, dynamic>.from(data);
       if (map['status'] == 'not_assessed') return null;
@@ -355,23 +479,53 @@ class ApiService {
     required int difficultyLevel,
     String? contentPackId,
     String? routineId,
+    String? patientId,
+    DateTime? startedAt,
+    DateTime? completedAt,
+    String? idempotencyKey,
   }) async {
-    final data = await postJson(
+    final data = await _postJsonWithOptionalIdempotency(
       '${AppConfig.apiV1}/games/sessions',
       body: {
         'game_type': gameType,
         'difficulty_level': difficultyLevel,
         if (contentPackId != null) 'content_pack_id': contentPackId,
         if (routineId != null) 'routine_id': routineId,
+        if (patientId != null) 'patient_id': patientId,
+        if (startedAt != null) 'started_at': startedAt.toIso8601String(),
+        if (completedAt != null) 'completed_at': completedAt.toIso8601String(),
       },
+      idempotencyKey: idempotencyKey,
     );
     final map = data as Map<String, dynamic>;
     if (map['session_id'] == null) throw ApiException('No session_id returned');
     return map['session_id'] as String;
   }
 
-  Future<GameSessionSummary> completeGame(String sessionId) async {
-    final data = await postJson('${AppConfig.apiV1}/games/sessions/$sessionId/complete');
+  Future<GameSessionSummary> completeGame(
+    String sessionId, {
+    String? idempotencyKey,
+    DateTime? completedAt,
+    List<String> expectedActionIds = const [],
+  }) async {
+    dynamic data;
+    for (var attempt = 0; attempt < 3; attempt++) {
+      try {
+        data = await _postJsonWithOptionalIdempotency(
+          '${AppConfig.apiV1}/games/sessions/$sessionId/complete',
+          body: {
+            'expected_action_ids': expectedActionIds,
+            if (completedAt != null)
+              'completed_at': completedAt.toIso8601String(),
+          },
+          idempotencyKey: idempotencyKey,
+        );
+        break;
+      } on ApiException catch (error) {
+        if (error.statusCode != 409 || attempt == 2) rethrow;
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+      }
+    }
     return GameSessionSummary.fromJson(data as Map<String, dynamic>);
   }
 
@@ -390,15 +544,16 @@ class ApiService {
     Map<String, dynamic>? actionData,
     bool? isCorrect,
     int? responseTimeMs,
+    String? idempotencyKey,
   }) async {
-    await postJson(
+    await _postJsonWithOptionalIdempotency(
       '${AppConfig.apiV1}/games/sessions/$sessionId/actions',
       body: {
         'action_type': actionType,
         'action_data': actionData ?? const {},
-        if (isCorrect != null) 'is_correct': isCorrect,
         if (responseTimeMs != null) 'response_time_ms': responseTimeMs,
       },
+      idempotencyKey: idempotencyKey,
     );
     return true;
   }
@@ -406,20 +561,28 @@ class ApiService {
   Future<MatchItBoard> matchItBoard({
     required String packId,
     required int difficultyLevel,
+    required String sessionId,
   }) async {
     final data = await getJson(
       '${AppConfig.apiV1}/games/content-packs/$packId/board',
-      query: {'difficulty_level': '$difficultyLevel'},
+      query: {
+        'difficulty_level': '$difficultyLevel',
+        'session_id': sessionId,
+      },
     );
     return MatchItBoard.fromServerJson(data as Map<String, dynamic>);
   }
 
   Future<RecallBoard> recallBoard({
     required int difficultyLevel,
+    required String sessionId,
   }) async {
     final data = await getJson(
       '${AppConfig.apiV1}/games/recall/board',
-      query: {'difficulty_level': '$difficultyLevel'},
+      query: {
+        'difficulty_level': '$difficultyLevel',
+        'session_id': sessionId,
+      },
     );
     return RecallBoard.fromServerJson(data as Map<String, dynamic>);
   }
@@ -427,20 +590,41 @@ class ApiService {
   Future<RoutineBoard> routineBoard({
     required String patientId,
     required int difficultyLevel,
+    required String sessionId,
   }) async {
     final data = await getJson(
       '${AppConfig.apiV1}/games/routine/board',
-      query: {'patient_id': patientId, 'difficulty_level': '$difficultyLevel'},
+      query: {
+        'patient_id': patientId,
+        'difficulty_level': '$difficultyLevel',
+        'session_id': sessionId,
+      },
     );
     return RoutineBoard.fromServerJson(data as Map<String, dynamic>);
   }
 
+  Future<List<PatientGameHistoryItem>> patientGameHistory(
+      {int limit = 10}) async {
+    final data = await getJson(
+      '${AppConfig.apiV1}/games/me/history',
+      query: {'limit': '$limit'},
+    );
+    return (data as List)
+        .map((item) => PatientGameHistoryItem.fromJson(
+              Map<String, dynamic>.from(item as Map),
+            ))
+        .toList();
+  }
+
   // =====================================================================
   // Reminders
+
   // =====================================================================
 
-  Future<List<ReminderScheduleModel>> reminderSchedules(String patientId) async {
-    final data = await getJson('${AppConfig.apiV1}/reminders/schedules/$patientId');
+  Future<List<ReminderScheduleModel>> reminderSchedules(
+      String patientId) async {
+    final data =
+        await getJson('${AppConfig.apiV1}/reminders/schedules/$patientId');
     return (data as List)
         .map((e) => ReminderScheduleModel.fromJson(e as Map<String, dynamic>))
         .toList();
@@ -448,17 +632,23 @@ class ApiService {
 
   /// Today's reminder events (real event IDs + status) for the patient.
   Future<List<ReminderEventModel>> reminderEvents(String patientId) async {
-    final data = await getJson('${AppConfig.apiV1}/reminders/patients/$patientId/events');
+    final data = await getJson(
+        '${AppConfig.apiV1}/reminders/patients/$patientId/events');
     return (data as List)
         .map((e) => ReminderEventModel.fromJson(e as Map<String, dynamic>))
         .toList();
   }
 
   /// Record an acknowledgment for a reminder event.
-  Future<bool> acknowledgeReminder(String eventId, {String method = 'button'}) async {
-    final data = await postJson(
+  Future<bool> acknowledgeReminder(
+    String eventId, {
+    String method = 'button',
+    String? idempotencyKey,
+  }) async {
+    final data = await _postJsonWithOptionalIdempotency(
       '${AppConfig.apiV1}/reminders/events/$eventId/acknowledge',
       body: {'method': method},
+      idempotencyKey: idempotencyKey,
     );
     return data != null;
   }
@@ -466,9 +656,12 @@ class ApiService {
   /// Retrieve the patient's daily routine (backend returns the default
   /// 10-step routine when the caregiver has not customized it).
   Future<List<RoutineStep>> patientRoutine(String patientId) async {
-    final data = await getJson('${AppConfig.apiV1}/games/patients/$patientId/routine');
+    final data =
+        await getJson('${AppConfig.apiV1}/games/patients/$patientId/routine');
     final list = (data as Map<String, dynamic>)['routine'] as List;
-    return list.map((e) => RoutineStep.fromJson(e as Map<String, dynamic>)).toList();
+    return list
+        .map((e) => RoutineStep.fromJson(e as Map<String, dynamic>))
+        .toList();
   }
 
   // =====================================================================
@@ -501,7 +694,7 @@ class ApiService {
   /// Transcribe recorded audio via POST /language/asr.
   /// [audioBase64] must be base64 wav (16kHz mono preferred).
   /// Throws [ApiException] on 400 (unsupported language) or 502 (provider).
-  Future<String> transcribeAudio({
+  Future<SpeechRecognitionResult> transcribeAudio({
     required String audioBase64,
     required String language,
   }) async {
@@ -509,7 +702,12 @@ class ApiService {
       '${AppConfig.apiV1}/language/asr',
       body: {'audio_base64': audioBase64, 'source_language': language},
     );
-    return (data as Map<String, dynamic>)['recognized_text'] as String? ?? '';
+    final map = data as Map<String, dynamic>;
+    return SpeechRecognitionResult(
+      text: map['recognized_text'] as String? ?? '',
+      provider: map['provider'] as String? ?? 'unknown',
+      simulated: map['simulated'] as bool? ?? false,
+    );
   }
 
   /// Synthesize [text] via POST /language/tts; returns raw audio bytes
@@ -519,13 +717,46 @@ class ApiService {
     required String text,
     required String language,
   }) async {
+    final result = await synthesizeSpeechResult(text: text, language: language);
+    return result.bytes;
+  }
+
+  Future<SpeechSynthesisResult> synthesizeSpeechResult({
+    required String text,
+    required String language,
+  }) async {
     final data = await postJson(
       '${AppConfig.apiV1}/language/tts',
       body: {'text': text, 'target_language': language},
     );
-    final b64 =
-        (data as Map<String, dynamic>)['audio_base64'] as String? ?? '';
-    return base64Decode(b64);
+    final map = data as Map<String, dynamic>;
+    final encoded = map['audio_base64'] as String? ?? '';
+    return SpeechSynthesisResult(
+      bytes: base64Decode(encoded),
+      provider: map['provider'] as String? ?? 'unknown',
+      simulated: map['simulated'] as bool? ?? false,
+    );
+  }
+
+  Future<TranslationResult> translateText({
+    required String text,
+    required String sourceLanguage,
+    required String targetLanguage,
+  }) async {
+    final data = await postJson(
+      '${AppConfig.apiV1}/language/translate',
+      body: {
+        'text': text,
+        'source_language': sourceLanguage,
+        'target_language': targetLanguage,
+      },
+    );
+    final map = data as Map<String, dynamic>;
+    return TranslationResult(
+      text: map['translated_text'] as String? ?? text,
+      provider: map['provider'] as String? ?? 'unknown',
+      simulated: map['simulated'] as bool? ?? false,
+    );
   }
 
   /// Full difficulty map for LevelConfig sync (GET /games/level-config).
@@ -538,14 +769,16 @@ class ApiService {
   // Caregiver dashboard
   // =====================================================================
 
-  Future<List<Map<String, dynamic>>> caregiverPatients(String caregiverId) async {
-    final data =
-        await getJson('${AppConfig.apiV1}/dashboard/caregivers/$caregiverId/patients');
+  Future<List<Map<String, dynamic>>> caregiverPatients(
+      String caregiverId) async {
+    final data = await getJson(
+        '${AppConfig.apiV1}/dashboard/caregivers/$caregiverId/patients');
     return (data as List).cast<Map<String, dynamic>>();
   }
 
   Future<Map<String, dynamic>> patientSummary(String patientId) async {
-    final data = await getJson('${AppConfig.apiV1}/dashboard/patients/$patientId/summary');
+    final data = await getJson(
+        '${AppConfig.apiV1}/dashboard/patients/$patientId/summary');
     return data as Map<String, dynamic>;
   }
 
@@ -563,25 +796,26 @@ class ApiService {
     required String reminderType, // medicine|water|food|exercise
     required String cadence, // "08:00" | "daily@08:00,20:00"
   }) async {
-    await postJson('${AppConfig.apiV1}/reminders/schedules',
-        body: {
-          'patient_id': patientId,
-          'reminder_type': reminderType,
-          'cadence': cadence,
-        });
+    await postJson('${AppConfig.apiV1}/reminders/schedules', body: {
+      'patient_id': patientId,
+      'reminder_type': reminderType,
+      'cadence': cadence,
+    });
   }
 
   Future<void> deleteSchedule(String scheduleId) async {
     // Plain DELETE with auth; no body (matches web dashboard contract).
-    final res =
-        await _send('DELETE', '${AppConfig.apiV1}/reminders/schedules/$scheduleId');
+    final res = await _send(
+        'DELETE', '${AppConfig.apiV1}/reminders/schedules/$scheduleId');
     if (res.statusCode >= 200 && res.statusCode < 300) return;
     throw ApiException('HTTP ${res.statusCode}', statusCode: res.statusCode);
   }
+
   /// Read-only DPDP audit trail. Admin-only server-side; other roles get 403
   /// which callers surface as "admin-only".
   Future<List<Map<String, dynamic>>> auditLogs({int limit = 50}) async {
-    final data = await getJson('${AppConfig.apiV1}/compliance/audit-logs?limit=$limit');
+    final data =
+        await getJson('${AppConfig.apiV1}/compliance/audit-logs?limit=$limit');
     return (data as List).cast<Map<String, dynamic>>();
   }
 
@@ -612,7 +846,8 @@ class ApiService {
       final h = _headers()..remove('Content-Type');
       req.headers.addAll(h);
       req.fields['patient_id'] = patientId;
-      req.files.add(http.MultipartFile.fromBytes('file', bytes, filename: filename));
+      req.files
+          .add(http.MultipartFile.fromBytes('file', bytes, filename: filename));
       return req;
     }
 

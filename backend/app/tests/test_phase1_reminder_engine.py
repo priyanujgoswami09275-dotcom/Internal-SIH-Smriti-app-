@@ -24,11 +24,17 @@ def test_parse_cadence_variants():
     assert ReminderService.parse_cadence("daily@08:00") == [dtime(8, 0)]
     assert ReminderService.parse_cadence("08:00,20:00") == [dtime(8, 0), dtime(20, 0)]
     assert ReminderService.parse_cadence("daily@20:00,08:00") == [dtime(8, 0), dtime(20, 0)]
-    # legacy free-text -> no times (no crash, no generation)
-    assert ReminderService.parse_cadence("every morning after breakfast") == []
-    assert ReminderService.parse_cadence("") == []
-    # invalid clock values dropped
-    assert ReminderService.parse_cadence("25:99,09:30") == [dtime(9, 30)]
+    assert ReminderService.parse_cadence("08:00 AM Daily") == [dtime(8, 0)]
+    with pytest.raises(ValueError, match="Invalid cadence"):
+        ReminderService.parse_cadence("every morning after breakfast")
+    with pytest.raises(ValueError, match="Invalid cadence"):
+        ReminderService.parse_cadence("")
+    with pytest.raises(ValueError, match="Invalid cadence"):
+        ReminderService.parse_cadence("25:99,09:30")
+    with pytest.raises(ValueError, match="Invalid cadence"):
+        ReminderService.parse_cadence("08:00 Daily")
+    with pytest.raises(ValueError, match="Invalid cadence"):
+        ReminderService.parse_cadence("08:00 AM")
 
 
 # ---------- generation ----------
@@ -129,8 +135,10 @@ async def test_escalate_then_missed_and_reprompt(db_session):
 
     # reprompt fan-out uses the notification provider (console mock here)
     provider = ConsoleNotificationProvider()
-    sent = await notify_reprompts(patient.id, result, provider=provider)
-    assert sent == 1
+    delivery = await notify_reprompts(db_session, patient.id, result, provider=provider)
+    assert delivery["recipients_resolved"] == 1
+    assert delivery["confirmed_deliveries"] == 0
+    assert delivery["delivery_state"] == "not_configured"
     assert provider.deliveries[0]["kind"] == "reprompt"
     assert provider.deliveries[0]["reminder_type"] == "medicine"
 

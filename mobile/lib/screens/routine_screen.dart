@@ -25,26 +25,32 @@ import '../games/shadow_model_label.dart';
 import '../models/game_models.dart';
 import '../models/shared_models.dart';
 import '../services/api_service.dart';
+import '../services/auth_session.dart';
 import '../services/offline_sync_service.dart';
 import '../services/routine_service.dart';
 import '../theme/monad_theme.dart';
 
 /// Monad palette (DESIGN.md tokens).
 class _NERPalette {
-  static Color get headerBg => Monad.tintGold; // ≤25% gold tint, never full fill
+  static Color get headerBg =>
+      Monad.tintGold; // ≤25% gold tint, never full fill
   static const textDark = Monad.offBlack;
 }
 
 class RoutineScreen extends StatefulWidget {
   final String patientId;
   final int difficultyLevel;
+  final String? routineId;
   final String languageCode;
+  final OfflineSyncService? sync;
 
   const RoutineScreen({
     super.key,
     required this.patientId,
     required this.difficultyLevel,
+    this.routineId,
     this.languageCode = 'english',
+    this.sync,
   });
 
   @override
@@ -53,24 +59,34 @@ class RoutineScreen extends StatefulWidget {
 
 class _RoutineScreenState extends State<RoutineScreen> {
   final ApiService _api = ApiService.instance;
+  late final OfflineSyncService _sync =
+      widget.sync ?? OfflineSyncService.instance;
   final RoutineService _logic = RoutineService();
   final GameAnalyticsEngine _engine = GameAnalyticsEngine.instance;
 
+  String get _languageCode =>
+      AuthSession.instance.user?.preferredLanguage ?? widget.languageCode;
+  String _label(String key) => GameLabels.of(_languageCode, key);
+
+  int _difficulty = 1;
   RoutineGameState? _game;
   bool _loading = true;
   String? _error;
   Timer? _stuckTimer;
   bool _hinting = false;
+  bool _exitConfirmed = false;
   int _longestStuckSeconds = 0;
   int _secondsSinceCorrect = 0;
   int _hintsUsed = 0;
 
   /// Buffered actions for this session (drives the offline sync path).
   final List<GameAction> _bufferedActions = [];
+  Future<void> _actionSendTail = Future<void>.value();
 
   @override
   void initState() {
     super.initState();
+    _difficulty = widget.difficultyLevel.clamp(1, 3);
     _startGame();
   }
 
@@ -92,11 +108,14 @@ class _RoutineScreenState extends State<RoutineScreen> {
     try {
       final sessionId = await _api.startGame(
         gameType: 'routine_sequencing',
-        difficultyLevel: widget.difficultyLevel,
+        difficultyLevel: _difficulty,
+        patientId: widget.patientId,
+        routineId: widget.routineId,
       );
       final board = await _api.routineBoard(
         patientId: widget.patientId,
-        difficultyLevel: widget.difficultyLevel,
+        difficultyLevel: _difficulty,
+        sessionId: sessionId,
       );
       if (!mounted) return;
       setState(() {
@@ -106,7 +125,7 @@ class _RoutineScreenState extends State<RoutineScreen> {
       _armStuckTimer();
     } on Exception {
       final board = LocalContentPacks.defaultRoutineBoard(
-        difficultyLevel: widget.difficultyLevel,
+        difficultyLevel: _difficulty,
         levels: LevelConfig.current,
       );
       final sessionId = 'offline_${DateTime.now().millisecondsSinceEpoch}';
@@ -124,22 +143,51 @@ class _RoutineScreenState extends State<RoutineScreen> {
   // ------------------------------------------------------------------
 
   void _bufferAndSend(GameAction action) {
+    final actionIndex = _bufferedActions.length;
     _bufferedActions.add(action);
     final offline = _game?.sessionId.startsWith('offline_') ?? false;
-    if (offline) return; // stays buffered; flushed via sync queue on complete
-    // ponytail: fire-and-forget, accept per-move undercount on flaky networks;
-    // full replay only when the session itself must be queued offline.
-    unawaited(
-      _api
-          .recordGameAction(
-            sessionId: action.sessionId,
-            actionType: action.actionType,
-            actionData: action.actionData,
-            isCorrect: action.isCorrect,
-            responseTimeMs: action.responseTimeMs,
-          )
-          .catchError((_) => false),
+    if (offline) return;
+    final idempotencyKey = ApiService.actionIdempotencyKey(
+      sessionId: action.sessionId,
+      actionIndex: actionIndex,
+      actionId: action.id,
     );
+    _actionSendTail = _actionSendTail.then((_) async {
+      try {
+        await _api.recordGameAction(
+          sessionId: action.sessionId,
+          actionType: action.actionType,
+          actionData: action.actionData,
+          isCorrect: action.isCorrect,
+          responseTimeMs: action.responseTimeMs,
+          idempotencyKey: idempotencyKey,
+        );
+      } catch (_) {}
+    });
+  }
+
+  List<String> _expectedActionIds() => [
+        for (var index = 0; index < _bufferedActions.length; index++)
+          ApiService.actionIdempotencyKey(
+            sessionId: _bufferedActions[index].sessionId,
+            actionIndex: index,
+            actionId: _bufferedActions[index].id,
+          ),
+      ];
+
+  Future<void> _ensureActionsDurable() async {
+    await _actionSendTail;
+    for (var index = 0; index < _bufferedActions.length; index++) {
+      final action = _bufferedActions[index];
+      await _api.recordGameAction(
+        sessionId: action.sessionId,
+        actionType: action.actionType,
+        actionData: action.actionData,
+        isCorrect: action.isCorrect,
+        responseTimeMs: action.responseTimeMs,
+        idempotencyKey: _expectedActionIds()[index],
+      );
+    }
   }
 
   void _armStuckTimer() {
@@ -155,13 +203,13 @@ class _RoutineScreenState extends State<RoutineScreen> {
       }
       // Adaptive rule: >=15s stuck (or excessive errors) -> subtle hint.
       // L3 grants fewer free hints (max 1) per the difficulty spec.
-      final hintBudgetLeft = widget.difficultyLevel >= 3 ? _hintsUsed < 1 : true;
+      final hintBudgetLeft = _difficulty >= 3 ? _hintsUsed < 1 : true;
       if (!_hinting &&
           hintBudgetLeft &&
           _engine.shouldHintNow(
             secondsSinceLastCorrect: _secondsSinceCorrect,
             incorrectMoves: current.errors,
-            difficultyLevel: widget.difficultyLevel,
+            difficultyLevel: _difficulty,
           )) {
         setState(() {
           _hinting = true;
@@ -225,20 +273,30 @@ class _RoutineScreenState extends State<RoutineScreen> {
     GameSessionSummary? summary;
     try {
       if (!finalState.sessionId.startsWith('offline_')) {
-        summary = await _api.completeGame(finalState.sessionId);
+        await _ensureActionsDurable();
+        summary = await _api.completeGame(
+          finalState.sessionId,
+          idempotencyKey:
+              ApiService.completionIdempotencyKey(finalState.sessionId),
+          expectedActionIds: _expectedActionIds(),
+        );
+        _difficulty = GameAnalyticsEngine.authoritativeNextLevel(
+          currentLevel: _difficulty,
+          recommendedLevel: summary.recommendedLevel,
+        );
         _bufferedActions.clear(); // server holds the authoritative record
       } else {
         throw ApiException('offline session');
       }
     } on Exception catch (e) {
       debugPrint('Could not complete session online: $e');
-      await OfflineSyncService.instance.enqueueGameSession(
+      await _sync.enqueueGameSession(
         patientId: widget.patientId,
         session: GameSessionModel(
           id: finalState.sessionId,
           patientId: widget.patientId,
           gameType: GameType.routineSequencing,
-          difficultyLevel: widget.difficultyLevel,
+          difficultyLevel: _difficulty,
           attempts: validation.totalCount,
           correctCount: validation.correctCount,
           incorrectCount: validation.totalCount - validation.correctCount,
@@ -247,6 +305,7 @@ class _RoutineScreenState extends State<RoutineScreen> {
           completedAt: DateTime.now(),
         ),
         actions: List<GameAction>.from(_bufferedActions),
+        routineId: widget.routineId,
       );
     }
 
@@ -257,7 +316,7 @@ class _RoutineScreenState extends State<RoutineScreen> {
       sessionId: finalState.sessionId,
       patientId: widget.patientId,
       gameType: 'routine_sequencing',
-      difficultyLevel: widget.difficultyLevel,
+      difficultyLevel: _difficulty,
       timeTakenInSeconds:
           DateTime.now().difference(finalState.gameStartedAt).inSeconds,
       totalAttempts: validation.totalCount,
@@ -277,15 +336,19 @@ class _RoutineScreenState extends State<RoutineScreen> {
       barrierDismissible: false,
       builder: (context) => AlertDialog(
         backgroundColor: Monad.parchment,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(Monad.radiusCard), side: const BorderSide(color: Monad.ash)),
-        title: Text('Routine completed', style: Monad.subheading),
+        shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(Monad.radiusCard),
+            side: const BorderSide(color: Monad.ash)),
+        title: Text(_label('game.routineCompleted'), style: Monad.subheading),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Text('Accuracy: ${validation.accuracyPct.toStringAsFixed(1)}%',
+            Text(
+                '${_label('game.accuracy')}: ${validation.accuracyPct.toStringAsFixed(1)}%',
                 style: Monad.monoLabel),
             const SizedBox(height: 8),
-            Text('${validation.correctCount} of ${validation.totalCount} steps placed correctly',
+            Text(
+                '${validation.correctCount} of ${validation.totalCount} ${_label('game.stepsCorrect')}',
                 style: Monad.monoBody),
             if (shadowModelLabel(summary) != null) ...[
               const SizedBox(height: 8),
@@ -297,7 +360,7 @@ class _RoutineScreenState extends State<RoutineScreen> {
             ],
             if (summary == null) ...[
               const SizedBox(height: 12),
-              Text('Offline: result will sync when you reconnect.',
+              Text(_label('game.offlineResult'),
                   style: Monad.monoBodySm.copyWith(color: Monad.crimson)),
             ],
           ],
@@ -305,76 +368,111 @@ class _RoutineScreenState extends State<RoutineScreen> {
         actions: [
           TextButton(
             onPressed: () => Navigator.of(context).popUntil((r) => r.isFirst),
-            child: const Text('Done'),
+            child: Text(_label('game.done')),
           ),
         ],
       ),
     );
   }
 
+  Future<void> _requestExit(BuildContext context) async {
+    if (_exitConfirmed) {
+      Navigator.of(context).pop();
+      return;
+    }
+    final leave = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(_label('game.leaveTitle')),
+        content: Text(_label('game.leaveBody')),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: Text(_label('game.keepPlaying')),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: Text(_label('game.leaveGame')),
+          ),
+        ],
+      ),
+    );
+    if (leave == true && context.mounted) {
+      setState(() => _exitConfirmed = true);
+      Navigator.of(context).pop();
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final game = _game;
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Daily Routine / দৈনিক অভ্যাস'),
-        centerTitle: false,
-      ),
-      body: _loading
-          ? Center(
-              child: Text(GameLabels.of('en', 'common.loading'),
-                  style: Monad.monoBodyLg))
-          : _error != null
-              ? Center(
-                  child: Padding(
-                    padding: const EdgeInsets.all(24),
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        const Icon(Icons.cloud_off, size: 64, color: Monad.smoke),
-                        const SizedBox(height: 12),
-                        Text(_error!, textAlign: TextAlign.center, style: Monad.monoBodyLg),
-                        const SizedBox(height: 16),
-                        ElevatedButton(
-                          onPressed: _startGame,
-                          child: const Text('Try Again'),
-                        ),
-                      ],
+    return PopScope<void>(
+      canPop: _exitConfirmed,
+      onPopInvokedWithResult: (didPop, result) {
+        if (!didPop) _requestExit(context);
+      },
+      child: Scaffold(
+        appBar: AppBar(
+          title: Text(_label('home.routineTitle')),
+          centerTitle: false,
+        ),
+        body: _loading
+            ? Center(
+                child: Text(_label('common.loading'), style: Monad.monoBodyLg))
+            : _error != null
+                ? Center(
+                    child: Padding(
+                      padding: const EdgeInsets.all(24),
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          const Icon(Icons.cloud_off,
+                              size: 64, color: Monad.smoke),
+                          const SizedBox(height: 12),
+                          Text(_error!,
+                              textAlign: TextAlign.center,
+                              style: Monad.monoBodyLg),
+                          const SizedBox(height: 16),
+                          ElevatedButton(
+                            onPressed: _startGame,
+                            child: Text(_label('common.retry')),
+                          ),
+                        ],
+                      ),
                     ),
-                  ),
-                )
-              : game == null
-                  ? Center(
-                      child: Text(GameLabels.of('en', 'common.loading'),
-                          style: Monad.monoBodyLg))
-                  : Column(
-                      children: [
-                        // Persistent, unmissable home control.
-                        SafeArea(
-                          child: Padding(
-                            padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
-                            child: Row(
-                              children: [
-                                OutlinedButton.icon(
-                                  onPressed: () =>
-                                      Navigator.of(context).maybePop(),
-                                  icon: const Icon(Icons.home, size: 22),
-                                  label: Text(GameLabels.of('en', 'common.home')),
-                                  style: Monad.ghostPill(),
-                                ),
-                              ],
+                  )
+                : game == null
+                    ? Center(
+                        child: Text(_label('common.loading'),
+                            style: Monad.monoBodyLg))
+                    : Column(
+                        children: [
+                          // Persistent, unmissable home control.
+                          SafeArea(
+                            child: Padding(
+                              padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+                              child: Row(
+                                children: [
+                                  OutlinedButton.icon(
+                                    onPressed: () => _requestExit(context),
+                                    icon: const Icon(Icons.home, size: 22),
+                                    label: Text(_label('common.home')),
+                                    style: Monad.ghostPill(),
+                                  ),
+                                ],
+                              ),
                             ),
                           ),
-                        ),
-                        _progressHeader(game),
-                        if (game.stepsPlaced == 0) _introBanner(),
-                        Expanded(
-                          child: game.isComplete
-                              ? const SizedBox.shrink()
-                              : _stepGrid(game),
-                        ),
-                      ],
-                    ),
+                          _progressHeader(game),
+                          if (game.stepsPlaced == 0) _introBanner(),
+                          Expanded(
+                            child: game.isComplete
+                                ? const SizedBox.shrink()
+                                : _stepGrid(game),
+                          ),
+                        ],
+                      ),
+      ),
     );
   }
 
@@ -394,22 +492,25 @@ class _RoutineScreenState extends State<RoutineScreen> {
       child: Row(
         children: [
           Container(
-            width: 44, height: 44,
+            width: 44,
+            height: 44,
             decoration: BoxDecoration(
               color: const Color(0xFFFFF0D8),
               borderRadius: BorderRadius.circular(12),
               border: Border.all(color: const Color(0xFFE8C880)),
             ),
-            child: const Icon(Icons.lightbulb_outline, color: Color(0xFFD4A030), size: 22),
+            child: const Icon(Icons.lightbulb_outline,
+                color: Color(0xFFD4A030), size: 22),
           ),
           const SizedBox(width: 14),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('Arrange your day', style: Monad.monoLabel.copyWith(fontSize: 16)),
+                Text(_label('game.arrangeDay'),
+                    style: Monad.monoLabel.copyWith(fontSize: 16)),
                 const SizedBox(height: 2),
-                Text('Tap activities in the order you do them each day', style: Monad.monoBodySm),
+                Text(_label('game.arrangeDayBody'), style: Monad.monoBodySm),
               ],
             ),
           ),
@@ -423,8 +524,8 @@ class _RoutineScreenState extends State<RoutineScreen> {
         ? game.board.correctSequence[game.stepsPlaced]
         : null;
     final stepLabel = game.isComplete
-        ? GameLabels.of('en', 'routine.complete.title')
-        : '${GameLabels.of('en', 'routine.placed')}: ${game.stepsPlaced}/${game.totalSteps}';
+        ? _label('routine.complete.title')
+        : '${_label('routine.placed')}: ${game.stepsPlaced}/${game.totalSteps}';
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(14),
@@ -439,7 +540,7 @@ class _RoutineScreenState extends State<RoutineScreen> {
             Padding(
               padding: const EdgeInsets.only(top: 4),
               child: Text(
-                GameLabels.of('en', 'routine.tapNext'),
+                _label('routine.tapNext'),
                 style: Monad.monoBodySm.copyWith(color: _NERPalette.textDark),
               ),
             ),
@@ -459,8 +560,7 @@ class _RoutineScreenState extends State<RoutineScreen> {
         crossAxisCount: 2,
         crossAxisSpacing: 16,
         mainAxisSpacing: 16,
-        // >=60dp tall on 360dp phones; extra height for two-line labels.
-        childAspectRatio: 1.5,
+        mainAxisExtent: 150,
       ),
       itemCount: available.length,
       itemBuilder: (context, index) {
@@ -489,7 +589,8 @@ class _RoutineScreenState extends State<RoutineScreen> {
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
                     if (step.icon != null)
-                      Icon(_iconFor(step.icon!), size: 34, color: Monad.offBlack),
+                      Icon(_iconFor(step.icon!),
+                          size: 34, color: Monad.offBlack),
                     const SizedBox(height: 6),
                     Text(
                       step.getTitle(widget.languageCode),

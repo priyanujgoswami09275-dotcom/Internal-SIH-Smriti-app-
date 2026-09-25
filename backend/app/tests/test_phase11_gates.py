@@ -4,7 +4,7 @@ import uuid
 import pytest
 from sqlalchemy import select
 
-from app.models.all_models import AuditLog, MedicalDocument
+from app.models.all_models import AuditLog, DocumentChunk, MedicalDocument
 from app.services.compliance_service import EncryptionService
 
 AUTH = "/api/v1/auth"
@@ -108,8 +108,8 @@ async def test_linked_caregiver_can_access_and_reads_are_audited(client, db_sess
 
 
 @pytest.mark.asyncio
-async def test_document_ingest_stores_encrypted_source(client, db_session):
-    """extracted_text is AES-256 encrypted at rest; retrieval uses plaintext chunks."""
+async def test_document_ingest_stores_encrypted_source_and_chunks(client, db_session):
+    """Source text and chunk PHI are encrypted at rest; retrieval decrypts chunks."""
     from app.tests.conftest import provision_staff_user
 
     clinician = await provision_staff_user()
@@ -130,7 +130,11 @@ async def test_document_ingest_stores_encrypted_source(client, db_session):
     assert doc.extracted_text.startswith("gAAAA")   # Fernet ciphertext
     assert doc.extracted_text != text
     assert EncryptionService().decrypt(doc.extracted_text) == text
-    # chunks remain plaintext so retrieval/citations work
+    chunk = (await db_session.execute(
+        select(DocumentChunk).where(DocumentChunk.document_id == doc.id)
+    )).scalar_one()
+    assert chunk.chunk_text.startswith("gAAAA")
+    assert EncryptionService().decrypt(chunk.chunk_text) == text
     q = await client.post(f"{REPORTS}/documents/query", headers=hh, json={
         "patient_id": profile["id"], "query": "Amlodipine morning dose", "top_k": 2})
     assert q.status_code == 200

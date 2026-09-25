@@ -1,7 +1,9 @@
 """Automated Clinical & Cognitive Report Generation Service.
 
 Aggregates:
-- Game session cognitive trajectories (Match It + Routine Sequencing).
+- Game session cognitive trajectories (all four game types).
+- ``cognitive_metrics`` retains pooled fields and adds ``metric_scope``,
+  ``avg_response_time_ms``, and a ``game_metrics`` map keyed by game type.
 - Reminder & Medication compliance stats.
 - Symptom logs & clinical observations.
 - Generates structured medical summary exportable for doctors and ASHA supervisors.
@@ -14,19 +16,27 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, distinct
 
 from app.models.all_models import (
-    ConsentRecord, PatientProfile, GameSession, ReminderEvent,
+    ConsentRecord, PatientProfile, ReminderEvent,
     SymptomLog, ReminderStatusEnum, WeeklyReport,
 )
 from app.services.compliance_service import EncryptionService
+from app.services.datetime_utils import iso_utc
+from app.services.dashboard_service import (
+    GAME_METRIC_SCOPE,
+    get_game_analytics,
+    naive_utc,
+)
 
 
 class ReportService:
     @staticmethod
     async def generate_weekly_clinical_summary(
-        db: AsyncSession, patient_id: uuid.UUID
+        db: AsyncSession,
+        patient_id: uuid.UUID,
+        now: datetime | None = None,
     ) -> Dict[str, Any]:
-        """Aggregate past 7-day health metrics into a structured clinical report."""
-        now = datetime.now(timezone.utc)
+        """Aggregate completed, bounded 7-day health metrics."""
+        now = now or datetime.now(timezone.utc)
         start_date = now - timedelta(days=7)
 
         # 1. Fetch Patient Info
@@ -38,23 +48,21 @@ class ReportService:
         baseline = patient.cognitive_baseline.value if (patient and hasattr(patient.cognitive_baseline, 'value')) else "MCI"
         region = patient.region if patient else "Assam (NER)"
 
-        # 2. Fetch Game Sessions
-        g_stmt = select(GameSession).where(
-            GameSession.patient_id == patient_id,
-            GameSession.started_at >= start_date,
-        )
-        g_res = await db.execute(g_stmt)
-        sessions = g_res.scalars().all()
-
-        total_games = len(sessions)
-        total_correct = sum(s.correct_count for s in sessions)
-        total_attempts = sum(s.attempts for s in sessions)
-        accuracy = (total_correct / total_attempts * 100.0) if total_attempts > 0 else 0.0
+        analytics = await get_game_analytics(db, patient_id, start_date, now)
+        aggregate = analytics["aggregate"]
+        total_games = aggregate["games_played"]
+        accuracy = aggregate["accuracy_pct"]
+        if accuracy is None:
+            accuracy = 0.0
+        avg_response_time = aggregate["avg_response_time_ms"]
+        if avg_response_time is None:
+            avg_response_time = 0.0
 
         # 3. Fetch Reminder Compliance
         r_stmt = select(ReminderEvent).where(
             ReminderEvent.patient_id == patient_id,
-            ReminderEvent.scheduled_at >= start_date,
+            ReminderEvent.scheduled_at >= naive_utc(start_date),
+            ReminderEvent.scheduled_at < naive_utc(now),
         )
         r_res = await db.execute(r_stmt)
         reminders = r_res.scalars().all()
@@ -67,7 +75,8 @@ class ReportService:
         # 4. Fetch Symptom Logs
         s_stmt = select(SymptomLog).where(
             SymptomLog.patient_id == patient_id,
-            SymptomLog.timestamp >= start_date,
+            SymptomLog.timestamp >= naive_utc(start_date),
+            SymptomLog.timestamp < naive_utc(now),
         ).order_by(SymptomLog.timestamp.desc())
         s_res = await db.execute(s_stmt)
         symptoms = s_res.scalars().all()
@@ -94,12 +103,15 @@ class ReportService:
             "region": region,
             "cognitive_baseline": baseline,
             "reporting_period": {
-                "start": start_date.isoformat(),
-                "end": now.isoformat(),
+                "start": iso_utc(start_date),
+                "end": iso_utc(now),
             },
             "cognitive_metrics": {
                 "total_sessions": total_games,
                 "overall_accuracy_pct": round(accuracy, 1),
+                "avg_response_time_ms": round(avg_response_time, 1),
+                "metric_scope": GAME_METRIC_SCOPE,
+                "game_metrics": analytics["by_game"],
                 "trend": "Stable" if accuracy >= 70.0 else "Declining",
             },
             "adherence_metrics": {
@@ -110,7 +122,7 @@ class ReportService:
             },
             "symptom_observations": symptom_notes,
             "clinical_recommendations": recommendations,
-            "generated_at": now.isoformat(),
+            "generated_at": iso_utc(now),
         }
 
     # =====================================================================
@@ -140,7 +152,9 @@ class ReportService:
             )
         ).scalar_one_or_none()
 
-        summary = await ReportService.generate_weekly_clinical_summary(db, patient_id)
+        summary = await ReportService.generate_weekly_clinical_summary(
+            db, patient_id, now=now
+        )
         if existing is not None:
             existing.report_json = summary  # regenerate in-place within the week
             existing.generated_at = datetime.now(timezone.utc)

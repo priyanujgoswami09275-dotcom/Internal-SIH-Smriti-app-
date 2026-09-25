@@ -1,16 +1,17 @@
-# Deployment — SIH26003 Elder-Care Companion (2026-09-06)
+# Deployment — SIH26003 Elder-Care Companion (reconciled 2026-09-25)
 
 ## Status
-- All 12 phases implemented (CLAUDE.md reconciliation) + fix-it waves 1-6 (2026-09-22/23): input-validation 422s, patient-access gates, client always-fail features, data integrity, PG round-trip-safe migrations, P1 hardening, stub honesty.
-- 509 pytest pass + 7 skipped (run from `backend/`: `python3 -m pytest app/tests tests -q`); 21/21 standalone service tests.
-- CI: pytest + alembic + smoke_e2e (Postgres 16) + flutter pub/get/analyze/test (mobile 102/5 skipped, dashboard 15).
-- Production posture: secret/CORS refusal (config.py:149-158), rate limit (Redis+fallback, 30s recovery cooldown + bucket eviction), Fernet encryption, audit logs.
+- All 12 phases have implementation coverage; `CLAUDE.md` is the reconciled source of truth for current behavior and limitations.
+- Canonical backend verification (run from `backend/`): `python3 -m pytest app/tests tests -q`. Do not copy a historical pass count into the runbook; use the current command/CI output.
+- Standalone services: `python3 test_phase2_services.py`.
+- CI keeps the backend pytest/standalone gates, applies `alembic upgrade head` to a clean PostgreSQL 16 service, and runs `smoke_e2e.py` against that service. It also runs mobile dependency/codegen/analyze/unit-test gates and dashboard VM tests, Chrome-platform tests, and a release web build.
+- Production posture: app-layer JWT/RBAC/consent, production secret/CORS refusal, Redis-backed rate limiting with fallback, Fernet field encryption, and broad audit coverage. Audit rows are retained by application policy but database-level immutability is not enforced.
 
 ## Pre-deploy checklist (must complete before flip to production)
 1. Generate real SECRET_KEY (>=24 chars) and ENCRYPTION_KEY (>=16 chars).
 2. Set CORS_ORIGINS to real origins (not *); ENVIRONMENT=production.
 3. Add OPENROUTER_API_KEY / BHASHINI_API_KEY / ANTHROPIC_API_KEY (opt-in).
-4. Provision managed Postgres (pgvector) + run `alembic upgrade head`.
+4. Provision managed PostgreSQL, take/verify a backup, inspect the current revision, review the migration plan, and obtain approval before `alembic upgrade head`. The current single head is `0014_reminder_idempotency`.
 5. Set TLS 1.2+ in front (load balancer / reverse proxy).
 6. Configure real notification channel (SMS/FCM/APNs) beyond console.
 7. Clean build artifacts (mobile/build, .dart_tool; backend/.venv) and refresh graph (`graphify update .`).
@@ -85,10 +86,11 @@ python3.12 -m venv .venv-demo
 
 ### Configuration
 
-Repo-root `.env` already contains the correct private credentials; an optional
-`backend/.env` and exported environment variables override it (pydantic precedence:
-exported vars > `backend/.env` > root `.env`). Do not source it and do not print
-or echo any credentials.
+If an operator-managed repo-root `.env` exists, pydantic loads it; an optional
+`backend/.env` and exported environment variables override it (precedence:
+exported variables > `backend/.env` > root `.env`). Never commit `.env`, source
+it in shared logs/CI, or print/echo its contents. Start from `.env.example` and
+inject real secrets through the deployment secret manager.
 
 ### Preflight — verify the target cluster before starting anything
 
@@ -127,6 +129,35 @@ ENABLE_BACKGROUND_JOBS=false .venv-demo/bin/python -m uvicorn app.main:app --hos
 generation/escalation jobs fire against the demo data. Enabling them later is a
 separate, explicit choice.
 
+### Dashboard (caregiver web app)
+
+From `dashboard/`, install dependencies and run the development web app with an
+explicit local API URL:
+
+```sh
+flutter pub get
+flutter run -d chrome --dart-define=API_BASE_URL=http://localhost:8000
+```
+
+Run both the VM suite and the browser-platform suite locally:
+
+```sh
+flutter test
+flutter test --platform chrome
+```
+
+For deployment, set the real HTTPS API origin and pass the required release
+define:
+
+```sh
+export API_BASE_URL=https://api.your-domain.example
+flutter build web --release --dart-define=API_BASE_URL="$API_BASE_URL"
+```
+
+A release build without `--dart-define=API_BASE_URL` fails during configuration;
+the development default remains `http://localhost:8000`. The CI build uses a
+non-secret placeholder URL because it validates compilation, not connectivity.
+
 ### Mobile (patient app)
 
 From the `mobile/` directory:
@@ -153,31 +184,44 @@ stay TLS-only. The `API_BASE_URL` flag is defined in
 notifications, visual walkthrough) is **not verified** — do not claim on-device
 validation.
 
-### Startup blocked on current source until migration 0009 is approved
+### Migration safety for the populated demo database
 
-Current source (Phase B, working tree) includes `0009_shadow_difficulty.py`,
-which is **REQUIRED before restarting code at this HEAD**. It is **not approved
-and not applied** to the demo database (`alembic_version` = `0008_risk_screening`)
-and has been tested on SQLite only. Startup from the new HEAD on the demo DB is
-**blocked until a fresh backup exists and migration approval is explicitly
-verified**. Do not perform a silent `alembic upgrade head` and do not fake a
-working startup by hand-patching schema 0008 to match it.
+The source chain now has one head: `0014_reminder_idempotency`. The historical
+`0009`-only gate below has been superseded; do not use old process IDs, schema
+stamps, or approval notes as current state.
 
-The pinned backend from the previous run (Source A, **PID 51348**,
-Python 3.12, schema `0008_risk_screening`, `ENABLE_BACKGROUND_JOBS=false`) is
-valid **until it is restarted**; this release gate is pending. If that process
-dies, follow this runbook from the top — after the explicit 0009 approval —
-rather than improvising.
+The populated demo database is a live synthetic-data fixture, not a disposable
+migration target. Before changing its schema or restarting current source:
+
+1. Re-run the host/port/database/system-identifier preflight above.
+2. Inspect the actual `alembic_version`; do not infer it from an old note.
+3. Take a fresh verified backup.
+4. Review every pending migration and obtain explicit operator approval.
+5. Run `alembic upgrade head` only from `backend/` with the verified
+   `DATABASE_URL`, then run the canonical backend test command and the approved
+   smoke procedure.
+
+Do **not** casually run `alembic upgrade head` against the demo database, hand-
+patch schema versions, substitute the empty compose cluster, or let a startup
+failure trigger ad-hoc DDL. If the preflight or revision differs, stop.
+
+The canonical migration regression is included in
+`cd backend && python3 -m pytest app/tests tests -q`. CI independently proves a
+clean PostgreSQL 16 `alembic upgrade head` before its live smoke walk; that clean
+service is not evidence that the populated demo database was migrated.
 
 ### Old migration history
 
-The migration-recovery notes below are **historical record only** — they describe
-the earlier drift (`0003` stamp, `0005` rename, `0004` DDL recovery) and do not
-conflict with the demo database, which is a clean 0001→0008 chain.
-
-Source of truth: CLAUDE.md (reconciled 2026-09-06); the Phase 6 results below supersede the historical test counts above.
+The migration-recovery notes below are **historical record only**. They describe
+the earlier `0003` stamp, `0005` rename, and `0004` DDL recovery. They do not
+establish the demo database's current revision; inspect the live database. The
+source-of-truth chain currently ends at `0014_reminder_idempotency`, and
+`CLAUDE.md` was reconciled on 2026-09-25.
 
 ## Upgrade regression checkpoint — 2026-09-23 (fix-it waves 1-6)
+
+These counts describe that dated checkpoint only; they are not the current suite
+size. Reproduce current status with the canonical commands above.
 
 - Backend: `python3 -m pytest app/tests tests -q` from `backend/` — 509 passed, 7 skipped. All tests pass under the CI invocation (working-directory: backend); the earlier adaptive-CLI failure was an invocation-directory artifact, now resolved.
 - Standalone services: `python3 test_phase2_services.py` — 21 passed.
@@ -199,21 +243,35 @@ Source of truth: CLAUDE.md (reconciled 2026-09-06); the Phase 6 results below su
 
 ### Migration recovery and repeatable commands
 
-The local database was stamped at `0003`, had `clinical_features` already, and lacked notification and level-config tables. Revision `0005` was shortened to `0005_clinical_intake` to fit Alembic's 32-character version column; its upgrade now preserves an existing clinical-features column. Regression tests cover revision-chain resolution, revision length, column creation, and preservation of existing JSON data.
+Historical recovery note: a local database was once stamped at `0003`, already
+had `clinical_features`, and lacked notification/level-config tables. Blind
+stamping and downgrade attempts caused drift. Do not reproduce them. Inspect the
+actual schema and `alembic_version` before any reconciliation; a downgrade
+through `0005` can remove pre-existing `clinical_features` and requires a backup
+plus explicit data-loss approval.
 
-An initial stamp skipped notification DDL; the failed downgrade rolled back. Recovery then applied the missing `0004` notification DDL transactionally and reconciled the version to `0007_number_recall`, retaining existing patient and level-config data. Do not reproduce the blind stamping/downgrade attempts. Inspect actual schema before reconciling a drifted database. Databases with an expanded version column that previously stored the old long revision need explicit reconciliation before using this renamed chain. On the standard 32-character column, that stamp fails transactionally; inspect the retained version rather than assuming an empty row. Downgrading through `0005` drops `clinical_features`, including data that predated the migration: do not use that downgrade on a drifted database without a backup and explicit data-loss approval.
-
-Run from `backend/` to use the same database settings as the application without printing credentials:
+Run the **non-destructive** current-revision check and canonical test command from
+`backend/`:
 
 ```sh
 python3 -c 'import os; from app.config import settings; from alembic.config import Config; from alembic import command; os.environ["DATABASE_URL"] = settings.DATABASE_URL; command.current(Config("alembic.ini"))'
-python3 -c 'import os; from app.config import settings; from alembic.config import Config; from alembic import command; os.environ["DATABASE_URL"] = settings.DATABASE_URL; command.upgrade(Config("alembic.ini"), "head")'
 python3 -m pytest app/tests tests -q
 python3 test_phase2_services.py
-NO_PROXY=localhost,127.0.0.1 python3 smoke_e2e.py
 ```
 
-Back up a populated database before applying migrations. The smoke script creates synthetic accounts, patients, consent and game records, and activates companion configuration `1.1.0`; use a disposable/demo database, never production. It does not clean up those records. It does not test Number Recall gameplay, ASR/TTS playback, real notification delivery, or device offline replay. A clean-database upgrade was not exercised in this local checkpoint.
+Only after the demo preflight, fresh backup, migration review, and explicit
+approval may an operator run:
+
+```sh
+python3 -c 'import os; from app.config import settings; from alembic.config import Config; from alembic import command; os.environ["DATABASE_URL"] = settings.DATABASE_URL; command.upgrade(Config("alembic.ini"), "head")'
+```
+
+Then re-run the canonical tests and the approved smoke procedure. The smoke
+script creates synthetic accounts, patients, consent, game records, and companion
+configuration `1.1.0`; it does not clean up. Use it only on the explicitly
+approved demo/disposable database, never production. It does not test Number
+Recall gameplay, live ASR/TTS playback, real notification delivery, physical
+offline replay, or OCR.
 
 ### Manual walkthrough — pending device execution
 

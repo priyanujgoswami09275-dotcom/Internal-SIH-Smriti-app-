@@ -33,7 +33,11 @@ from app.config import settings
 from app.database import async_session_maker
 from app.models.all_models import ReminderEvent, ReminderStatusEnum
 from app.services.alert_engine import AlertEngine
-from app.services.notification_service import notify_escalation_results, notify_reprompts
+from app.services.notification_service import (
+    get_notification_provider,
+    notify_escalation_results,
+    notify_reprompts,
+)
 from app.services.reminder_service import ReminderService
 from app.services.retention_service import RetentionService
 from app.services.sync_service import consume_sync_queue
@@ -100,21 +104,59 @@ async def escalation_scan(db: AsyncSession) -> dict:
     escalated = 0
     missed = 0
     alerts = 0
-    notified = 0
-    reprompts = 0
+    recipients_resolved = 0
+    confirmed_deliveries = 0
+    reprompt_recipients_resolved = 0
+    reprompt_confirmed_deliveries = 0
+    delivery_states = []
+    reprompt_delivery_states = []
     for pid in patient_ids:
         try:
             result = await ReminderService.evaluate_escalations(db, pid)
             escalated += result.get("escalated_events", 0)
             missed += result.get("missed_events", 0)
             alerts += result.get("alerts_created", 0)
-            notified += await notify_escalation_results(db, pid, result)
-            reprompts += await notify_reprompts(pid, result)
+            provider = get_notification_provider(db=db)
+            alert_delivery = await notify_escalation_results(
+                db, pid, result, provider=provider
+            )
+            reprompt_delivery = await notify_reprompts(
+                db, pid, result, provider=provider
+            )
+            recipients_resolved += alert_delivery["recipients_resolved"]
+            confirmed_deliveries += alert_delivery["confirmed_deliveries"]
+            reprompt_recipients_resolved += reprompt_delivery["recipients_resolved"]
+            reprompt_confirmed_deliveries += reprompt_delivery["confirmed_deliveries"]
+            delivery_states.append(alert_delivery["delivery_state"])
+            reprompt_delivery_states.append(reprompt_delivery["delivery_state"])
         except Exception:  # noqa: BLE001 — one patient must not break the scan
             logger.exception("Escalation scan failed for patient %s", pid)
-    return {"patients_scanned": len(patient_ids), "escalated": escalated,
-            "missed": missed, "alerts_created": alerts, "notified": notified,
-            "reprompts": reprompts}
+    unique_delivery_states = set(delivery_states)
+    unique_reprompt_states = set(reprompt_delivery_states)
+    delivery_state = (
+        unique_delivery_states.pop()
+        if len(unique_delivery_states) == 1
+        else "mixed"
+    ) if unique_delivery_states else "not_applicable"
+    reprompt_delivery_state = (
+        unique_reprompt_states.pop()
+        if len(unique_reprompt_states) == 1
+        else "mixed"
+    ) if unique_reprompt_states else "not_applicable"
+    return {
+        "patients_scanned": len(patient_ids),
+        "escalated": escalated,
+        "missed": missed,
+        "alerts_created": alerts,
+        "recipients_resolved": recipients_resolved,
+        "confirmed_deliveries": confirmed_deliveries,
+        "delivery_state": delivery_state,
+        "notified": confirmed_deliveries,
+        "reprompt_recipients_resolved": reprompt_recipients_resolved,
+        "reprompt_confirmed_deliveries": reprompt_confirmed_deliveries,
+        "reprompt_delivery_state": reprompt_delivery_state,
+        "reprompts": reprompt_confirmed_deliveries,
+    }
 
 
 async def maintenance_once(db: AsyncSession) -> dict:

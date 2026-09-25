@@ -37,15 +37,76 @@ class OfflineSyncService {
 
   Timer? _timer;
   bool _syncing = false;
+  String? _activeAccountId;
+  int _syncGeneration = 0;
+  int _runId = 0;
+  String? _lastFailure;
 
   /// Lightweight connectivity probe (no auth required).
   Future<bool> probeOnline() async {
     try {
-      await api.getJson('${AppConfig.apiV1}/language/status', includeAuth: false);
+      await api.getJson('${AppConfig.apiV1}/language/status',
+          includeAuth: false);
       return true;
     } catch (_) {
       return false;
     }
+  }
+
+  String? get activeAccountId => _activeAccountId;
+
+  String? get lastFailure => _lastFailure;
+
+  bool get isRunning => _timer != null;
+
+  void setActiveAccount(String? accountId) {
+    if (_activeAccountId == accountId) return;
+    _activeAccountId = accountId;
+    _syncGeneration++;
+    _runId++;
+    _syncing = false;
+    _lastFailure = null;
+  }
+
+  void resetForLogout() {
+    stop();
+    _activeAccountId = null;
+  }
+
+  bool _isCancelled(int generation) => generation != _syncGeneration;
+
+  void _throwIfCancelled(int generation) {
+    if (_isCancelled(generation)) throw const _SyncCancelled();
+  }
+
+  String _idempotencyKey(SyncQueueItem item) =>
+      item.idempotencyKey ?? 'offline-sync-${item.id}';
+
+  String? _stringValue(Object? value) {
+    if (value == null) return null;
+    if (value is! String || value.isEmpty) {
+      throw ApiException('Invalid sync metadata');
+    }
+    return value;
+  }
+
+  DateTime? _dateTimeValue(Object? value) {
+    if (value == null) return null;
+    if (value is DateTime) return value;
+    if (value is String) {
+      final parsed = DateTime.tryParse(value);
+      if (parsed == null) throw ApiException('Invalid sync timestamp');
+      return parsed;
+    }
+    throw ApiException('Invalid sync timestamp');
+  }
+
+  String? _accountIdForItem(SyncQueueItem item) {
+    if (item.accountId != null && item.accountId!.isNotEmpty) {
+      return item.accountId;
+    }
+    final value = item.payload['account_id'];
+    return value is String && value.isNotEmpty ? value : null;
   }
 
   // ------------------------------------------------------------------
@@ -57,18 +118,22 @@ class OfflineSyncService {
     required String eventId,
     required String method,
   }) async {
+    final createdAt = DateTime.now();
     await db.enqueueSyncItem(SyncQueueItem(
-      id: 'ack_${DateTime.now().millisecondsSinceEpoch}_$eventId',
+      id: 'ack_${createdAt.millisecondsSinceEpoch}_$eventId',
       patientId: patientId,
+      accountId: _activeAccountId,
       resourceType: 'reminder_event',
       operation: 'update',
       resourceId: eventId,
       payload: {
         'status': 'acknowledged',
         'acknowledgment_method': method,
-        'acknowledged_at': DateTime.now().toIso8601String(),
+        'acknowledged_at': createdAt.toIso8601String(),
+        'idempotency_key': _newUuidV4(),
+        if (_activeAccountId != null) 'account_id': _activeAccountId,
       },
-      createdAt: DateTime.now(),
+      createdAt: createdAt,
     ));
   }
 
@@ -87,12 +152,15 @@ class OfflineSyncService {
     required int severity,
     required String notes,
     required DateTime recordedAt,
+    String? accountId,
+    String? idempotencyKey,
   }) {
     assert(severity >= 1 && severity <= 5, 'severity must be 1-5');
     final ms = DateTime.now().millisecondsSinceEpoch;
     return SyncQueueItem(
       id: 'clinical_${ms}_$patientId',
       patientId: patientId,
+      accountId: accountId,
       resourceType: 'offline_symptom',
       operation: 'create',
       resourceId: _newUuidV4(),
@@ -102,6 +170,8 @@ class OfflineSyncService {
         'severity': severity,
         'notes': notes,
         'recorded_at': recordedAt.toIso8601String(),
+        if (accountId != null) 'account_id': accountId,
+        if (idempotencyKey != null) 'idempotency_key': idempotencyKey,
       },
       createdAt: DateTime.now(),
     );
@@ -125,6 +195,8 @@ class OfflineSyncService {
       severity: severity,
       notes: notes,
       recordedAt: recordedAt,
+      accountId: _activeAccountId,
+      idempotencyKey: _newUuidV4(),
     ));
   }
 
@@ -143,22 +215,30 @@ class OfflineSyncService {
     required String patientId,
     required GameSessionModel session,
     required List<GameAction> actions,
+    String? contentPackId,
+    String? routineId,
   }) async {
+    final createdAt = DateTime.now();
     await db.enqueueSyncItem(SyncQueueItem(
       id: 'game_${session.id}',
       patientId: patientId,
+      accountId: _activeAccountId,
       resourceType: 'game_session',
       operation: 'create',
       resourceId: session.id,
       payload: {
         'game_type': gameTypeToApi(session.gameType),
         'difficulty_level': session.difficultyLevel,
-        'content_pack_id': null,
+        'patient_id': patientId,
+        if (contentPackId != null) 'content_pack_id': contentPackId,
+        if (routineId != null) 'routine_id': routineId,
         'started_at': session.startedAt.toIso8601String(),
         'completed_at': session.completedAt?.toIso8601String(),
+        'idempotency_key': _newUuidV4(),
+        if (_activeAccountId != null) 'account_id': _activeAccountId,
         'actions': actions.map((a) => a.toJson()).toList(),
       },
-      createdAt: DateTime.now(),
+      createdAt: createdAt,
     ));
   }
 
@@ -167,7 +247,8 @@ class OfflineSyncService {
     final sessions = await db.getUnsyncedSessions();
     final actions = await db.getUnsyncedActions();
     for (final session in sessions) {
-      final sessionActions = actions.where((a) => a.sessionId == session.id).toList();
+      final sessionActions =
+          actions.where((a) => a.sessionId == session.id).toList();
       await enqueueGameSession(
         patientId: patientId,
         session: session,
@@ -187,55 +268,108 @@ class OfflineSyncService {
   Future<int> syncNow() async {
     if (_syncing) return 0;
     _syncing = true;
+    final generation = _syncGeneration;
+    final runId = ++_runId;
     var done = 0;
+    _lastFailure = null;
     try {
       if (!await probeOnline()) return 0;
-      final items = await db.pendingSyncItems();
+      _throwIfCancelled(generation);
+      final items = await db.pendingSyncItems(
+        accountId: _activeAccountId,
+        unscopedOnly: _activeAccountId == null,
+      );
       for (final item in items) {
+        if (_isCancelled(generation)) break;
         try {
-          await _replay(item);
+          final replayed = await _replay(item, generation);
+          if (!replayed) continue;
+          _throwIfCancelled(generation);
           await db.markSyncItemSynced(item.id);
           done++;
+        } on _SyncCancelled {
+          break;
         } on Exception catch (e) {
+          if (_isCancelled(generation)) break;
+          _lastFailure = '$e';
           debugPrint('Sync failed for ${item.id}: $e');
           await db.markSyncItemFailed(item.id, '$e');
         }
       }
-      await db.clearSyncedItems(olderThanSeconds: 7 * 24 * 3600);
+      if (!_isCancelled(generation)) {
+        await db.clearSyncedItems(olderThanSeconds: 7 * 24 * 3600);
+      }
+    } on _SyncCancelled {
+      return done;
     } finally {
-      _syncing = false;
+      if (runId == _runId) _syncing = false;
     }
     return done;
   }
 
-  Future<void> _replay(SyncQueueItem item) async {
+  Future<bool> _replay(SyncQueueItem item, int generation) async {
+    final itemAccountId = _accountIdForItem(item);
+    final belongsToActiveAccount = _activeAccountId == null
+        ? itemAccountId == null
+        : itemAccountId == _activeAccountId;
+    if (!belongsToActiveAccount) return false;
     if (item.resourceType == 'game_session') {
-      await _replayGameSession(item);
+      await _replayGameSession(item, generation);
     } else if (item.resourceType == 'reminder_event') {
-      await _replayReminderAck(item);
+      await _replayReminderAck(item, generation);
     } else {
-      // Generic offline payloads are pushed to the backend sync outbox.
-      await _pushGeneric(item);
+      await _pushGeneric(item, generation);
     }
+    return true;
   }
 
-  Future<void> _replayGameSession(SyncQueueItem item) async {
+  Future<void> _replayGameSession(SyncQueueItem item, int generation) async {
     final payload = Map<String, dynamic>.from(item.payload);
-    final gameType = payload['game_type'] as String? ?? 'match_it';
-    final difficultyLevel = payload['difficulty_level'] as int? ?? 1;
+    final gameType = _stringValue(payload['game_type']) ?? 'match_it';
+    final difficultyValue = payload['difficulty_level'];
+    final difficultyLevel =
+        difficultyValue is num ? difficultyValue.toInt() : 1;
+    final patientId = _stringValue(payload['patient_id']) ?? item.patientId;
+    if (patientId == null || patientId.isEmpty) {
+      throw ApiException('Cannot replay game session without a patient id');
+    }
+    final startedAt = _dateTimeValue(payload['started_at']);
+    final completedAt = _dateTimeValue(payload['completed_at']);
+    final contentPackId = _stringValue(payload['content_pack_id']);
+    final routineId = _stringValue(payload['routine_id']);
+    final idempotencyKey = _idempotencyKey(item);
     final sessionId = await api.startGame(
       gameType: gameType,
       difficultyLevel: difficultyLevel,
+      patientId: patientId,
+      contentPackId: contentPackId,
+      routineId: routineId,
+      startedAt: startedAt,
+      completedAt: completedAt,
+      idempotencyKey: idempotencyKey,
     );
-    if (gameType == 'odd_one_out') {
-      // The fresh server session has no board, so `record_action` would
-      // 422 ("no server board") and drop the round. Fetch a fresh board
-      // for the NEW session first — same path + query the screen uses
-      // (`oddOneOutBoardPath`: session_id + difficulty_level). The server
-      // re-scores the buffered taps against it (server-truth; offline
-      // taps were never judged locally). A failing fetch propagates so
-      // the item stays failed/retryable via `syncNow` → `markSyncItemFailed`
-      // (which keeps `syncedAt` NULL).
+    _throwIfCancelled(generation);
+    if (gameType == 'match_it') {
+      if (contentPackId == null || contentPackId.isEmpty) {
+        throw ApiException('Cannot replay Match It without a content pack');
+      }
+      await api.matchItBoard(
+        packId: contentPackId,
+        difficultyLevel: difficultyLevel,
+        sessionId: sessionId,
+      );
+    } else if (gameType == 'routine_sequencing') {
+      await api.routineBoard(
+        patientId: patientId,
+        difficultyLevel: difficultyLevel,
+        sessionId: sessionId,
+      );
+    } else if (gameType == 'number_recall') {
+      await api.recallBoard(
+        difficultyLevel: difficultyLevel,
+        sessionId: sessionId,
+      );
+    } else if (gameType == 'odd_one_out') {
       await api.getJson(
         '${AppConfig.apiV1}/games/odd-one-out/board',
         query: {
@@ -244,34 +378,76 @@ class OfflineSyncService {
         },
       );
     }
-    final actions = (payload['actions'] as List? ?? const [])
-        .cast<Map<String, dynamic>>();
-    for (final action in actions) {
+    _throwIfCancelled(generation);
+    final rawActions = payload['actions'];
+    final actions = <Map<String, dynamic>>[];
+    if (rawActions is List) {
+      for (final rawAction in rawActions) {
+        if (rawAction is Map) {
+          actions.add(Map<String, dynamic>.from(rawAction));
+        }
+      }
+    }
+    final expectedActionIds = <String>[];
+    for (var index = 0; index < actions.length; index++) {
+      final action = actions[index];
+      final rawActionData = action['action_data'];
+      final actionData = rawActionData is Map
+          ? Map<String, dynamic>.from(rawActionData)
+          : <String, dynamic>{};
+      final actionId =
+          action['id'] is String ? action['id'] as String : '$index';
+      final responseTime = action['response_time_ms'];
+      final actionIdempotencyKey = ApiService.actionIdempotencyKey(
+        sessionId: sessionId,
+        actionIndex: index,
+        actionId: actionId,
+      );
+      expectedActionIds.add(actionIdempotencyKey);
       await api.recordGameAction(
         sessionId: sessionId,
-        actionType: action['action_type'] as String? ?? 'tap',
-        actionData: action['action_data'] as Map<String, dynamic>? ?? const {},
+        actionType: action['action_type'] is String
+            ? action['action_type'] as String
+            : 'tap',
+        actionData: actionData,
         isCorrect: action['is_correct'] as bool?,
-        responseTimeMs: action['response_time_ms'] as int?,
+        responseTimeMs: responseTime is num ? responseTime.toInt() : null,
+        idempotencyKey: actionIdempotencyKey,
       );
+      _throwIfCancelled(generation);
     }
-    await api.completeGame(sessionId);
+    await api.completeGame(
+      sessionId,
+      idempotencyKey: ApiService.completionIdempotencyKey(sessionId),
+      expectedActionIds: expectedActionIds,
+      completedAt: completedAt,
+    );
+    _throwIfCancelled(generation);
   }
 
-  Future<void> _replayReminderAck(SyncQueueItem item) async {
+  Future<void> _replayReminderAck(SyncQueueItem item, int generation) async {
     try {
-      await api.acknowledgeReminder(
+      final acknowledged = await api.acknowledgeReminder(
         item.resourceId,
         method: item.payload['acknowledgment_method'] as String? ?? 'button',
+        idempotencyKey: _idempotencyKey(item),
       );
+      if (!acknowledged) {
+        throw ApiException('Server did not apply reminder acknowledgment');
+      }
     } on ApiException catch (e) {
-      // Event never reached the server — nothing to acknowledge; drop it.
       if (e.statusCode != 404) rethrow;
     }
+    _throwIfCancelled(generation);
   }
 
-  Future<void> _pushGeneric(SyncQueueItem item) async {
-    final patientId = item.patientId;
+  Future<void> _pushGeneric(SyncQueueItem item, int generation) async {
+    if (item.resourceType != 'offline_symptom' || item.operation != 'create') {
+      throw ApiException('Sync item cannot be materialized: '
+          '${item.resourceType}/${item.operation}');
+    }
+    final patientId =
+        item.patientId ?? _stringValue(item.payload['patient_id']);
     if (patientId == null || patientId.isEmpty) {
       throw ApiException('Cannot sync item without a patient id');
     }
@@ -283,12 +459,22 @@ class OfflineSyncService {
           'operation': item.operation,
           'resource_id': item.resourceId,
           'payload': item.payload,
+          'idempotency_key': _idempotencyKey(item),
         },
       ],
     });
-    final map = data as Map<String, dynamic>;
-    if ((map['errors'] as List? ?? const []).isNotEmpty) {
-      throw ApiException('Backend rejected sync item');
+    _throwIfCancelled(generation);
+    if (data is! Map) {
+      throw ApiException('Sync server returned an invalid response');
+    }
+    final map = Map<String, dynamic>.from(data);
+    final errors = map['errors'];
+    if (errors is List && errors.isNotEmpty) {
+      throw ApiException('Backend rejected sync item: $errors');
+    }
+    final synced = map['synced'];
+    if (synced is! num || synced.toInt() < 1) {
+      throw ApiException('Sync server did not apply the item');
     }
   }
 
@@ -301,7 +487,14 @@ class OfflineSyncService {
   }
 
   void stop() {
+    _syncGeneration++;
+    _runId++;
+    _syncing = false;
     _timer?.cancel();
     _timer = null;
   }
+}
+
+class _SyncCancelled implements Exception {
+  const _SyncCancelled();
 }

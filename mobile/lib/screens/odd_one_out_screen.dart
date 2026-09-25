@@ -22,12 +22,14 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../config/app_config.dart';
 import '../games/game_analytics_engine.dart';
+import '../games/game_labels.dart';
 import '../games/game_visuals.dart';
 import '../games/level_config.dart';
 import '../games/shadow_model_label.dart';
 import '../models/game_models.dart';
 import '../models/shared_models.dart';
 import '../services/api_service.dart';
+import '../services/auth_session.dart';
 import '../services/offline_sync_service.dart';
 import '../theme/monad_theme.dart';
 import '../widgets/monad/monad_pill_button.dart';
@@ -35,9 +37,16 @@ import '../widgets/monad/monad_pill_button.dart';
 /// Server board endpoint (brief contract, authoritative).
 String get oddOneOutBoardPath => '${AppConfig.apiV1}/games/odd-one-out/board';
 
+Map<String, dynamic> _publicBoardJson(Map<String, dynamic> raw) {
+  final public = Map<String, dynamic>.from(raw)
+    ..remove('answer_item_id')
+    ..remove('explanation');
+  return public;
+}
+
 /// SharedPreferences key for cached board snapshots, per difficulty level:
 /// `{ "<level>": <board json> }`.
-const String oddOneOutCacheKey = 'smriti_ooo_board_v1';
+const String oddOneOutCacheKey = 'smriti_ooo_board_v2';
 
 class OddOneOutScreen extends StatefulWidget {
   final String patientId;
@@ -65,6 +74,10 @@ class _OddOneOutScreenState extends State<OddOneOutScreen> {
       widget.sync ?? OfflineSyncService.instance;
   final GameAnalyticsEngine _engine = GameAnalyticsEngine.instance;
 
+  String get _languageCode =>
+      AuthSession.instance.user?.preferredLanguage ?? 'english';
+  String _label(String key) => GameLabels.of(_languageCode, key);
+
   int _difficulty = 1;
   OddOneOutBoard? _board;
   String? _sessionId;
@@ -73,6 +86,8 @@ class _OddOneOutScreenState extends State<OddOneOutScreen> {
   bool _ready = true; // ready panel (level picker) before each run
   bool _noCache = false; // offline with no compatible cached board
   bool _completing = false;
+  bool _actionInProgress = false;
+  bool _exitConfirmed = false;
 
   /// Server-resolved tile states (never derived locally).
   final Set<String> _wrongIds = {};
@@ -115,6 +130,7 @@ class _OddOneOutScreenState extends State<OddOneOutScreen> {
       _offline = false;
       _noCache = false;
       _completing = false;
+      _actionInProgress = false;
       _board = null;
       _sessionId = null;
       _wrongIds.clear();
@@ -132,6 +148,7 @@ class _OddOneOutScreenState extends State<OddOneOutScreen> {
       final sessionId = await _api.startGame(
         gameType: 'odd_one_out',
         difficultyLevel: _difficulty,
+        patientId: widget.patientId,
       );
       final raw = await _api.getJson(
         oddOneOutBoardPath,
@@ -140,9 +157,11 @@ class _OddOneOutScreenState extends State<OddOneOutScreen> {
           'difficulty_level': '$_difficulty',
         },
       );
-      final board =
-          OddOneOutBoard.fromServerJson(Map<String, dynamic>.from(raw));
-      await _saveBoardCache(_difficulty, Map<String, dynamic>.from(raw));
+      final publicRaw = _publicBoardJson(
+        Map<String, dynamic>.from(raw as Map),
+      );
+      final board = OddOneOutBoard.fromServerJson(publicRaw);
+      await _saveBoardCache(_difficulty, publicRaw);
       if (!mounted) return;
       setState(() {
         _sessionId = sessionId;
@@ -175,8 +194,7 @@ class _OddOneOutScreenState extends State<OddOneOutScreen> {
     }
   }
 
-  Future<void> _saveBoardCache(
-      int level, Map<String, dynamic> raw) async {
+  Future<void> _saveBoardCache(int level, Map<String, dynamic> raw) async {
     try {
       final prefs = await SharedPreferences.getInstance();
       Map<String, dynamic> all = {};
@@ -197,8 +215,9 @@ class _OddOneOutScreenState extends State<OddOneOutScreen> {
       final all = Map<String, dynamic>.from(jsonDecode(existing) as Map);
       final entry = all['$level'];
       if (entry == null) return null;
-      final board =
-          OddOneOutBoard.fromJson(Map<String, dynamic>.from(entry as Map));
+      final board = OddOneOutBoard.fromJson(
+        _publicBoardJson(Map<String, dynamic>.from(entry as Map)),
+      );
       if (board.items.isEmpty) return null; // not a compatible snapshot
       return board;
     } catch (_) {
@@ -225,7 +244,9 @@ class _OddOneOutScreenState extends State<OddOneOutScreen> {
     final board = _board;
     final sessionId = _sessionId;
     if (board == null || sessionId == null) return;
-    if (_loading || _ready || _completing || _noCache) return;
+    if (_loading || _ready || _completing || _noCache || _actionInProgress) {
+      return;
+    }
     if (_correctId != null) return; // round already resolved
     if (_wrongIds.contains(item.itemId)) return;
     if (_selectedIds.contains(item.itemId)) return;
@@ -234,60 +255,51 @@ class _OddOneOutScreenState extends State<OddOneOutScreen> {
     final responseTimeMs =
         _lastTapAt != null ? now.difference(_lastTapAt!).inMilliseconds : 0;
     _lastTapAt = now;
+    final actionIndex = _bufferedActions.length;
+    final action = GameAction(
+      id: _nextActionId(item.itemId, now),
+      sessionId: sessionId,
+      actionType: 'select_odd_item',
+      actionData: {'selected_item_id': item.itemId},
+      responseTimeMs: responseTimeMs,
+      timestamp: now,
+    );
+    final idempotencyKey = ApiService.actionIdempotencyKey(
+      sessionId: sessionId,
+      actionIndex: actionIndex,
+      actionId: action.id,
+    );
+    _bufferedActions.add(action);
 
     if (_offline) {
-      // Informational pick: buffered with isCorrect null; the server
-      // scores the replay after sync. Never judged locally.
       setState(() => _selectedIds.add(item.itemId));
-      _bufferedActions.add(GameAction(
-        id: _nextActionId(item.itemId, now),
-        sessionId: sessionId,
-        actionType: 'select_odd_item',
-        actionData: {'selected_item_id': item.itemId},
-        responseTimeMs: responseTimeMs,
-        timestamp: now,
-      ));
       return;
     }
 
+    setState(() => _actionInProgress = true);
     bool? verdict;
     try {
       final data = await _api.postJson(
         '${AppConfig.apiV1}/games/sessions/$sessionId/actions',
         body: {
           'action_type': 'select_odd_item',
-          'action_data': {'selected_item_id': item.itemId},
+          'action_data': action.actionData,
           'response_time_ms': responseTimeMs,
+          'idempotency_key': idempotencyKey,
         },
       );
       verdict = _verdictFrom(data);
     } on Exception {
-      // Connectivity dropped mid-round: keep the pick as informational.
       if (!mounted) return;
       setState(() {
+        _actionInProgress = false;
         _offline = true;
         _selectedIds.add(item.itemId);
       });
-      _bufferedActions.add(GameAction(
-        id: _nextActionId(item.itemId, now),
-        sessionId: sessionId,
-        actionType: 'select_odd_item',
-        actionData: {'selected_item_id': item.itemId},
-        responseTimeMs: responseTimeMs,
-        timestamp: now,
-      ));
       return;
     }
     if (!mounted) return;
-    _bufferedActions.add(GameAction(
-      id: _nextActionId(item.itemId, now),
-      sessionId: sessionId,
-      actionType: 'select_odd_item',
-      actionData: {'selected_item_id': item.itemId},
-      isCorrect: verdict,
-      responseTimeMs: responseTimeMs,
-      timestamp: now,
-    ));
+    setState(() => _actionInProgress = false);
     if (verdict == true) {
       setState(() => _correctId = item.itemId);
       GameVisuals.positiveFeedback();
@@ -296,7 +308,6 @@ class _OddOneOutScreenState extends State<OddOneOutScreen> {
       setState(() => _wrongIds.add(item.itemId));
       GameVisuals.selectionFeedback();
     } else {
-      // Server gave no verdict: informational, round continues.
       setState(() => _selectedIds.add(item.itemId));
     }
   }
@@ -306,6 +317,32 @@ class _OddOneOutScreenState extends State<OddOneOutScreen> {
   String _nextActionId(String itemId, DateTime now) {
     _actionSeq++;
     return 'act_${now.millisecondsSinceEpoch}_${_actionSeq}_$itemId';
+  }
+
+  List<String> _expectedActionIds() => [
+        for (var index = 0; index < _bufferedActions.length; index++)
+          ApiService.actionIdempotencyKey(
+            sessionId: _bufferedActions[index].sessionId,
+            actionIndex: index,
+            actionId: _bufferedActions[index].id,
+          ),
+      ];
+
+  Future<void> _ensureActionsDurable() async {
+    final expectedActionIds = _expectedActionIds();
+    for (var index = 0; index < _bufferedActions.length; index++) {
+      final action = _bufferedActions[index];
+      await _api.postJson(
+        '${AppConfig.apiV1}/games/sessions/${action.sessionId}/actions',
+        body: {
+          'action_type': action.actionType,
+          'action_data': action.actionData,
+          if (action.responseTimeMs != null)
+            'response_time_ms': action.responseTimeMs,
+          'idempotency_key': expectedActionIds[index],
+        },
+      );
+    }
   }
 
   /// Server correctness, parsed defensively; null means informational.
@@ -376,7 +413,16 @@ class _OddOneOutScreenState extends State<OddOneOutScreen> {
     GameSessionSummary? summary;
     try {
       if (!_offline) {
-        summary = await _api.completeGame(sessionId);
+        await _ensureActionsDurable();
+        summary = await _api.completeGame(
+          sessionId,
+          idempotencyKey: ApiService.completionIdempotencyKey(sessionId),
+          expectedActionIds: _expectedActionIds(),
+        );
+        _difficulty = GameAnalyticsEngine.authoritativeNextLevel(
+          currentLevel: _difficulty,
+          recommendedLevel: summary.recommendedLevel,
+        );
         _bufferedActions.clear(); // server holds the authoritative record
       } else {
         throw ApiException('offline session');
@@ -411,31 +457,34 @@ class _OddOneOutScreenState extends State<OddOneOutScreen> {
         shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(Monad.radiusCard),
             side: const BorderSide(color: Monad.ash)),
-        title: const Text('Game completed', style: Monad.subheading),
+        title: Text(_label('game.gameCompleted'), style: Monad.subheading),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             Text(
-              _correctId != null ? 'Correct!' : 'Round finished.',
+              _correctId != null
+                  ? _label('game.correct')
+                  : _label('game.roundFinished'),
               style: Monad.patientBody,
             ),
-            if (board.explanation.isNotEmpty) ...[
+            if (resolved?.explanation?.isNotEmpty ?? false) ...[
               const SizedBox(height: 8),
-              Text(board.explanation, style: Monad.monoBodySm),
+              Text(resolved!.explanation!, style: Monad.monoBodySm),
             ],
             const SizedBox(height: 8),
-            _resultRow('Attempts', '$attempts'),
+            _resultRow(_label('game.attempts'), '$attempts'),
+
             // Server continuation labels appear only when the summary
             // carries them (the patient endpoint returns summary fields
             // only) — never fabricated, never computed locally.
             if (resolved != null) ...[
               if (resolved.nextDifficultyLevel != null)
-                _resultRow(
-                    'Next level', 'Level ${resolved.nextDifficultyLevel}'),
+                _resultRow(_label('game.nextLevel'),
+                    '${_label('game.level')} ${resolved.nextDifficultyLevel}'),
               if (resolved.source != null)
-                _resultRow('Source', resolved.source!),
+                _resultRow(_label('game.source'), resolved.source!),
               if (resolved.reason != null)
-                _resultRow('Reason', resolved.reason!),
+                _resultRow(_label('game.reason'), resolved.reason!),
               if (shadowModelLabel(resolved) != null) ...[
                 const SizedBox(height: 8),
                 Text(
@@ -447,12 +496,12 @@ class _OddOneOutScreenState extends State<OddOneOutScreen> {
             ] else ...[
               const SizedBox(height: 12),
               Text(
-                'Pending sync',
+                _label('game.pendingSync'),
                 style: Monad.monoBodySm.copyWith(color: Monad.crimson),
               ),
               const SizedBox(height: 4),
               Text(
-                'Offline: result will sync when you reconnect.',
+                _label('game.offlineResult'),
                 style: Monad.monoBodySm.copyWith(color: Monad.crimson),
               ),
             ],
@@ -461,14 +510,14 @@ class _OddOneOutScreenState extends State<OddOneOutScreen> {
         actions: [
           TextButton(
             onPressed: () => Navigator.of(context).pop(),
-            child: const Text('Back'),
+            child: Text(_label('game.back')),
           ),
           ElevatedButton(
             onPressed: () {
               Navigator.of(context).pop();
               _restart();
             },
-            child: const Text('Play Again'),
+            child: Text(_label('game.playAgain')),
           ),
         ],
       ),
@@ -493,62 +542,103 @@ class _OddOneOutScreenState extends State<OddOneOutScreen> {
     _prepare(autoStart: true);
   }
 
+  Future<void> _requestExit(BuildContext context) async {
+    if (_exitConfirmed) {
+      Navigator.of(context).pop();
+      return;
+    }
+    final leave = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(_label('game.leaveTitle')),
+        content: Text(_label('game.leaveBody')),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: Text(_label('game.keepPlaying')),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: Text(_label('game.leaveGame')),
+          ),
+        ],
+      ),
+    );
+    if (leave == true && context.mounted) {
+      setState(() => _exitConfirmed = true);
+      Navigator.of(context).pop();
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Odd One Out'),
-        centerTitle: false,
-      ),
-      body: SafeArea(
-        child: _loading
-            ? const Center(child: CircularProgressIndicator())
-            : _noCache
-                ? _downloadState()
-                : _ready
-                    ? _readyPanel()
-                    : _playPanel(),
+    return PopScope<void>(
+      canPop: _exitConfirmed,
+      onPopInvokedWithResult: (didPop, result) {
+        if (!didPop) _requestExit(context);
+      },
+      child: Scaffold(
+        appBar: AppBar(
+          title: Text(_label('home.oddTitle')),
+          centerTitle: false,
+        ),
+        body: SafeArea(
+          child: _loading
+              ? const Center(child: CircularProgressIndicator())
+              : _noCache
+                  ? _downloadState()
+                  : _ready
+                      ? _readyPanel()
+                      : _playPanel(),
+        ),
       ),
     );
   }
 
   /// Pre-start panel: level picker + Start (mirrors Recall).
+
   Widget _readyPanel() {
     final items = LevelConfig.current.oddOneOutItems(_difficulty);
-    final target = LevelConfig.current.targetSeconds('odd_one_out', _difficulty);
+    final target =
+        LevelConfig.current.targetSeconds('odd_one_out', _difficulty);
     return ListView(
       padding: const EdgeInsets.all(20),
       children: [
-        const Text('Spot the odd one out', style: Monad.subheading),
+        Text(_label('game.spotOdd'), style: Monad.subheading),
         const SizedBox(height: 8),
         Text(
-          'Look at the items, then tap the one that does not belong.',
+          _label('game.whichDoesNot'),
           style: Monad.patientBody,
         ),
         const SizedBox(height: 12),
-        Text('$items items · ${target}s target', style: Monad.monoBody),
+        Text(
+          _label('game.itemsTarget')
+              .replaceAll('{items}', '$items')
+              .replaceAll('{target}', '$target'),
+          style: Monad.monoBody,
+        ),
         if (_offline) ...[
           const SizedBox(height: 8),
           Text(
-            'Pending sync',
+            _label('game.pendingSync'),
             style: Monad.monoBodySm.copyWith(color: Monad.crimson),
           ),
         ],
         const SizedBox(height: 20),
         SegmentedButton<int>(
-          segments: const [
+          segments: [
             ButtonSegment(
                 value: 1,
-                label: Text('Easy'),
-                icon: Icon(Icons.sentiment_satisfied)),
+                label: Text(_label('common.easy')),
+                icon: const Icon(Icons.sentiment_satisfied)),
             ButtonSegment(
                 value: 2,
-                label: Text('Medium'),
-                icon: Icon(Icons.sentiment_neutral)),
+                label: Text(_label('common.medium')),
+                icon: const Icon(Icons.sentiment_neutral)),
             ButtonSegment(
                 value: 3,
-                label: Text('Hard'),
-                icon: Icon(Icons.psychology)),
+                label: Text(_label('common.hard')),
+                icon: const Icon(Icons.psychology)),
           ],
           selected: {_difficulty},
           onSelectionChanged: (s) {
@@ -558,7 +648,7 @@ class _OddOneOutScreenState extends State<OddOneOutScreen> {
         ),
         const SizedBox(height: 24),
         MonadPillButton(
-          label: 'Start',
+          label: _label('game.start'),
           variant: MonadPillVariant.primary,
           onPressed: _beginPlay,
         ),
@@ -577,21 +667,21 @@ class _OddOneOutScreenState extends State<OddOneOutScreen> {
           children: [
             const Icon(Icons.cloud_off, size: 64, color: Monad.smoke),
             const SizedBox(height: 12),
-            const Text(
-              'Connect to download to play',
+            Text(
+              _label('game.connectDownload'),
               textAlign: TextAlign.center,
               style: Monad.monoBodyLg,
             ),
             const SizedBox(height: 8),
-            const Text(
-              'Your last board for this level will appear here.',
+            Text(
+              _label('game.lastBoard'),
               textAlign: TextAlign.center,
               style: Monad.monoBodySm,
             ),
             const SizedBox(height: 16),
             ElevatedButton(
               onPressed: () => _prepare(autoStart: false),
-              child: const Text('Try Again'),
+              child: Text(_label('common.retry')),
             ),
           ],
         ),
@@ -606,18 +696,24 @@ class _OddOneOutScreenState extends State<OddOneOutScreen> {
       children: [
         Padding(
           padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          child: Wrap(
+            spacing: 16,
+            runSpacing: 8,
+            crossAxisAlignment: WrapCrossAlignment.center,
             children: [
-              // Server's level (display-only): the board is scoring truth.
-              Text('Level ${board.difficultyLevel}', style: Monad.monoBody),
-              Text('Time $_elapsedSeconds'
-                  's of ${board.targetSeconds}s', style: Monad.monoLabel),
+              Text('${_label('game.level')} ${board.difficultyLevel}',
+                  style: Monad.monoBody),
+              Text(
+                _label('game.timeProgress')
+                    .replaceAll('{elapsed}', '$_elapsedSeconds')
+                    .replaceAll('{target}', '${board.targetSeconds}'),
+                style: Monad.monoLabel,
+              ),
             ],
           ),
         ),
         const SizedBox(height: 8),
-        const Text('Which one does not belong?', style: Monad.monoBody),
+        Text(_label('game.whichDoesNot'), style: Monad.monoBody),
         if (board.groupLabel.isNotEmpty)
           Padding(
             padding: const EdgeInsets.only(top: 4),
@@ -638,9 +734,7 @@ class _OddOneOutScreenState extends State<OddOneOutScreen> {
               crossAxisCount: board.items.length <= 4 ? 2 : 3,
               mainAxisSpacing: 12,
               crossAxisSpacing: 12,
-              // Fixed row height (never aspect-driven): every tile stays
-              // visible on narrow phones and wide test surfaces alike.
-              mainAxisExtent: 150,
+              mainAxisExtent: 190,
             ),
             physics: const NeverScrollableScrollPhysics(),
             itemCount: board.items.length,
@@ -650,7 +744,7 @@ class _OddOneOutScreenState extends State<OddOneOutScreen> {
         Padding(
           padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
           child: MonadPillButton(
-            label: 'Finish',
+            label: _label('game.finish'),
             variant: MonadPillVariant.secondary,
             onPressed: _completeAndShowResults,
           ),
@@ -696,8 +790,7 @@ class _OddOneOutScreenState extends State<OddOneOutScreen> {
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
               if (correct)
-                const Icon(Icons.check_circle,
-                    color: Monad.offBlack, size: 24)
+                const Icon(Icons.check_circle, color: Monad.offBlack, size: 24)
               else if (wrong)
                 const Icon(Icons.close, color: Monad.offBlack, size: 24),
               GameVisuals.face(

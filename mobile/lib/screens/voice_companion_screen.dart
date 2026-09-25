@@ -11,7 +11,9 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../config/app_config.dart';
+import '../patient_localizations.dart';
 import '../services/api_service.dart';
+import '../services/auth_session.dart';
 import '../services/voice_audio_service.dart';
 import '../services/voice_languages.dart';
 import '../theme/monad_theme.dart';
@@ -33,7 +35,7 @@ class _VoiceCompanionScreenState extends State<VoiceCompanionScreen> {
   final ScrollController _scrollController = ScrollController();
   final List<_ChatMessage> _messages = [];
 
-  String _selectedLanguage = 'assamese';
+  String _selectedLanguage = 'english';
   bool _sending = false;
   bool _wasFallback = false;
 
@@ -48,45 +50,62 @@ class _VoiceCompanionScreenState extends State<VoiceCompanionScreen> {
   double _voiceLevel = 0.0;
   int _recordSeconds = 0;
 
-  /// Languages the active backend provider actually covers (from
-  /// /language/status). Null while loading or when the call fails —
-  /// all covered picker entries stay enabled as before (Garo excepted:
-  /// no provider covers it — see VoiceLanguages.hardUnsupported).
-  Set<String>? _providerLanguages;
+  LanguageCapabilityStatus? _capabilities;
+  bool _capabilityUnavailable = false;
+  late String _greeting;
 
-  static const _greeting = 'নমস্কাৰ! মই আপোনাৰ লগত আছোঁ। আজি কেনে আছে?';
+  bool get _asrAvailable =>
+      _capabilities?.supports('asr', _selectedLanguage) ?? false;
+  bool get _ttsAvailable =>
+      _capabilities?.supports('tts', _selectedLanguage) ?? false;
+  bool get _nmtAvailable =>
+      _capabilities?.supports('nmt', _selectedLanguage) ?? false;
 
   @override
   void initState() {
     super.initState();
+    _selectedLanguage =
+        AuthSession.instance.user?.preferredLanguage ?? 'english';
+    _greeting = _greetingForLanguage(_selectedLanguage);
     _messages.add(_ChatMessage(
       content: _greeting,
       isCompanion: true,
       timestamp: DateTime.now(),
     ));
-    _loadProviderLanguages();
+    _loadProviderCapabilities();
   }
 
-  Future<void> _loadProviderLanguages() async {
-    // The active provider may not cover every picker language (AI4Bharat
-    // models exclude Khasi + Mizo). The backend reports its supported set;
-    // uncovered languages show "not yet available" and are disabled rather
-    // than erroring at send time.
+  String _greetingForLanguage(String language) =>
+      PatientLocalizations.forLanguage(language, 'voice.greeting');
+
+  Future<void> _loadProviderCapabilities() async {
     try {
-      final data = await _api
-          .getJson('${AppConfig.apiV1}/language/status');
-      final langs = (data['supported_languages'] as List?)
-              ?.map((e) => e.toString().toLowerCase())
-              .toSet();
-      if (mounted) setState(() => _providerLanguages = langs);
+      final data = await _api.getJson('${AppConfig.apiV1}/language/status');
+      if (!mounted) return;
+      setState(() {
+        _capabilities = LanguageCapabilityStatus.fromJson(
+          Map<String, dynamic>.from(data as Map),
+        );
+        _capabilityUnavailable = false;
+      });
     } on Exception {
-      // Offline or backend down — keep all languages enabled (mock covers all).
-      if (mounted) setState(() => _providerLanguages = null);
+      if (mounted) {
+        setState(() {
+          _capabilities = null;
+          _capabilityUnavailable = true;
+        });
+      }
     }
   }
 
-  bool _languageAvailable(String code) =>
-      VoiceLanguages.available(code, _providerLanguages);
+  bool _textLanguageAvailable(String code) {
+    if (VoiceLanguages.hardUnsupported.contains(code)) return false;
+    final capabilities = _capabilities;
+    if (capabilities == null || !capabilities.capabilitiesKnown) return true;
+    return capabilities.asrLanguages.contains(code) ||
+        capabilities.nmtLanguages.contains(code) ||
+        capabilities.ttsLanguages.contains(code);
+  }
 
   @override
   void dispose() {
@@ -111,12 +130,36 @@ class _VoiceCompanionScreenState extends State<VoiceCompanionScreen> {
     });
   }
 
+  bool _replyUsesSelectedLanguage(String text) {
+    if (text.trim().isEmpty) return true;
+    switch (_selectedLanguage) {
+      case 'assamese':
+      case 'bengali':
+        return RegExp(r'[\u0980-\u09FF]').hasMatch(text);
+      case 'hindi':
+        return RegExp(r'[\u0900-\u097F]').hasMatch(text);
+      case 'english':
+        return RegExp(r'[A-Za-z]').hasMatch(text);
+      default:
+        return !RegExp(r'[A-Za-z]').hasMatch(text);
+    }
+  }
+
   Future<void> _send(String rawMessage) async {
     final message = rawMessage.trim();
     if (message.isEmpty || _sending || _recording) return;
+    final translationUnavailableText =
+        context.tr('voice.translationUnavailable');
+
+    final fallbackText = context.tr('voice.fallback');
+
     _messageController.clear();
 
-    final userMsg = _ChatMessage(content: message, isCompanion: false, timestamp: DateTime.now());
+    final userMsg = _ChatMessage(
+      content: message,
+      isCompanion: false,
+      timestamp: DateTime.now(),
+    );
     setState(() {
       _messages.add(userMsg);
       _sending = true;
@@ -131,25 +174,60 @@ class _VoiceCompanionScreenState extends State<VoiceCompanionScreen> {
         language: _selectedLanguage,
         history: _messages
             .where((m) => !m.isCompanion || m.content != _greeting)
-            .map((m) => {'role': m.isCompanion ? 'assistant' : 'user', 'content': m.content})
+            .map((m) => {
+                  'role': m.isCompanion ? 'assistant' : 'user',
+                  'content': m.content,
+                })
             .toList(),
       );
-      if (!mounted) return;
+      var replyText = result.replyText;
+      String? translationNotice;
+      if (_nmtAvailable && !_replyUsesSelectedLanguage(replyText)) {
+        try {
+          final translated = await _api.translateText(
+            text: replyText,
+            sourceLanguage: 'english',
+            targetLanguage: _selectedLanguage,
+          );
+          if (translated.simulated || translated.text.trim().isEmpty) {
+            if (!context.mounted) return;
+            translationNotice = translationUnavailableText;
+          } else {
+            replyText = translated.text;
+          }
+        } on Exception {
+          if (!context.mounted) return;
+          translationNotice = translationUnavailableText;
+        }
+      }
+      if (!context.mounted) return;
+      final fallbackNotice = result.fallback ? fallbackText : translationNotice;
       setState(() {
+        if (fallbackNotice != null) {
+          _messages.add(_ChatMessage(
+            content: fallbackNotice,
+            isCompanion: true,
+            timestamp: DateTime.now(),
+            isFallback: true,
+          ));
+        }
         _messages.add(_ChatMessage(
-          content: result.replyText,
+          content: replyText,
           isCompanion: true,
           timestamp: DateTime.now(),
         ));
         _wasFallback = result.fallback;
         _sending = false;
       });
-      _speakReply(result.replyText);
+      await _speakReply(
+        replyText,
+        disclosure: result.fallback ? fallbackText : null,
+      );
     } on Exception catch (e) {
       if (!mounted) return;
       setState(() {
         _messages.add(_ChatMessage(
-          content: 'I am here with you. Please try again.',
+          content: fallbackText,
           isCompanion: true,
           timestamp: DateTime.now(),
           isFallback: true,
@@ -167,6 +245,10 @@ class _VoiceCompanionScreenState extends State<VoiceCompanionScreen> {
 
   Future<void> _onMicTap() async {
     if (_sending || _transcribing) return;
+    if (!_asrAvailable) {
+      _showVoiceNote(context.tr('voice.asrUnavailable'));
+      return;
+    }
     if (_recording) {
       await _finishRecording();
       return;
@@ -176,21 +258,21 @@ class _VoiceCompanionScreenState extends State<VoiceCompanionScreen> {
     if (!mounted) return;
     if (permission == MicPermission.permanentlyDenied) {
       _showVoiceNote(
-        'Microphone is blocked. Enable it in Settings to talk.',
+        context.tr('voice.permission'),
         actionLabel: 'Settings',
         action: _voice.openSettings,
       );
       return;
     }
     if (permission != MicPermission.granted) {
-      _showVoiceNote('Microphone unavailable — you can type instead.');
+      _showVoiceNote(context.tr('voice.asrUnavailable'));
       return;
     }
     await _voice.stopPlayback();
     final started = await _voice.startRecording();
     if (!mounted) return;
     if (!started) {
-      _showVoiceNote('Could not start the microphone — you can type instead.');
+      _showVoiceNote(context.tr('voice.asrUnavailable'));
       return;
     }
     setState(() {
@@ -232,38 +314,48 @@ class _VoiceCompanionScreenState extends State<VoiceCompanionScreen> {
         _showVoiceNote("Didn't catch that — try again or type instead.");
         return;
       }
-      final text = await _api.transcribeAudio(
+      final recognition = await _api.transcribeAudio(
         audioBase64: audioBase64,
         language: _selectedLanguage,
       );
       if (!mounted) return;
       setState(() => _transcribing = false);
-      if (text.trim().isEmpty) {
-        _showVoiceNote("Didn't catch that — try again or type instead.");
+      if (recognition.simulated || recognition.provider == 'mock') {
+        _showVoiceNote(context.tr('voice.mockDetail'));
         return;
       }
-      await _send(text);
+      if (recognition.text.trim().isEmpty) {
+        _showVoiceNote(context.tr('voice.asrUnavailable'));
+        return;
+      }
+      await _send(recognition.text);
     } on Exception catch (e) {
       debugPrint('Voice turn failed: $e');
       if (!mounted) return;
       setState(() => _transcribing = false);
-      _showVoiceNote('Voice is unavailable right now — you can type instead.');
+      _showVoiceNote(context.tr('voice.asrUnavailable'));
     }
   }
 
   /// Speak the companion reply aloud. Best-effort: any failure keeps the
   /// text bubble as the fallback and never interrupts the chat.
-  Future<void> _speakReply(String text) async {
-    if (!_ttsEnabled || text.trim().isEmpty) return;
+  Future<void> _speakReply(String text, {String? disclosure}) async {
+    if (!_ttsEnabled || !_ttsAvailable || text.trim().isEmpty) return;
     try {
-      final audio = await _api.synthesizeSpeech(
-        text: text,
+      final spokenText = disclosure == null ? text : '$disclosure $text';
+      final result = await _api.synthesizeSpeechResult(
+        text: spokenText,
         language: _selectedLanguage,
       );
-      if (audio.isEmpty) return;
-      await _voice.playReply(audio);
+      if (result.simulated ||
+          result.provider == 'mock' ||
+          result.bytes.isEmpty) {
+        return;
+      }
+      await _voice.playReply(result.bytes);
     } catch (e) {
       debugPrint('TTS playback skipped: $e');
+      if (mounted) _showVoiceNote(context.tr('voice.ttsUnavailable'));
     }
   }
 
@@ -292,24 +384,36 @@ class _VoiceCompanionScreenState extends State<VoiceCompanionScreen> {
     );
   }
 
+  String _languageLabel(String code) {
+    final name = VoiceLanguages.displayNames[code] ?? code;
+    if (PatientLocalizations.isLocalized(code)) return name;
+    return '$name — ${context.tr('voice.languageFallback')}';
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Aai Companion'),
+        title: Text(context.tr('voice.title')),
         centerTitle: false,
         actions: [
           IconButton(
-            tooltip: _ttsEnabled ? 'Mute voice replies' : 'Unmute voice replies',
+            tooltip: !_ttsAvailable
+                ? context.tr('voice.ttsUnavailable')
+                : (_ttsEnabled
+                    ? context.tr('voice.mute')
+                    : context.tr('voice.unmute')),
             icon: Icon(
-              _ttsEnabled ? Icons.volume_up : Icons.volume_off,
+              _ttsAvailable && _ttsEnabled ? Icons.volume_up : Icons.volume_off,
               color: Monad.offBlack,
               size: 20,
             ),
-            onPressed: () {
-              if (_ttsEnabled) _voice.stopPlayback();
-              setState(() => _ttsEnabled = !_ttsEnabled);
-            },
+            onPressed: _ttsAvailable
+                ? () {
+                    if (_ttsEnabled) _voice.stopPlayback();
+                    setState(() => _ttsEnabled = !_ttsEnabled);
+                  }
+                : null,
           ),
           PopupMenuButton<String>(
             icon: Row(
@@ -318,42 +422,45 @@ class _VoiceCompanionScreenState extends State<VoiceCompanionScreen> {
                 const Icon(Icons.language, color: Monad.offBlack, size: 20),
                 const SizedBox(width: 4),
                 Text(
-                  VoiceLanguages.displayNames[_selectedLanguage] ??
-                      _selectedLanguage,
+                  _languageLabel(_selectedLanguage),
                   style: Monad.monoCaption.copyWith(color: Monad.offBlack),
                 ),
               ],
             ),
-            onSelected: (v) => setState(() => _selectedLanguage = v),
-            itemBuilder: (context) => VoiceLanguages.displayNames.entries
-                .map((e) {
-                  final available = _languageAvailable(e.key);
-                  return PopupMenuItem(
-                      value: available ? e.key : null,
-                      enabled: available,
-                      child: Row(
-                        children: [
-                          if (e.key == _selectedLanguage)
-                            const Icon(Icons.check, size: 16, color: Monad.lakeBlue),
-                          if (e.key != _selectedLanguage) const SizedBox(width: 16),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: Text(
-                              available
-                                  ? e.value
-                                  : '${e.value} — not yet available',
-                              style: Monad.monoBody.copyWith(
-                                color: available
-                                    ? Monad.offBlack
-                                    : Monad.smoke,
-                              ),
-                            ),
-                          ),
-                        ],
+            onSelected: (value) async {
+              setState(() {
+                _selectedLanguage = value;
+                _greeting = _greetingForLanguage(value);
+              });
+              await AuthSession.instance.setPreferredLanguage(value);
+            },
+            itemBuilder: (context) =>
+                VoiceLanguages.displayNames.entries.map((entry) {
+              final available = _textLanguageAvailable(entry.key);
+              return PopupMenuItem(
+                value: available ? entry.key : null,
+                enabled: available,
+                child: Row(
+                  children: [
+                    if (entry.key == _selectedLanguage)
+                      const Icon(Icons.check, size: 16, color: Monad.lakeBlue),
+                    if (entry.key != _selectedLanguage)
+                      const SizedBox(width: 16),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        available
+                            ? _languageLabel(entry.key)
+                            : '${entry.value} — ${context.tr('voice.notYetAvailable')}',
+                        style: Monad.monoBody.copyWith(
+                          color: available ? Monad.offBlack : Monad.smoke,
+                        ),
                       ),
-                    );
-                })
-                .toList(),
+                    ),
+                  ],
+                ),
+              );
+            }).toList(),
           ),
           const SizedBox(width: 8),
         ],
@@ -362,8 +469,12 @@ class _VoiceCompanionScreenState extends State<VoiceCompanionScreen> {
       body: SafeArea(
         child: Column(
           children: [
-            if (_wasFallback)
-              _offlineBanner(),
+            if (_capabilities?.hasMockProvider ?? false) _providerBanner(),
+            if (_capabilityUnavailable)
+              _capabilityNote(context.tr('voice.statusUnavailable')),
+            if (!_ttsAvailable && _capabilities?.capabilitiesKnown == true)
+              _capabilityNote(context.tr('voice.ttsUnavailable')),
+            if (_wasFallback) _offlineBanner(),
             Expanded(
               child: ListView.builder(
                 controller: _scrollController,
@@ -382,6 +493,42 @@ class _VoiceCompanionScreenState extends State<VoiceCompanionScreen> {
     );
   }
 
+  Widget _providerBanner() {
+    return Semantics(
+      liveRegion: true,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+        child: Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: Monad.tintGold,
+            borderRadius: BorderRadius.circular(Monad.radiusMin),
+            border: Border.all(color: Monad.ash),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(context.tr('voice.mock'), style: Monad.monoBody),
+              const SizedBox(height: 4),
+              Text(context.tr('voice.mockDetail'), style: Monad.monoBodySm),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _capabilityNote(String message) {
+    return Semantics(
+      liveRegion: true,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+        child: Text(message, style: Monad.monoBodySm),
+      ),
+    );
+  }
+
   Widget _offlineBanner() {
     return Padding(
       padding: const EdgeInsets.only(top: 8),
@@ -390,10 +537,11 @@ class _VoiceCompanionScreenState extends State<VoiceCompanionScreen> {
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
           decoration: ShapeDecoration(
             color: Monad.tintGold,
-            shape: const StadiumBorder(side: BorderSide(color: Monad.ash, width: 1)),
+            shape: const StadiumBorder(
+                side: BorderSide(color: Monad.ash, width: 1)),
           ),
           child: Text(
-            'OFFLINE MODE — RESPONSES SIMPLIFIED',
+            context.tr('voice.offline'),
             style: Monad.monoBodySm.copyWith(color: Monad.offBlack),
           ),
         ),
@@ -403,45 +551,50 @@ class _VoiceCompanionScreenState extends State<VoiceCompanionScreen> {
 
   Widget _messageBubble(_ChatMessage msg) {
     final isUser = !msg.isCompanion;
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 12),
-      child: Row(
-        mainAxisAlignment: isUser ? MainAxisAlignment.end : MainAxisAlignment.start,
-        crossAxisAlignment: CrossAxisAlignment.end,
-        children: [
-          if (!isUser) ...[
-            _companionAvatar(),
-            const SizedBox(width: 10),
-          ],
-          Flexible(
-            child: Container(
-              constraints: BoxConstraints(
-                maxWidth: MediaQuery.of(context).size.width * 0.72,
-              ),
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-              decoration: BoxDecoration(
-                color: isUser ? Monad.parchment : Monad.periwinkleMist,
-                borderRadius: BorderRadius.only(
-                  topLeft: const Radius.circular(16),
-                  topRight: const Radius.circular(16),
-                  bottomLeft: Radius.circular(isUser ? 16 : 4),
-                  bottomRight: Radius.circular(isUser ? 4 : 16),
+    return Semantics(
+      liveRegion: msg.isFallback,
+      child: Padding(
+        padding: const EdgeInsets.only(bottom: 12),
+        child: Row(
+          mainAxisAlignment:
+              isUser ? MainAxisAlignment.end : MainAxisAlignment.start,
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: [
+            if (!isUser) ...[
+              _companionAvatar(),
+              const SizedBox(width: 10),
+            ],
+            Flexible(
+              child: Container(
+                constraints: BoxConstraints(
+                  maxWidth: MediaQuery.of(context).size.width * 0.72,
                 ),
-                border: Border.all(color: Monad.ash, width: 1),
-              ),
-              child: Text(
-                msg.content,
-                style: Monad.patientBody.copyWith(
-                  color: Monad.offBlack,
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                decoration: BoxDecoration(
+                  color: isUser ? Monad.parchment : Monad.periwinkleMist,
+                  borderRadius: BorderRadius.only(
+                    topLeft: const Radius.circular(16),
+                    topRight: const Radius.circular(16),
+                    bottomLeft: Radius.circular(isUser ? 16 : 4),
+                    bottomRight: Radius.circular(isUser ? 4 : 16),
+                  ),
+                  border: Border.all(color: Monad.ash, width: 1),
+                ),
+                child: Text(
+                  msg.content,
+                  style: Monad.patientBody.copyWith(
+                    color: Monad.offBlack,
+                  ),
                 ),
               ),
             ),
-          ),
-          if (isUser) ...[
-            const SizedBox(width: 10),
-            _userAvatar(),
+            if (isUser) ...[
+              const SizedBox(width: 10),
+              _userAvatar(),
+            ],
           ],
-        ],
+        ),
       ),
     );
   }
@@ -487,7 +640,7 @@ class _VoiceCompanionScreenState extends State<VoiceCompanionScreen> {
                   const SizedBox(width: 10),
                   Flexible(
                     child: Text(
-                      'Listening… $mm:$ss — tap ■ to stop',
+                      '${context.tr('voice.listening')} $mm:$ss — ${context.tr('voice.stop')}',
                       style: Monad.patientBody,
                     ),
                   ),
@@ -545,7 +698,8 @@ class _VoiceCompanionScreenState extends State<VoiceCompanionScreen> {
 
   Widget _userAvatar() {
     return Container(
-      width: 36, height: 36,
+      width: 36,
+      height: 36,
       decoration: BoxDecoration(
         color: Monad.periwinkleMist,
         shape: BoxShape.circle,
@@ -576,8 +730,10 @@ class _VoiceCompanionScreenState extends State<VoiceCompanionScreen> {
                 // Patient-facing input floor: 20px.
                 style: Monad.patientBody,
                 decoration: InputDecoration(
-                  hintText: VoiceLanguages.inputHints[_selectedLanguage] ??
-                      'Type a message…',
+                  hintText: PatientLocalizations.isLocalized(_selectedLanguage)
+                      ? (VoiceLanguages.inputHints[_selectedLanguage] ??
+                          context.tr('voice.typeMessage'))
+                      : context.tr('voice.typeMessage'),
                   hintStyle: Monad.monoBody.copyWith(color: Monad.smoke),
                   filled: true,
                   fillColor: Monad.parchment,
@@ -591,16 +747,18 @@ class _VoiceCompanionScreenState extends State<VoiceCompanionScreen> {
                   ),
                   focusedBorder: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(Monad.radiusMin),
-                    borderSide: const BorderSide(color: Monad.lakeBlue, width: 1),
+                    borderSide:
+                        const BorderSide(color: Monad.lakeBlue, width: 1),
                   ),
-                  contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+                  contentPadding:
+                      const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
                 ),
               ),
             ),
           ),
           const SizedBox(width: 10),
           MonadPillButton(
-            label: 'Send',
+            label: context.tr('voice.send'),
             variant: MonadPillVariant.primary,
             busy: _sending,
             onPressed: () => _send(_messageController.text),
@@ -609,29 +767,37 @@ class _VoiceCompanionScreenState extends State<VoiceCompanionScreen> {
       ),
     );
   }
+
   /// Mic button: idle mic → tap to talk; while recording it becomes a
   /// stop square that grows with the live voice level. Disabled (greyed)
   /// while a message is sending or transcribing. Never removes text input.
   Widget _micButton() {
     final busy = _sending || _transcribing;
+    final unavailable = !_asrAvailable;
+
     final glow = _recording ? _voiceLevel * 8 : 0.0;
-    return GestureDetector(
-      onTap: busy ? null : _onMicTap,
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 200),
-        width: 50 + glow,
-        height: 50 + glow,
-        decoration: BoxDecoration(
-          shape: BoxShape.circle,
-          color: busy
-              ? Monad.ash
-              : (_recording ? Monad.offBlack : Monad.periwinkleMist),
-          border: Border.all(color: Monad.ash, width: 1),
-        ),
-        child: Icon(
-          _recording ? Icons.stop : Icons.mic,
-          color: _recording ? Monad.parchment : Monad.offBlack,
-          size: 24,
+    return Semantics(
+      button: true,
+      enabled: !busy && !unavailable,
+      label: context.tr('voice.listening'),
+      child: GestureDetector(
+        onTap: busy || unavailable ? null : _onMicTap,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 200),
+          width: 50 + glow,
+          height: 50 + glow,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: busy || unavailable
+                ? Monad.ash
+                : (_recording ? Monad.offBlack : Monad.periwinkleMist),
+            border: Border.all(color: Monad.ash, width: 1),
+          ),
+          child: Icon(
+            _recording ? Icons.stop : Icons.mic,
+            color: _recording ? Monad.parchment : Monad.offBlack,
+            size: 24,
+          ),
         ),
       ),
     );

@@ -32,7 +32,7 @@ class AuthService:
             expire = datetime.now(timezone.utc) + expires_delta
         else:
             expire = datetime.now(timezone.utc) + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
-        to_encode.update({"exp": expire})
+        to_encode.update({"exp": expire, "typ": "access"})
         encoded_jwt = jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
         return encoded_jwt
 
@@ -46,7 +46,7 @@ class AuthService:
         to_encode = data.copy()
         expire = datetime.now(timezone.utc) + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
         jti = uuid.uuid4().hex
-        to_encode.update({"exp": expire, "jti": jti})
+        to_encode.update({"exp": expire, "jti": jti, "typ": "refresh"})
         encoded_jwt = jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
         return encoded_jwt, jti
 

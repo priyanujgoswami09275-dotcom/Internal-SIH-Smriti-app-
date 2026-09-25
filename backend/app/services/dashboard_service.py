@@ -3,6 +3,9 @@
 Provides:
 - Multi-patient overview for ASHA workers & Family Caregivers.
 - Cognitive performance trends (accuracy, avg response times over 7d/30d).
+- Clinical summaries retain pooled ``accuracy_pct``, ``games_played``, and
+  ``avg_response_time_ms`` keys and add ``metric_scope`` plus ``game_metrics``
+  keyed by all four game types; each daily trend entry has the same detail.
 - Reminder compliance metrics (% acknowledged, missed, escalated).
 - Active AlertFlags / Risk notifications.
 """
@@ -11,95 +14,259 @@ from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Any, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, and_
+from sqlalchemy import select
 from app.models.all_models import (
     PatientProfile, CaregiverPatientLink, GameSession,
     ReminderEvent, ReminderSchedule, AlertFlag,
     GameTypeEnum, ReminderStatusEnum, PermissionTierEnum
 )
+from app.services.datetime_utils import iso_utc
+
+
+GAME_METRIC_SCOPE = "all_completed_game_types"
+
+
+def _utc_aware(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def naive_utc(value: datetime) -> datetime:
+    return _utc_aware(value).replace(tzinfo=None)
+
+
+def _game_type_value(game_type: Any) -> str:
+    return game_type.value if hasattr(game_type, "value") else str(game_type)
+
+
+def aggregate_sessions(sessions: List[GameSession]) -> Dict[str, Any]:
+    attempts = sum(session.attempts or 0 for session in sessions)
+    correct = sum(session.correct_count or 0 for session in sessions)
+    response_times = [
+        session.avg_response_time_ms
+        for session in sessions
+        if session.avg_response_time_ms is not None
+    ]
+    return {
+        "games_played": len(sessions),
+        "total_attempts": attempts,
+        "correct_count": correct,
+        "accuracy_pct": round(correct / attempts * 100.0, 1) if attempts else None,
+        "avg_response_time_ms": (
+            round(sum(response_times) / len(response_times), 1)
+            if response_times
+            else None
+        ),
+    }
+
+
+def aggregate_by_game(sessions: List[GameSession]) -> Dict[str, Dict[str, Any]]:
+    grouped: Dict[str, List[GameSession]] = {
+        game_type.value: [] for game_type in GameTypeEnum
+    }
+    for session in sessions:
+        grouped.setdefault(_game_type_value(session.game_type), []).append(session)
+    return {
+        game_type: aggregate_sessions(grouped[game_type])
+        for game_type in grouped
+    }
+
+
+async def get_game_analytics(
+    db: AsyncSession,
+    patient_id: uuid.UUID,
+    start: datetime,
+    end: datetime,
+) -> Dict[str, Any]:
+    start_utc = naive_utc(start)
+    end_utc = naive_utc(end)
+    sessions: List[GameSession] = []
+    if end_utc > start_utc:
+        result = await db.execute(
+            select(GameSession)
+            .where(
+                GameSession.patient_id == patient_id,
+                GameSession.completed_at.is_not(None),
+                GameSession.started_at >= start_utc,
+                GameSession.started_at < end_utc,
+                GameSession.completed_at < end_utc,
+            )
+            .order_by(GameSession.started_at.asc())
+        )
+        sessions = list(result.scalars().all())
+    return {
+        "sessions": sessions,
+        "aggregate": aggregate_sessions(sessions),
+        "by_game": aggregate_by_game(sessions),
+    }
+
+
+def build_daily_trends(
+    sessions: List[GameSession],
+    now: datetime,
+    days: int,
+    *,
+    include_empty: bool = True,
+    include_deltas: bool = False,
+) -> List[Dict[str, Any]]:
+    by_day: Dict[str, List[GameSession]] = defaultdict(list)
+    for session in sessions:
+        if session.started_at is None:
+            continue
+        by_day[_utc_aware(session.started_at).date().isoformat()].append(session)
+
+    now_utc = _utc_aware(now)
+    if include_empty:
+        dates = [
+            (now_utc.date() - timedelta(days=offset)).isoformat()
+            for offset in range(days - 1, -1, -1)
+        ]
+    else:
+        dates = sorted(by_day)
+
+    trend: List[Dict[str, Any]] = []
+    previous_accuracy: Optional[float] = None
+    for date in dates:
+        day_sessions = by_day.get(date, [])
+        metrics = aggregate_sessions(day_sessions)
+        entry: Dict[str, Any] = {
+            "date": date,
+            "games": metrics["games_played"],
+            "accuracy_pct": metrics["accuracy_pct"],
+            "avg_response_time_ms": metrics["avg_response_time_ms"],
+            "game_metrics": aggregate_by_game(day_sessions),
+        }
+        if include_deltas and metrics["accuracy_pct"] is not None:
+            if previous_accuracy is not None:
+                entry["accuracy_delta_pct"] = round(
+                    metrics["accuracy_pct"] - previous_accuracy, 1
+                )
+            previous_accuracy = metrics["accuracy_pct"]
+        trend.append(entry)
+    return trend
+
+
+def accuracy_drop(
+    earlier_accuracy: Optional[float], later_accuracy: Optional[float]
+) -> tuple[Optional[float], bool]:
+    if (
+        earlier_accuracy is None
+        or later_accuracy is None
+        or earlier_accuracy <= 0
+    ):
+        return None, False
+    drop_pct = round(
+        (earlier_accuracy - later_accuracy) / earlier_accuracy * 100.0, 1
+    )
+    return drop_pct, drop_pct >= 20.0
 
 
 class DashboardService:
     @staticmethod
     async def get_caregiver_patients(
-        db: AsyncSession, caregiver_user_id: uuid.UUID
+        db: AsyncSession,
+        caregiver_user_id: uuid.UUID,
+        role: str = "family_caregiver",
     ) -> List[Dict[str, Any]]:
-        """List all patients linked to this caregiver / ASHA worker with active status."""
-        stmt = (
-            select(PatientProfile, CaregiverPatientLink)
-            .join(CaregiverPatientLink, CaregiverPatientLink.patient_id == PatientProfile.id)
-            .where(
-                CaregiverPatientLink.caregiver_id == caregiver_user_id,
-                CaregiverPatientLink.is_active == True,
+        """Return the roster allowed by the caller's server-side role scope."""
+        role_name = role.value if hasattr(role, "value") else str(role)
+        if role_name in ("clinician", "admin"):
+            res = await db.execute(
+                select(PatientProfile)
+                .order_by(PatientProfile.created_at.desc(), PatientProfile.id)
             )
-        )
-        res = await db.execute(stmt)
-        rows = res.all()
+            rows = [(patient, None) for patient in res.scalars().all()]
+        else:
+            res = await db.execute(
+                select(PatientProfile, CaregiverPatientLink)
+                .join(
+                    CaregiverPatientLink,
+                    CaregiverPatientLink.patient_id == PatientProfile.id,
+                )
+                .where(
+                    CaregiverPatientLink.caregiver_id == caregiver_user_id,
+                    CaregiverPatientLink.is_active == True,
+                )
+                .order_by(PatientProfile.created_at.desc(), PatientProfile.id)
+            )
+            rows = res.all()
 
         patients_data = []
         for patient, link in rows:
+            if link is None:
+                relationship_type = "staff"
+                permission_tier = "clinical"
+            else:
+                relationship_type = (
+                    link.relationship_type.value
+                    if hasattr(link.relationship_type, "value")
+                    else str(link.relationship_type)
+                )
+                permission_tier = (
+                    link.permission_tier.value
+                    if hasattr(link.permission_tier, "value")
+                    else str(link.permission_tier)
+                )
             patients_data.append({
                 "patient_id": str(patient.id),
                 "name": patient.name,
                 "cognitive_baseline": patient.cognitive_baseline.value if hasattr(patient.cognitive_baseline, 'value') else str(patient.cognitive_baseline),
                 "region": patient.region,
                 "district": patient.district,
-                "relationship_type": link.relationship_type.value if hasattr(link.relationship_type, 'value') else str(link.relationship_type),
-                "permission_tier": link.permission_tier.value if hasattr(link.permission_tier, 'value') else str(link.permission_tier),
+                "relationship_type": relationship_type,
+                "permission_tier": permission_tier,
             })
         return patients_data
 
     @staticmethod
     async def get_patient_summary(
-        db: AsyncSession, patient_id: uuid.UUID
+        db: AsyncSession,
+        patient_id: uuid.UUID,
+        now: datetime | None = None,
     ) -> Dict[str, Any]:
-        """Aggregate patient engagement, cognitive trends, compliance, and active alerts."""
-        now = datetime.now(timezone.utc)
+        """Aggregate completed, bounded game metrics and caregiver activity."""
+        now = _utc_aware(now or datetime.now(timezone.utc))
         seven_days_ago = now - timedelta(days=7)
         fourteen_days_ago = now - timedelta(days=14)
-
-        # 1. Game sessions in last 14 days (7d metrics + daily trend series)
-        game_stmt = select(GameSession).where(
-            GameSession.patient_id == patient_id,
-            GameSession.started_at >= fourteen_days_ago,
+        analytics = await get_game_analytics(
+            db, patient_id, fourteen_days_ago, now
         )
-        game_res = await db.execute(game_stmt)
-        sessions_14d = game_res.scalars().all()
-
-        def _aware(dt):
-            if dt is None:
-                return None
-            if dt.tzinfo is None:
-                return dt.replace(tzinfo=timezone.utc)
-            return dt
-
+        sessions_14d = analytics["sessions"]
         sessions_7d = [
-            s for s in sessions_14d
-            if _aware(s.started_at) is not None and _aware(s.started_at) >= seven_days_ago
+            session
+            for session in sessions_14d
+            if _utc_aware(session.started_at) >= seven_days_ago
         ]
+        metrics_7d = aggregate_sessions(sessions_7d)
+        total_games_7d = metrics_7d["games_played"]
+        accuracy_7d = metrics_7d["accuracy_pct"]
+        avg_response_time = metrics_7d["avg_response_time_ms"]
 
-        total_games_7d = len(sessions_7d)
-        total_correct = sum(s.correct_count for s in sessions_7d)
-        total_attempts = sum(s.attempts for s in sessions_7d)
-        accuracy_7d = (total_correct / total_attempts * 100.0) if total_attempts > 0 else 0.0
-
-        valid_times = [s.avg_response_time_ms for s in sessions_7d if s.avg_response_time_ms is not None]
-        avg_response_time = (sum(valid_times) / len(valid_times)) if valid_times else 0.0
-
-        # 2. Reminder compliance in last 7 days
         rem_stmt = select(ReminderEvent).where(
             ReminderEvent.patient_id == patient_id,
-            ReminderEvent.scheduled_at >= seven_days_ago,
+            ReminderEvent.scheduled_at >= naive_utc(seven_days_ago),
+            ReminderEvent.scheduled_at < naive_utc(now),
         )
         rem_res = await db.execute(rem_stmt)
         reminders_7d = rem_res.scalars().all()
 
         rem_total = len(reminders_7d)
-        rem_acknowledged = sum(1 for r in reminders_7d if r.status == ReminderStatusEnum.ACKNOWLEDGED)
-        rem_missed = sum(1 for r in reminders_7d if r.status in (ReminderStatusEnum.MISSED, ReminderStatusEnum.ESCALATED))
-        compliance_pct = (rem_acknowledged / rem_total * 100.0) if rem_total > 0 else 100.0
+        rem_acknowledged = sum(
+            1
+            for reminder in reminders_7d
+            if reminder.status == ReminderStatusEnum.ACKNOWLEDGED
+        )
+        rem_missed = sum(
+            1
+            for reminder in reminders_7d
+            if reminder.status
+            in (ReminderStatusEnum.MISSED, ReminderStatusEnum.ESCALATED)
+        )
+        compliance_pct = (
+            (rem_acknowledged / rem_total * 100.0) if rem_total > 0 else 100.0
+        )
 
-        # 3. Active Alert Flags
         alerts_stmt = select(AlertFlag).where(
             AlertFlag.patient_id == patient_id,
             AlertFlag.acknowledged_at == None,
@@ -108,71 +275,56 @@ class DashboardService:
         active_alerts = alerts_res.scalars().all()
 
         alerts_list = []
-        for a in active_alerts:
-            alerts_list.append({
-                "id": str(a.id),
-                "trigger_type": a.trigger_type.value if hasattr(a.trigger_type, 'value') else str(a.trigger_type),
-                "severity": a.severity.value if hasattr(a.severity, 'value') else str(a.severity),
-                "summary": a.alert_summary,
-                "created_at": a.created_at.isoformat() if a.created_at else None,
-                "threshold_detail": a.threshold_detail,
-            })
+        for alert in active_alerts:
+            alerts_list.append(
+                {
+                    "id": str(alert.id),
+                    "trigger_type": (
+                        alert.trigger_type.value
+                        if hasattr(alert.trigger_type, "value")
+                        else str(alert.trigger_type)
+                    ),
+                    "severity": (
+                        alert.severity.value
+                        if hasattr(alert.severity, "value")
+                        else str(alert.severity)
+                    ),
+                    "summary": alert.alert_summary,
+                    "created_at": iso_utc(alert.created_at),
+                    "threshold_detail": alert.threshold_detail,
+                }
+            )
 
-        # 4. Daily series + computed 14-day accuracy drop (clinically meaningful signal)
-        by_day: Dict[str, list] = defaultdict(list)
-        for s in sessions_14d:
-            if s.started_at is None:
-                continue
-            started = s.started_at
-            if started.tzinfo is None:
-                started = started.replace(tzinfo=timezone.utc)
-            by_day[started.date().isoformat()].append(s)
-
-        daily_trends = []
-        for i in range(13, -1, -1):
-            day = (now - timedelta(days=i)).date().isoformat()
-            day_sessions = by_day.get(day, [])
-            attempts = sum(s.attempts or 0 for s in day_sessions)
-            correct = sum(s.correct_count or 0 for s in day_sessions)
-            times = [s.avg_response_time_ms for s in day_sessions if s.avg_response_time_ms is not None]
-            daily_trends.append({
-                "date": day,
-                "games": len(day_sessions),
-                "accuracy_pct": round((correct / attempts * 100.0), 1) if attempts else None,
-                "avg_response_time_ms": round(sum(times) / len(times), 1) if times else None,
-            })
-
+        daily_trends = build_daily_trends(sessions_14d, now, 14)
         earlier = [
-            s for s in sessions_14d
-            if _aware(s.started_at) is not None and _aware(s.started_at) < seven_days_ago
+            session
+            for session in sessions_14d
+            if _utc_aware(session.started_at) < seven_days_ago
         ]
-        later = sessions_7d
+        earlier_accuracy = aggregate_sessions(earlier)["accuracy_pct"]
+        later_accuracy = metrics_7d["accuracy_pct"]
+        accuracy_drop_pct, drop_20pct = accuracy_drop(
+            earlier_accuracy, later_accuracy
+        )
 
-        def _acc(rows):
-            att = sum(s.attempts or 0 for s in rows)
-            cor = sum(s.correct_count or 0 for s in rows)
-            return (cor / att * 100.0) if att else None
-
-        earlier_acc = _acc(earlier)
-        later_acc = _acc(later)
-        accuracy_drop_pct = None
-        drop_20pct = False
-        if earlier_acc and later_acc is not None and earlier_acc > 0:
-            accuracy_drop_pct = round((earlier_acc - later_acc) / earlier_acc * 100.0, 1)
-            drop_20pct = accuracy_drop_pct >= 20.0
-
-        cognitive_drop_alert = False
-        if total_games_7d >= 3 and accuracy_7d < 60.0:
-            cognitive_drop_alert = True
-        if drop_20pct:
-            cognitive_drop_alert = True
+        cognitive_drop_alert = (
+            total_games_7d >= 3
+            and accuracy_7d is not None
+            and accuracy_7d < 60.0
+        ) or drop_20pct
 
         return {
             "patient_id": str(patient_id),
             "period": "last_7_days",
             "games_played": total_games_7d,
-            "accuracy_pct": round(accuracy_7d, 1),
-            "avg_response_time_ms": round(avg_response_time, 1),
+            "accuracy_pct": round(accuracy_7d, 1) if accuracy_7d is not None else 0.0,
+            "avg_response_time_ms": (
+                round(avg_response_time, 1)
+                if avg_response_time is not None
+                else 0.0
+            ),
+            "metric_scope": GAME_METRIC_SCOPE,
+            "game_metrics": aggregate_by_game(sessions_7d),
             "reminders_total": rem_total,
             "reminders_acknowledged": rem_acknowledged,
             "reminders_missed": rem_missed,
@@ -184,5 +336,5 @@ class DashboardService:
                 "cognitive_drop_detected": cognitive_drop_alert,
                 "accuracy_dropped_20pct_over_2_weeks": drop_20pct,
                 "high_missed_reminders": rem_missed >= 3,
-            }
+            },
         }

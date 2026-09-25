@@ -15,7 +15,12 @@ from app.models.all_models import (
     ReminderTypeEnum, ReminderStatusEnum, AcknowledgmentMethodEnum,
 )
 from app.services.compliance_service import ComplianceService
-from app.services.reminder_service import ReminderService
+from app.services.notification_service import (
+    get_notification_provider,
+    notify_escalation_results,
+    notify_reprompts,
+)
+from app.services.reminder_service import CADENCE_GRAMMAR, ReminderService
 
 router = APIRouter(prefix="/reminders", tags=["reminders"])
 
@@ -23,10 +28,10 @@ router = APIRouter(prefix="/reminders", tags=["reminders"])
 class CreateScheduleRequest(BaseModel):
     patient_id: uuid.UUID
     reminder_type: ReminderTypeEnum
-    # Structured cadence understood by the generation job (times are IST):
-    #   "08:00" | "daily@08:00" | "08:00,20:00" | "daily@08:00,13:00,20:00"
-    # Free-text cadences are accepted but generate no automatic events.
-    cadence: str = Field(examples=["daily@08:00,20:00"])
+    cadence: str = Field(
+        examples=["daily@08:00,20:00"],
+        description=CADENCE_GRAMMAR,
+    )
 
 
 class ScheduleResponse(BaseModel):
@@ -78,13 +83,19 @@ async def create_schedule(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only caregivers or clinicians can create schedules")
 
     await ensure_patient_access(db, current_user, request.patient_id)
-    schedule = await ReminderService.create_schedule(
-        db=db,
-        patient_id=request.patient_id,
-        reminder_type=request.reminder_type,
-        cadence=request.cadence,
-        created_by=current_user.id,
-    )
+    try:
+        schedule = await ReminderService.create_schedule(
+            db=db,
+            patient_id=request.patient_id,
+            reminder_type=request.reminder_type,
+            cadence=request.cadence,
+            created_by=current_user.id,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
     await ComplianceService.log_write_access(
         db, current_user.id, "reminder_schedule", str(schedule.id),
         details={"patient_id": str(schedule.patient_id), "is_active": schedule.is_active},
@@ -213,11 +224,27 @@ async def evaluate_escalations(
 ):
     await ensure_patient_access(db, current_user, patient_id)
     result = await ReminderService.evaluate_escalations(db, patient_id)
-    # Fan out newly raised AlertFlags to family/ASHA via the notification
-    # provider (console mock by default). Never fails the request.
-    from app.services.notification_service import notify_escalation_results
-
-    result["notified_recipients"] = await notify_escalation_results(db, patient_id, result)
+    provider = get_notification_provider(db=db)
+    alert_delivery = await notify_escalation_results(
+        db, patient_id, result, provider=provider
+    )
+    reprompt_delivery = await notify_reprompts(
+        db, patient_id, result, provider=provider
+    )
+    result.update(
+        {
+            "delivery_state": alert_delivery["delivery_state"],
+            "delivery_message": alert_delivery["delivery_message"],
+            "recipients_resolved": alert_delivery["recipients_resolved"],
+            "confirmed_deliveries": alert_delivery["confirmed_deliveries"],
+            "notified_recipients": alert_delivery["confirmed_deliveries"],
+            "reprompt_delivery_state": reprompt_delivery["delivery_state"],
+            "reprompt_delivery_message": reprompt_delivery["delivery_message"],
+            "reprompt_recipients_resolved": reprompt_delivery["recipients_resolved"],
+            "reprompt_confirmed_deliveries": reprompt_delivery["confirmed_deliveries"],
+            "reprompts_sent": reprompt_delivery["confirmed_deliveries"],
+        }
+    )
     # Snapshot ORM alerts to plain dicts before returning (avoids lazy loads
     # during response serialization when expire_on_commit is enabled).
     result["alerts"] = [

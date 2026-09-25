@@ -44,8 +44,9 @@ def generate_number_recall_board(
         sequence_length = cfg["sequence_length"]
     if show_seconds_per_item is None:
         show_seconds_per_item = cfg["show_seconds_per_item"]
+    sequence_length = max(1, min(sequence_length, 10))
     dice = rng or random
-    sequence = dice.sample(range(10), min(sequence_length, 10))
+    sequence = dice.sample(range(10), sequence_length)
     return {
         "game_type": "number_recall",
         "difficulty_level": difficulty_level,

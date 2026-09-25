@@ -15,7 +15,7 @@ import 'level_config.dart';
 // =====================================================================
 
 /// A single completed (or abandoned) game session's metrics.
-  class CognitiveGameSession {
+class CognitiveGameSession {
   final String sessionId;
   final String patientId;
   final String gameType; // 'match_it' | 'routine_sequencing'
@@ -127,6 +127,12 @@ class GamePerformanceReport {
 /// setState + service-class pattern). Widgets hold the returned report;
 /// nothing here needs a widget rebuild by itself.
 class GameAnalyticsEngine {
+  static int authoritativeNextLevel({
+    required int currentLevel,
+    required int? recommendedLevel,
+  }) =>
+      (recommendedLevel ?? currentLevel).clamp(1, 3);
+
   GameAnalyticsEngine._();
   static final GameAnalyticsEngine instance = GameAnalyticsEngine._();
 
@@ -139,6 +145,7 @@ class GameAnalyticsEngine {
   static const double lowAccuracyPct = 50.0;
   static const double highAccuracyPct = 85.0;
   static const double slowCompletionFactor = 1.5;
+
   /// Agreement window matching the server's 3-consecutive-session bump rule:
   /// the in-app level suggestion moves only after 3 agreeing sessions.
   static const int sessionsBeforeChange = 3;
@@ -166,18 +173,17 @@ class GameAnalyticsEngine {
   GamePerformanceReport evaluate(CognitiveGameSession s) {
     final accuracy = s.accuracyPct.clamp(0.0, 100.0);
     final target = _targetFor(s.gameType, s.difficultyLevel);
-    final slow = !s.isCompleted || s.timeTakenInSeconds > target * slowCompletionFactor;
+    final slow =
+        !s.isCompleted || s.timeTakenInSeconds > target * slowCompletionFactor;
 
     // Cognitive speed: fraction of the level target not used (capped 0-100).
-    final speed = (s.isCompleted
-            ? (1 - (s.timeTakenInSeconds / target)) * 100
-            : 0.0)
-        .clamp(0.0, 100.0);
+    final speed =
+        (s.isCompleted ? (1 - (s.timeTakenInSeconds / target)) * 100 : 0.0)
+            .clamp(0.0, 100.0);
 
     // Attention: penalise stuck time; 15s stuck ≈ −20 points.
-    final attention =
-        (100 - (s.stuckDurationSeconds / stuckHintSeconds) * 20)
-            .clamp(0.0, 100.0);
+    final attention = (100 - (s.stuckDurationSeconds / stuckHintSeconds) * 20)
+        .clamp(0.0, 100.0);
 
     final tags = <ReportTag>[];
     if (accuracy >= highAccuracyPct && !slow) {
@@ -225,7 +231,8 @@ class GameAnalyticsEngine {
   /// Single-session verdict: +1 raise, -1 lower, 0 hold.
   int _verdict(CognitiveGameSession s) {
     final target = _targetFor(s.gameType, s.difficultyLevel);
-    final slow = !s.isCompleted || s.timeTakenInSeconds > target * slowCompletionFactor;
+    final slow =
+        !s.isCompleted || s.timeTakenInSeconds > target * slowCompletionFactor;
     if (s.accuracyPct < lowAccuracyPct || slow) return -1;
     if (s.accuracyPct > highAccuracyPct &&
         s.isCompleted &&
@@ -252,13 +259,21 @@ class GameAnalyticsEngine {
 /// All caps per DESIGN.md tag pattern; renderer applies mono font.
 String reportTagLabel(ReportTag t) {
   switch (t) {
-    case ReportTag.maintainLevel: return 'KEEPING GOING';
-    case ReportTag.raiseLevel:    return 'TRY HARDER';
-    case ReportTag.lowerLevel:    return 'EASIER NEXT';
-    case ReportTag.strongRecall:  return 'STRONG RECALL';
-    case ReportTag.needsSupport:  return 'NEEDS SUPPORT';
-    case ReportTag.attentionLag:  return 'TAKING TIME';
-    case ReportTag.routineStable: return 'STEADY ROUTINE';
-    case ReportTag.quickResponse: return 'QUICK THINKER';
+    case ReportTag.maintainLevel:
+      return 'KEEPING GOING';
+    case ReportTag.raiseLevel:
+      return 'TRY HARDER';
+    case ReportTag.lowerLevel:
+      return 'EASIER NEXT';
+    case ReportTag.strongRecall:
+      return 'STRONG RECALL';
+    case ReportTag.needsSupport:
+      return 'NEEDS SUPPORT';
+    case ReportTag.attentionLag:
+      return 'TAKING TIME';
+    case ReportTag.routineStable:
+      return 'STEADY ROUTINE';
+    case ReportTag.quickResponse:
+      return 'QUICK THINKER';
   }
 }

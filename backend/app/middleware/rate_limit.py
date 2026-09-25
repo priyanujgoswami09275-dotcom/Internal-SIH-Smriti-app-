@@ -16,6 +16,10 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
 from app.config import settings
+from app.middleware.request_context import (
+    bind_request_client_ip,
+    reset_request_client_ip,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -38,21 +42,25 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         self._redis_retry_at = 0.0
 
     async def dispatch(self, request: Request, call_next) -> Response:
-        if not settings.rate_limit_enabled:
-            return await call_next(request)
-        path = request.url.path
-        if path in _SKIP_PATHS or path.endswith("/openapi.json"):
-            return await call_next(request)
+        ip = request.client.host if request.client else None
+        token = bind_request_client_ip(ip)
+        try:
+            if not settings.rate_limit_enabled:
+                return await call_next(request)
+            path = request.url.path
+            if path in _SKIP_PATHS or path.endswith("/openapi.json"):
+                return await call_next(request)
 
-        ip = request.client.host if request.client else "unknown"
-        allowed = await self._allow(ip)
-        if not allowed:
-            return JSONResponse(
-                status_code=429,
-                content={"detail": f"Rate limit exceeded ({self.per_minute} requests/minute)"},
-                headers={"Retry-After": "60"},
-            )
-        return await call_next(request)
+            allowed = await self._allow(ip or "unknown")
+            if not allowed:
+                return JSONResponse(
+                    status_code=429,
+                    content={"detail": f"Rate limit exceeded ({self.per_minute} requests/minute)"},
+                    headers={"Retry-After": "60"},
+                )
+            return await call_next(request)
+        finally:
+            reset_request_client_ip(token)
 
     async def _allow(self, ip: str) -> bool:
         now = time.monotonic()

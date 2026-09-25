@@ -82,12 +82,15 @@ class MatchItGameState {
   }
 
   bool get isComplete => matchedPairs >= totalPairs;
-  double get accuracyPct => attempts > 0 ? (correctMatches / attempts) * 100 : 0.0;
+  double get accuracyPct =>
+      attempts > 0 ? (correctMatches / attempts) * 100 : 0.0;
   double get avgResponseTimeMs {
     if (responseTimesMs.isEmpty) return 0;
-    final validTimes = responseTimesMs.where((t) => t != null && t > 0).toList();
+    final validTimes =
+        responseTimesMs.where((t) => t != null && t > 0).toList();
     if (validTimes.isEmpty) return 0;
-    return validTimes.map((t) => t!).reduce((a, b) => a + b) / validTimes.length;
+    return validTimes.map((t) => t!).reduce((a, b) => a + b) /
+        validTimes.length;
   }
 }
 
@@ -104,10 +107,12 @@ class MatchItService {
     required List<Map<String, String>> items,
     LevelConfig? levels,
   }) {
-    final pairCount = (levels ?? LevelConfig.bundled).matchPairs(difficultyLevel);
+    final pairCount =
+        (levels ?? LevelConfig.bundled).matchPairs(difficultyLevel);
 
     // Select random items for this game
-    final shuffledItems = List<Map<String, String>>.from(items)..shuffle(_random);
+    final shuffledItems = List<Map<String, String>>.from(items)
+      ..shuffle(_random);
     final selectedItems = shuffledItems.take(pairCount).toList();
 
     // Create cards
@@ -160,7 +165,8 @@ class MatchItService {
   }
 
   /// Handle a card tap - returns new state.
-  MatchItGameState? handleCardTap(MatchItGameState currentState, String cardId) {
+  MatchItGameState? handleCardTap(
+      MatchItGameState currentState, String cardId) {
     if (currentState.state != MatchItState.playing) return null;
     if (currentState.isComplete) return null;
 
@@ -256,12 +262,11 @@ class MatchItService {
   }
 
   /// Get action data for logging.
-  Map<String, dynamic> getCardFlipActionData(String cardId, MatchItCard card, bool? isCorrect) {
+  Map<String, dynamic> getCardFlipActionData(String cardId, MatchItCard card) {
     return {
       'card_id': cardId,
       'pair_id': card.pairId,
       'image_key': card.imageKey,
-      'is_correct': isCorrect,
     };
   }
 
@@ -275,7 +280,8 @@ class MatchItService {
       'incorrect_matches': state.incorrectMatches,
       'accuracy_pct': state.accuracyPct,
       'avg_response_time_ms': state.avgResponseTimeMs,
-      'game_duration_ms': DateTime.now().difference(state.gameStartedAt).inMilliseconds,
+      'game_duration_ms':
+          DateTime.now().difference(state.gameStartedAt).inMilliseconds,
     };
   }
 }

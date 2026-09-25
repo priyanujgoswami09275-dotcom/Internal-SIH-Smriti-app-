@@ -1,13 +1,3 @@
-/// Voice picker languages — mobile mirror of the backend provider dicts.
-///
-/// Canonical names match the backend (`manipuri`, never `meitei`, as the
-/// request key); the display label keeps "Meitei (Manipuri)" for elders.
-/// [hardUnsupported] lists picker entries no backend provider covers (Garo):
-/// they render as "not yet available" unconditionally — even when the
-/// provider set is unknown (offline) — so the UI never offers a language
-/// that fails when selected.
-library;
-
 class VoiceLanguages {
   static const Map<String, String> displayNames = {
     'assamese': 'অসমীয়া',
@@ -35,15 +25,80 @@ class VoiceLanguages {
     'nepali': 'Sandaitha…',
   };
 
-  /// Picker entries with no provider code on any backend (see
-  /// language_service.py: do not add Garo there until a provider covers it).
   static const Set<String> hardUnsupported = {'garo'};
 
-  /// Whether [code] may be selected: never for hard-unsupported entries,
-  /// otherwise gated by the active provider set (null = unknown/offline,
-  /// everything else stays enabled as before).
   static bool available(String code, Set<String>? providerLanguages) {
     if (hardUnsupported.contains(code)) return false;
     return providerLanguages == null || providerLanguages.contains(code);
   }
+
+  static bool availableForOperation(
+    String code,
+    String operation,
+    LanguageCapabilityStatus? capabilities,
+  ) {
+    if (hardUnsupported.contains(code)) return false;
+    return capabilities?.supports(operation, code) ?? false;
+  }
+}
+
+class LanguageCapabilityStatus {
+  LanguageCapabilityStatus({
+    required this.provider,
+    required this.asrLanguages,
+    required this.nmtLanguages,
+    required this.ttsLanguages,
+    required this.capabilitiesKnown,
+    required this.simulated,
+  });
+
+  final String provider;
+  final Set<String> asrLanguages;
+  final Set<String> nmtLanguages;
+  final Set<String> ttsLanguages;
+  final bool capabilitiesKnown;
+  final bool simulated;
+
+  factory LanguageCapabilityStatus.fromJson(Map<String, dynamic> json) {
+    final capabilities = json['capabilities'];
+    final known = capabilities is Map;
+    String providerOf(String operation) {
+      if (!known) return 'unknown';
+      final value = capabilities[operation];
+      return value is Map ? '${value['provider'] ?? 'unknown'}' : 'unknown';
+    }
+
+    Set<String> languagesOf(String operation) {
+      if (!known) return const <String>{};
+      final value = capabilities[operation];
+      if (value is! Map || value['languages'] is! List) return const <String>{};
+      return (value['languages'] as List)
+          .map((item) => item.toString().toLowerCase())
+          .toSet();
+    }
+
+    return LanguageCapabilityStatus(
+      provider: '${json['provider'] ?? 'unknown'}',
+      asrLanguages: languagesOf('asr'),
+      nmtLanguages: languagesOf('nmt'),
+      ttsLanguages: languagesOf('tts'),
+      capabilitiesKnown: known,
+      simulated: known &&
+          ['asr', 'nmt', 'tts']
+              .any((operation) => providerOf(operation) == 'mock'),
+    );
+  }
+
+  bool supports(String operation, String languageCode) {
+    if (!capabilitiesKnown || simulated) return false;
+    final languages = switch (operation) {
+      'asr' => asrLanguages,
+      'nmt' => nmtLanguages,
+      'tts' => ttsLanguages,
+      _ => const <String>{},
+    };
+    return languages.contains(languageCode.toLowerCase());
+  }
+
+  bool get hasMockProvider => provider.toLowerCase() == 'mock' || simulated;
 }

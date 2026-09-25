@@ -11,6 +11,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../games/game_analytics_engine.dart';
+import '../games/game_labels.dart';
 import '../games/level_config.dart';
 import '../games/shadow_model_label.dart';
 import '../models/game_models.dart';
@@ -41,6 +42,10 @@ class _RecallScreenState extends State<RecallScreen> {
   final RecallService _logic = RecallService();
   final GameAnalyticsEngine _engine = GameAnalyticsEngine.instance;
 
+  String get _languageCode =>
+      AuthSession.instance.user?.preferredLanguage ?? 'english';
+  String _label(String key) => GameLabels.of(_languageCode, key);
+
   int _difficulty = 1;
   RecallBoard? _board;
   RecallGameState? _game;
@@ -48,11 +53,13 @@ class _RecallScreenState extends State<RecallScreen> {
   bool _loading = true;
   bool _offline = false;
   bool _ready = true; // ready panel (level picker) before each first run
+  bool _exitConfirmed = false;
   int _memorizeIndex = -1;
   Timer? _memorizeTimer;
 
   /// Buffered actions for this session (drives the offline sync path).
   final List<GameAction> _bufferedActions = [];
+  Future<void> _actionSendTail = Future<void>.value();
 
   @override
   void initState() {
@@ -85,8 +92,12 @@ class _RecallScreenState extends State<RecallScreen> {
       final sessionId = await _api.startGame(
         gameType: 'number_recall',
         difficultyLevel: _difficulty,
+        patientId: widget.patientId,
       );
-      final board = await _api.recallBoard(difficultyLevel: _difficulty);
+      final board = await _api.recallBoard(
+        difficultyLevel: _difficulty,
+        sessionId: sessionId,
+      );
       if (!mounted) return;
       setState(() {
         _sessionId = sessionId;
@@ -132,8 +143,8 @@ class _RecallScreenState extends State<RecallScreen> {
       actionData: {'sequence_length': game.board.sequence.length},
       timestamp: DateTime.now(),
     ));
-    final step = Duration(
-        seconds: game.board.showSecondsPerItem.clamp(1, 10).toInt());
+    final step =
+        Duration(seconds: game.board.showSecondsPerItem.clamp(1, 10).toInt());
     _memorizeTimer?.cancel();
     _memorizeTimer = Timer.periodic(step, (_) {
       if (!mounted) return;
@@ -153,21 +164,50 @@ class _RecallScreenState extends State<RecallScreen> {
   }
 
   void _bufferAndSend(GameAction action) {
+    final actionIndex = _bufferedActions.length;
     _bufferedActions.add(action);
-    if (_offline) return; // stays buffered; flushed via sync queue on complete
-    // Fire-and-forget, mirroring the other games: accept per-tap undercount
-    // on flaky networks; full replay only for queued offline sessions.
-    unawaited(
-      _api
-          .recordGameAction(
-            sessionId: action.sessionId,
-            actionType: action.actionType,
-            actionData: action.actionData,
-            isCorrect: action.isCorrect,
-            responseTimeMs: action.responseTimeMs,
-          )
-          .catchError((_) => false),
+    if (_offline) return;
+    final idempotencyKey = ApiService.actionIdempotencyKey(
+      sessionId: action.sessionId,
+      actionIndex: actionIndex,
+      actionId: action.id,
     );
+    _actionSendTail = _actionSendTail.then((_) async {
+      try {
+        await _api.recordGameAction(
+          sessionId: action.sessionId,
+          actionType: action.actionType,
+          actionData: action.actionData,
+          isCorrect: action.isCorrect,
+          responseTimeMs: action.responseTimeMs,
+          idempotencyKey: idempotencyKey,
+        );
+      } catch (_) {}
+    });
+  }
+
+  List<String> _expectedActionIds() => [
+        for (var index = 0; index < _bufferedActions.length; index++)
+          ApiService.actionIdempotencyKey(
+            sessionId: _bufferedActions[index].sessionId,
+            actionIndex: index,
+            actionId: _bufferedActions[index].id,
+          ),
+      ];
+
+  Future<void> _ensureActionsDurable() async {
+    await _actionSendTail;
+    for (var index = 0; index < _bufferedActions.length; index++) {
+      final action = _bufferedActions[index];
+      await _api.recordGameAction(
+        sessionId: action.sessionId,
+        actionType: action.actionType,
+        actionData: action.actionData,
+        isCorrect: action.isCorrect,
+        responseTimeMs: action.responseTimeMs,
+        idempotencyKey: _expectedActionIds()[index],
+      );
+    }
   }
 
   void _onDigitTap(int digit) {
@@ -186,7 +226,6 @@ class _RecallScreenState extends State<RecallScreen> {
       actionData: {
         'position': position,
         'digit': digit,
-        'expected': game.board.sequence[position],
       },
       isCorrect: correct,
       responseTimeMs: next.responseTimesMs.last,
@@ -202,7 +241,7 @@ class _RecallScreenState extends State<RecallScreen> {
     // ---- Adaptive engine: build the structured performance report ----
     final session = CognitiveGameSession(
       sessionId: sessionId,
-      patientId: AuthSession.instance.user?.id ?? 'demo_patient',
+      patientId: widget.patientId,
       gameType: 'number_recall',
       difficultyLevel: _difficulty,
       timeTakenInSeconds:
@@ -222,7 +261,16 @@ class _RecallScreenState extends State<RecallScreen> {
     GameSessionSummary? summary;
     try {
       if (!_offline) {
-        summary = await _api.completeGame(sessionId);
+        await _ensureActionsDurable();
+        summary = await _api.completeGame(
+          sessionId,
+          idempotencyKey: ApiService.completionIdempotencyKey(sessionId),
+          expectedActionIds: _expectedActionIds(),
+        );
+        _difficulty = GameAnalyticsEngine.authoritativeNextLevel(
+          currentLevel: _difficulty,
+          recommendedLevel: summary.recommendedLevel,
+        );
         _bufferedActions.clear(); // server holds the authoritative record
       } else {
         throw ApiException('offline session');
@@ -230,10 +278,10 @@ class _RecallScreenState extends State<RecallScreen> {
     } on Exception catch (e) {
       debugPrint('Could not complete session online: $e');
       await OfflineSyncService.instance.enqueueGameSession(
-        patientId: AuthSession.instance.user?.id ?? '',
+        patientId: widget.patientId,
         session: GameSessionModel(
           id: sessionId,
-          patientId: AuthSession.instance.user?.id ?? '',
+          patientId: widget.patientId,
           gameType: GameType.numberRecall,
           difficultyLevel: _difficulty,
           attempts: finalState.attempts,
@@ -256,15 +304,15 @@ class _RecallScreenState extends State<RecallScreen> {
         shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(Monad.radiusCard),
             side: const BorderSide(color: Monad.ash)),
-        title: Text('Game completed', style: Monad.subheading),
+        title: Text(_label('game.gameCompleted'), style: Monad.subheading),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            _resultRow('Accuracy',
+            _resultRow(_label('game.accuracy'),
                 '${finalState.accuracyPct.toStringAsFixed(1)}%'),
-            _resultRow('Digits correct',
+            _resultRow(_label('game.digitsCorrect'),
                 '${finalState.correctCount}/${finalState.board.sequence.length}'),
-            _resultRow('Average response',
+            _resultRow(_label('game.averageResponse'),
                 '${finalState.avgResponseTimeMs.toStringAsFixed(0)} ms'),
             if (shadowModelLabel(summary) != null) ...[
               const SizedBox(height: 8),
@@ -277,7 +325,7 @@ class _RecallScreenState extends State<RecallScreen> {
             if (summary == null) ...[
               const SizedBox(height: 12),
               Text(
-                'Offline: result will sync when you reconnect.',
+                _label('game.offlineResult'),
                 style: Monad.monoBodySm.copyWith(color: Monad.crimson),
               ),
             ],
@@ -286,14 +334,14 @@ class _RecallScreenState extends State<RecallScreen> {
         actions: [
           TextButton(
             onPressed: () => Navigator.of(context).pop(),
-            child: const Text('Back'),
+            child: Text(_label('game.back')),
           ),
           ElevatedButton(
             onPressed: () {
               Navigator.of(context).pop();
               _restart();
             },
-            child: const Text('Play Again'),
+            child: Text(_label('game.playAgain')),
           ),
         ],
       ),
@@ -316,53 +364,89 @@ class _RecallScreenState extends State<RecallScreen> {
   void _restart() {
     _memorizeTimer?.cancel();
     _bufferedActions.clear();
+    _actionSendTail = Future<void>.value();
     _prepare(autoStart: true);
+  }
+
+  Future<void> _requestExit(BuildContext context) async {
+    if (_exitConfirmed) {
+      Navigator.of(context).pop();
+      return;
+    }
+    final leave = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(_label('game.leaveTitle')),
+        content: Text(_label('game.leaveBody')),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: Text(_label('game.keepPlaying')),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: Text(_label('game.leaveGame')),
+          ),
+        ],
+      ),
+    );
+    if (leave == true && context.mounted) {
+      setState(() => _exitConfirmed = true);
+      Navigator.of(context).pop();
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Number Recall'),
-        centerTitle: false,
-      ),
-      body: SafeArea(
-        child: _loading
-            ? const Center(child: CircularProgressIndicator())
-            : _ready
-                ? _readyPanel()
-                : _gamePanel(),
+    return PopScope<void>(
+      canPop: _exitConfirmed,
+      onPopInvokedWithResult: (didPop, result) {
+        if (!didPop) _requestExit(context);
+      },
+      child: Scaffold(
+        appBar: AppBar(
+          title: Text(_label('home.recallTitle')),
+          centerTitle: false,
+        ),
+        body: SafeArea(
+          child: _loading
+              ? const Center(child: CircularProgressIndicator())
+              : _ready
+                  ? _readyPanel()
+                  : _gamePanel(),
+        ),
       ),
     );
   }
 
   /// Pre-start panel: what to do + Easy/Medium/Hard picker + Start.
+
   Widget _readyPanel() {
     final length = LevelConfig.current.recallLength(_difficulty);
     return ListView(
       padding: const EdgeInsets.all(20),
       children: [
-        Text('Remember the numbers', style: Monad.subheading),
+        Text(_label('game.rememberNumbers'), style: Monad.subheading),
         const SizedBox(height: 8),
         Text(
-          'Watch $length numbers, then tap them back in the same order.',
+          '${_label('game.watchCarefully')} $length ${_label('game.itemPlural')}, ${_label('game.yourTurn')}',
           style: Monad.patientBody,
         ),
         const SizedBox(height: 20),
         SegmentedButton<int>(
-          segments: const [
+          segments: [
             ButtonSegment(
                 value: 1,
-                label: Text('Easy'),
-                icon: Icon(Icons.sentiment_satisfied)),
+                label: Text(_label('common.easy')),
+                icon: const Icon(Icons.sentiment_satisfied)),
             ButtonSegment(
                 value: 2,
-                label: Text('Medium'),
-                icon: Icon(Icons.sentiment_neutral)),
+                label: Text(_label('common.medium')),
+                icon: const Icon(Icons.sentiment_neutral)),
             ButtonSegment(
                 value: 3,
-                label: Text('Hard'),
-                icon: Icon(Icons.psychology)),
+                label: Text(_label('common.hard')),
+                icon: const Icon(Icons.psychology)),
           ],
           selected: {_difficulty},
           onSelectionChanged: (s) {
@@ -372,7 +456,7 @@ class _RecallScreenState extends State<RecallScreen> {
         ),
         const SizedBox(height: 24),
         MonadPillButton(
-          label: 'Start',
+          label: _label('game.start'),
           variant: MonadPillVariant.primary,
           onPressed: _beginMemorize,
         ),
@@ -388,12 +472,19 @@ class _RecallScreenState extends State<RecallScreen> {
       children: [
         Padding(
           padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          child: Wrap(
+            spacing: 16,
+            runSpacing: 8,
+            crossAxisAlignment: WrapCrossAlignment.center,
             children: [
-              Text(
-                memorizing ? 'Watch carefully…' : 'Your turn — repeat in order',
-                style: Monad.monoBody,
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 260),
+                child: Text(
+                  memorizing
+                      ? _label('game.watchCarefully')
+                      : _label('game.yourTurn'),
+                  style: Monad.monoBody,
+                ),
               ),
               Text(
                 '${game.entered.length}/${game.board.sequence.length}',

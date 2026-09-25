@@ -157,6 +157,17 @@ class LanguageServiceProvider(ABC):
     def supported_languages(self) -> List[str]:
         return list(LANG_CODES.keys())
 
+    def operation_capabilities(self) -> Dict[str, Dict[str, object]]:
+        languages = self.supported_languages()
+        return {
+            operation: {
+                "provider": self.name,
+                "languages": languages,
+                "simulated": self.name == "mock",
+            }
+            for operation in ("asr", "nmt", "tts")
+        }
+
 
 class BhashiniLanguageService(LanguageServiceProvider):
     """Real Government of India Bhashini (ULCA) inference pipeline client."""
@@ -593,6 +604,27 @@ class SarvamLanguageService(LanguageServiceProvider):
         """Languages with Sarvam BCP-47 tags — Khasi/Mizo excluded so the
         frontend can mark them 'not yet available'."""
         return list(SARVAM_LANG_CODES.keys())
+
+    def operation_capabilities(self) -> Dict[str, Dict[str, object]]:
+        languages = self.supported_languages()
+        tts_languages = list(TTS_LANG_CODES.keys())
+        return {
+            "asr": {
+                "provider": self.name,
+                "languages": languages,
+                "simulated": False,
+            },
+            "nmt": {
+                "provider": self.name,
+                "languages": languages,
+                "simulated": False,
+            },
+            "tts": {
+                "provider": self.name,
+                "languages": tts_languages,
+                "simulated": False,
+            },
+        }
 
     async def translate_text(
         self, text: str, source_language: str, target_language: str

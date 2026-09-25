@@ -2,7 +2,7 @@
 
 import uuid
 from typing import Optional, List
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -16,6 +16,7 @@ from app.models.all_models import (
 )
 from app.middleware.auth_middleware import get_current_user, require_role
 from app.services.compliance_service import ComplianceService
+from app.services.datetime_utils import iso_utc
 
 router = APIRouter(prefix="/compliance", tags=["DPDP Act 2023 & Compliance"])
 
@@ -56,8 +57,8 @@ async def grant_consent(
         patient_id=str(record.patient_id),
         consent_type=record.consent_type.value if hasattr(record.consent_type, 'value') else str(record.consent_type),
         scope=record.scope,
-        granted_at=record.granted_at.isoformat(),
-        revoked_at=record.revoked_at.isoformat() if record.revoked_at else None,
+        granted_at=iso_utc(record.granted_at),
+        revoked_at=iso_utc(record.revoked_at),
     )
 
 
@@ -79,8 +80,8 @@ async def list_patient_consents(
             patient_id=str(r.patient_id),
             consent_type=r.consent_type.value if hasattr(r.consent_type, 'value') else str(r.consent_type),
             scope=r.scope,
-            granted_at=r.granted_at.isoformat(),
-            revoked_at=r.revoked_at.isoformat() if r.revoked_at else None,
+            granted_at=iso_utc(r.granted_at),
+            revoked_at=iso_utc(r.revoked_at),
         )
         for r in records
     ]
@@ -88,18 +89,29 @@ async def list_patient_consents(
 
 @router.get("/audit-logs")
 async def list_audit_logs(
+    response: Response,
     resource_type: Optional[str] = None,
     action: Optional[str] = None,
     limit: int = 100,
+    offset: int = 0,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_role("admin")),
 ):
-    """Admin-only view of the immutable compliance audit trail.
+    """Admin-only audit view with explicit application-level integrity scope.
 
-    Filters: optional resource_type / action; newest first. The trail itself
-    is never deleted (see RetentionService).
+    Filters: optional resource_type / action; newest first. The response scope
+    is application-ORM append-only; database enforcement is unverified.
     """
-    stmt = select(AuditLog).order_by(AuditLog.timestamp.desc()).limit(min(max(limit, 1), 500))
+    response.headers["X-Audit-Integrity-Scope"] = "application-orm-append-only"
+    response.headers["X-Audit-Database-Enforcement"] = "unverified"
+    limit = min(max(limit, 1), 500)
+    offset = max(offset, 0)
+    stmt = (
+        select(AuditLog)
+        .order_by(AuditLog.timestamp.desc(), AuditLog.id)
+        .offset(offset)
+        .limit(limit)
+    )
     if resource_type:
         stmt = stmt.where(AuditLog.resource_type == resource_type)
     if action:
@@ -113,7 +125,7 @@ async def list_audit_logs(
             "action": log.action.value if hasattr(log.action, "value") else str(log.action),
             "resource_type": log.resource_type,
             "resource_id": str(log.resource_id),
-            "timestamp": log.timestamp.isoformat() if log.timestamp else None,
+            "timestamp": iso_utc(log.timestamp),
             "ip_address": log.ip_address,
             "details": log.details or {},
         }
@@ -152,5 +164,5 @@ async def revoke_consent(
     record = await ComplianceService.revoke_consent(db, consent_id, actor=current_user)
     return {
         "message": "Consent record revoked.",
-        "revoked_at": record.revoked_at.isoformat() if record and record.revoked_at else None,
+        "revoked_at": iso_utc(record.revoked_at if record else None),
     }

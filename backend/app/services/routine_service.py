@@ -200,6 +200,9 @@ def generate_routine_sequencing_board(
     if include_hints is None:
         include_hints = cfg["hints"]
     sorted_routine = sorted(routine_steps, key=lambda s: s["order"])
+    if not sorted_routine:
+        raise ValueError("Routine must contain at least one playable step")
+    step_count = max(1, min(step_count, len(sorted_routine)))
 
     # Pick a contiguous or well-spaced subset of steps to sequence
     if len(sorted_routine) > step_count:

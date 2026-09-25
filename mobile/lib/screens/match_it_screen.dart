@@ -41,15 +41,19 @@ class _NERPalette {
 }
 
 class MatchItScreen extends StatefulWidget {
+  final String patientId;
   final String packId;
   final String packName;
   final int difficultyLevel;
+  final OfflineSyncService? sync;
 
   const MatchItScreen({
     super.key,
+    required this.patientId,
     required this.packId,
     required this.packName,
     required this.difficultyLevel,
+    this.sync,
   });
 
   @override
@@ -58,15 +62,23 @@ class MatchItScreen extends StatefulWidget {
 
 class _MatchItScreenState extends State<MatchItScreen> {
   final ApiService _api = ApiService.instance;
+  late final OfflineSyncService _sync =
+      widget.sync ?? OfflineSyncService.instance;
   final MatchItService _logic = MatchItService();
   final GameAnalyticsEngine _engine = GameAnalyticsEngine.instance;
 
+  String get _languageCode =>
+      AuthSession.instance.user?.preferredLanguage ?? 'english';
+  String _label(String key) => GameLabels.of(_languageCode, key);
+
+  int _difficulty = 1;
   MatchItGameState? _game;
   String? _sessionId;
   String? _error;
   Timer? _flipReset;
   Timer? _stuckTimer;
   bool _offline = false;
+  bool _exitConfirmed = false;
 
   /// Set while the adaptive engine's subtle hint is showing.
   bool _hinting = false;
@@ -75,10 +87,12 @@ class _MatchItScreenState extends State<MatchItScreen> {
 
   /// Buffered actions for this session (drives the offline sync path).
   final List<GameAction> _bufferedActions = [];
+  Future<void> _actionSendTail = Future<void>.value();
 
   @override
   void initState() {
     super.initState();
+    _difficulty = widget.difficultyLevel.clamp(1, 3);
     _startGame();
   }
 
@@ -101,12 +115,14 @@ class _MatchItScreenState extends State<MatchItScreen> {
     try {
       final sessionId = await _api.startGame(
         gameType: 'match_it',
-        difficultyLevel: widget.difficultyLevel,
+        difficultyLevel: _difficulty,
         contentPackId: widget.packId,
+        patientId: widget.patientId,
       );
       final board = await _api.matchItBoard(
         packId: widget.packId,
-        difficultyLevel: widget.difficultyLevel,
+        difficultyLevel: _difficulty,
+        sessionId: sessionId,
       );
       if (!mounted) return;
       setState(() {
@@ -118,7 +134,7 @@ class _MatchItScreenState extends State<MatchItScreen> {
       // Offline-first: play from the local NER pack and queue the session later.
       final board = LocalContentPacks.board(
         widget.packId,
-        widget.difficultyLevel,
+        _difficulty,
         widget.packName,
         LevelConfig.current,
       );
@@ -138,21 +154,50 @@ class _MatchItScreenState extends State<MatchItScreen> {
   // ------------------------------------------------------------------
 
   void _bufferAndSend(GameAction action) {
+    final actionIndex = _bufferedActions.length;
     _bufferedActions.add(action);
-    if (_offline) return; // stays buffered; flushed via sync queue on complete
-    // ponytail: fire-and-forget, accept per-move undercount on flaky networks;
-    // full replay only when the session itself must be queued offline.
-    unawaited(
-      _api
-          .recordGameAction(
-            sessionId: action.sessionId,
-            actionType: action.actionType,
-            actionData: action.actionData,
-            isCorrect: action.isCorrect,
-            responseTimeMs: action.responseTimeMs,
-          )
-          .catchError((_) => false),
+    if (_offline) return;
+    final idempotencyKey = ApiService.actionIdempotencyKey(
+      sessionId: action.sessionId,
+      actionIndex: actionIndex,
+      actionId: action.id,
     );
+    _actionSendTail = _actionSendTail.then((_) async {
+      try {
+        await _api.recordGameAction(
+          sessionId: action.sessionId,
+          actionType: action.actionType,
+          actionData: action.actionData,
+          isCorrect: action.isCorrect,
+          responseTimeMs: action.responseTimeMs,
+          idempotencyKey: idempotencyKey,
+        );
+      } catch (_) {}
+    });
+  }
+
+  List<String> _expectedActionIds() => [
+        for (var index = 0; index < _bufferedActions.length; index++)
+          ApiService.actionIdempotencyKey(
+            sessionId: _bufferedActions[index].sessionId,
+            actionIndex: index,
+            actionId: _bufferedActions[index].id,
+          ),
+      ];
+
+  Future<void> _ensureActionsDurable() async {
+    await _actionSendTail;
+    for (var index = 0; index < _bufferedActions.length; index++) {
+      final action = _bufferedActions[index];
+      await _api.recordGameAction(
+        sessionId: action.sessionId,
+        actionType: action.actionType,
+        actionData: action.actionData,
+        isCorrect: action.isCorrect,
+        responseTimeMs: action.responseTimeMs,
+        idempotencyKey: _expectedActionIds()[index],
+      );
+    }
   }
 
   void _armStuckTimer() {
@@ -173,7 +218,7 @@ class _MatchItScreenState extends State<MatchItScreen> {
           _engine.shouldHintNow(
             secondsSinceLastCorrect: _secondsSinceCorrect,
             incorrectMoves: current.incorrectMatches,
-            difficultyLevel: widget.difficultyLevel,
+            difficultyLevel: _difficulty,
           )) {
         setState(() => _hinting = true);
         // One stuck telemetry event per idle episode; rearmed on next tap.
@@ -218,8 +263,7 @@ class _MatchItScreenState extends State<MatchItScreen> {
         id: 'act_${DateTime.now().millisecondsSinceEpoch}_${card.id}',
         sessionId: sessionId,
         actionType: 'flip_card',
-        actionData:
-            _logic.getCardFlipActionData(card.id, card, resolved ? isCorrect : null),
+        actionData: _logic.getCardFlipActionData(card.id, card),
         isCorrect: isCorrect,
         responseTimeMs: resolved ? next.responseTimesMs.last : null,
         timestamp: DateTime.now(),
@@ -254,9 +298,9 @@ class _MatchItScreenState extends State<MatchItScreen> {
     // ---- Adaptive engine: build the structured performance report ----
     final session = CognitiveGameSession(
       sessionId: sessionId,
-      patientId: AuthSession.instance.user?.id ?? 'demo_patient',
+      patientId: widget.patientId,
       gameType: 'match_it',
-      difficultyLevel: widget.difficultyLevel,
+      difficultyLevel: _difficulty,
       timeTakenInSeconds:
           DateTime.now().difference(finalState.gameStartedAt).inSeconds,
       totalAttempts: finalState.attempts,
@@ -274,20 +318,29 @@ class _MatchItScreenState extends State<MatchItScreen> {
     GameSessionSummary? summary;
     try {
       if (!_offline) {
-        summary = await _api.completeGame(sessionId);
+        await _ensureActionsDurable();
+        summary = await _api.completeGame(
+          sessionId,
+          idempotencyKey: ApiService.completionIdempotencyKey(sessionId),
+          expectedActionIds: _expectedActionIds(),
+        );
+        _difficulty = GameAnalyticsEngine.authoritativeNextLevel(
+          currentLevel: _difficulty,
+          recommendedLevel: summary.recommendedLevel,
+        );
         _bufferedActions.clear(); // server holds the authoritative record
       } else {
         throw ApiException('offline session');
       }
     } on Exception catch (e) {
       debugPrint('Could not complete session online: $e');
-      await OfflineSyncService.instance.enqueueGameSession(
-        patientId: AuthSession.instance.user?.id ?? '',
+      await _sync.enqueueGameSession(
+        patientId: widget.patientId,
         session: GameSessionModel(
           id: sessionId,
-          patientId: AuthSession.instance.user?.id ?? '',
+          patientId: widget.patientId,
           gameType: GameType.matchIt,
-          difficultyLevel: widget.difficultyLevel,
+          difficultyLevel: _difficulty,
           attempts: finalState.attempts,
           correctCount: finalState.correctMatches,
           incorrectCount: finalState.incorrectMatches,
@@ -296,6 +349,7 @@ class _MatchItScreenState extends State<MatchItScreen> {
           completedAt: DateTime.now(),
         ),
         actions: List<GameAction>.from(_bufferedActions),
+        contentPackId: widget.packId,
       );
     }
 
@@ -305,14 +359,19 @@ class _MatchItScreenState extends State<MatchItScreen> {
       barrierDismissible: false,
       builder: (context) => AlertDialog(
         backgroundColor: Monad.parchment,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(Monad.radiusCard), side: const BorderSide(color: Monad.ash)),
-        title: Text('Game completed', style: Monad.subheading),
+        shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(Monad.radiusCard),
+            side: const BorderSide(color: Monad.ash)),
+        title: Text(_label('game.gameCompleted'), style: Monad.subheading),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            _resultRow('Accuracy', '${finalState.accuracyPct.toStringAsFixed(1)}%'),
-            _resultRow('Pairs matched', '${finalState.matchedPairs}/${finalState.totalPairs}'),
-            _resultRow('Average response', '${finalState.avgResponseTimeMs.toStringAsFixed(0)} ms'),
+            _resultRow(_label('game.accuracy'),
+                '${finalState.accuracyPct.toStringAsFixed(1)}%'),
+            _resultRow(_label('game.pairsMatched'),
+                '${finalState.matchedPairs}/${finalState.totalPairs}'),
+            _resultRow(_label('game.averageResponse'),
+                '${finalState.avgResponseTimeMs.toStringAsFixed(0)} ms'),
             if (shadowModelLabel(summary) != null) ...[
               const SizedBox(height: 8),
               Text(
@@ -324,7 +383,7 @@ class _MatchItScreenState extends State<MatchItScreen> {
             if (summary == null) ...[
               const SizedBox(height: 12),
               Text(
-                'Offline: result will sync when you reconnect.',
+                _label('game.offlineResult'),
                 style: Monad.monoBodySm.copyWith(color: Monad.crimson),
               ),
             ],
@@ -333,14 +392,14 @@ class _MatchItScreenState extends State<MatchItScreen> {
         actions: [
           TextButton(
             onPressed: () => Navigator.of(context).pop(),
-            child: const Text('Back'),
+            child: Text(_label('game.back')),
           ),
           ElevatedButton(
             onPressed: () {
               Navigator.of(context).pop();
               _restart();
             },
-            child: const Text('Play Again'),
+            child: Text(_label('game.playAgain')),
           ),
         ],
       ),
@@ -364,6 +423,7 @@ class _MatchItScreenState extends State<MatchItScreen> {
     _flipReset?.cancel();
     _stuckTimer?.cancel();
     _bufferedActions.clear();
+    _actionSendTail = Future<void>.value();
     setState(() {
       _game = null;
       _sessionId = null;
@@ -371,97 +431,131 @@ class _MatchItScreenState extends State<MatchItScreen> {
     _startGame();
   }
 
+  Future<void> _requestExit(BuildContext context) async {
+    if (_exitConfirmed) {
+      Navigator.of(context).pop();
+      return;
+    }
+    final leave = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(_label('game.leaveTitle')),
+        content: Text(_label('game.leaveBody')),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: Text(_label('game.keepPlaying')),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: Text(_label('game.leaveGame')),
+          ),
+        ],
+      ),
+    );
+    if (leave == true && context.mounted) {
+      setState(() => _exitConfirmed = true);
+      Navigator.of(context).pop();
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final game = _game;
-    return Scaffold(
-      appBar: AppBar(
-        title: Text('Match It: ${widget.packName}'),
-        centerTitle: false,
-        actions: [
-          if (game != null)
-            Padding(
-              padding: const EdgeInsets.only(right: 16),
-              child: Center(
-                child: Text(
-                  '${game.matchedPairs}/${game.totalPairs}',
-                  style: Monad.monoLabel,
+    return PopScope<void>(
+      canPop: _exitConfirmed,
+      onPopInvokedWithResult: (didPop, result) {
+        if (!didPop) _requestExit(context);
+      },
+      child: Scaffold(
+        appBar: AppBar(
+          title: Text('${_label('home.matchTitle')}: ${widget.packName}'),
+          centerTitle: false,
+          actions: [
+            if (game != null)
+              Padding(
+                padding: const EdgeInsets.only(right: 16),
+                child: Center(
+                  child: Text(
+                    '${game.matchedPairs}/${game.totalPairs}',
+                    style: Monad.monoLabel,
+                  ),
                 ),
               ),
-            ),
-        ],
-      ),
-      body: _error != null
-          ? Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  const Icon(Icons.cloud_off, size: 64, color: Monad.smoke),
-                  const SizedBox(height: 12),
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 32),
-                    child: Text(
-                      _error!,
-                      textAlign: TextAlign.center,
-                      style: Monad.monoBodyLg,
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                  ElevatedButton(
-                    onPressed: _startGame,
-                    child: const Text('Try Again'),
-                  ),
-                ],
-              ),
-            )
-          : game == null
-              ? Center(
-                  child: Text(
-                    GameLabels.of('en', 'common.loading'),
-                    style: Monad.monoBodyLg,
-                  ),
-                )
-              : Column(
+          ],
+        ),
+        body: _error != null
+            ? Center(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
                   children: [
-                    // Persistent, unmissable home control on every screen.
-                    SafeArea(
-                      child: Padding(
-                        padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
-                        child: Row(
-                          children: [
-                            OutlinedButton.icon(
-                              onPressed: () => Navigator.of(context).maybePop(),
-                              icon: const Icon(Icons.home, size: 22),
-                              label: Text(GameLabels.of('en', 'common.home')),
-                              style: Monad.ghostPill(),
-                            ),
-                          ],
-                        ),
+                    const Icon(Icons.cloud_off, size: 64, color: Monad.smoke),
+                    const SizedBox(height: 12),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 32),
+                      child: Text(
+                        _error!,
+                        textAlign: TextAlign.center,
+                        style: Monad.monoBodyLg,
                       ),
                     ),
-                    Expanded(
-                      child: GridView.builder(
-                        padding: const EdgeInsets.all(16),
-                        // Columns per spec grids: L1 2x2, L2 4x2, L3 4x3.
-                        // 2 columns keeps L1 touch targets huge (>=120dp).
-                        gridDelegate:
-                            SliverGridDelegateWithFixedCrossAxisCount(
-                          crossAxisCount: game.totalPairs <= 2 ? 2 : 4,
-                          crossAxisSpacing: 12,
-                          mainAxisSpacing: 12,
-                          childAspectRatio: 0.85,
-                        ),
-                        itemCount: game.cards.length,
-                        itemBuilder: (context, index) => _CardView(
-                          card: game.cards[index],
-                          hinting: _hinting &&
-                              _isHintCard(game, game.cards[index]),
-                          onTap: () => _onCardTap(game.cards[index]),
-                        ),
-                      ),
+                    const SizedBox(height: 16),
+                    ElevatedButton(
+                      onPressed: _startGame,
+                      child: Text(_label('common.retry')),
                     ),
                   ],
                 ),
+              )
+            : game == null
+                ? Center(
+                    child: Text(
+                      _label('common.loading'),
+                      style: Monad.monoBodyLg,
+                    ),
+                  )
+                : Column(
+                    children: [
+                      // Persistent, unmissable home control on every screen.
+                      SafeArea(
+                        child: Padding(
+                          padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+                          child: Row(
+                            children: [
+                              OutlinedButton.icon(
+                                onPressed: () => _requestExit(context),
+                                icon: const Icon(Icons.home, size: 22),
+                                label: Text(_label('common.home')),
+                                style: Monad.ghostPill(),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                      Expanded(
+                        child: GridView.builder(
+                          padding: const EdgeInsets.all(16),
+                          // Columns per spec grids: L1 2x2, L2 4x2, L3 4x3.
+                          // 2 columns keeps L1 touch targets huge (>=120dp).
+                          gridDelegate:
+                              SliverGridDelegateWithFixedCrossAxisCount(
+                            crossAxisCount: game.totalPairs <= 2 ? 2 : 4,
+                            crossAxisSpacing: 12,
+                            mainAxisSpacing: 12,
+                            childAspectRatio: 0.85,
+                          ),
+                          itemCount: game.cards.length,
+                          itemBuilder: (context, index) => _CardView(
+                            card: game.cards[index],
+                            hinting: _hinting &&
+                                _isHintCard(game, game.cards[index]),
+                            onTap: () => _onCardTap(game.cards[index]),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+      ),
     );
   }
 
@@ -496,13 +590,10 @@ class _CardView extends StatelessWidget {
     final revealed = card.isFlipped || card.isMatched;
     // Stable per-pair tint so matching pairs share a hue family; state is
     // still conveyed by border + art + label, never color alone.
-    final tint =
-        Monad.faceTints[card.pairId.hashCode % Monad.faceTints.length];
+    final tint = Monad.faceTints[card.pairId.hashCode % Monad.faceTints.length];
     return Semantics(
       button: true,
-      label: revealed
-          ? card.labelEn
-          : 'Card ${card.id}',
+      label: revealed ? card.labelEn : 'Card ${card.id}',
       child: GestureDetector(
         onTap: card.isMatched ? null : onTap,
         child: AnimatedContainer(

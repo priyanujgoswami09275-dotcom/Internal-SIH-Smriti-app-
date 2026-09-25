@@ -4,25 +4,92 @@
 /// an offline "I Did This" is never lost.
 library;
 
+import 'package:drift/drift.dart';
 import 'package:flutter/foundation.dart';
 
+import '../database/app_database.dart';
 import '../models/shared_models.dart';
 import 'api_service.dart';
 import 'offline_sync_service.dart';
+import 'reminder_scheduler.dart';
+
+enum ReminderAcknowledgmentOutcome {
+  sentToServer,
+  queuedOffline,
+  failedToRecord,
+}
+
+class ReminderAcknowledgmentResult {
+  const ReminderAcknowledgmentResult({
+    required this.outcome,
+    required this.acknowledgedAt,
+  });
+
+  final ReminderAcknowledgmentOutcome outcome;
+  final DateTime? acknowledgedAt;
+}
 
 class MobileReminderService {
   final ApiService apiService;
   final OfflineSyncService sync;
+  final AppDatabase database;
+  final ReminderScheduler scheduler;
+  int _startupGeneration = 0;
 
-  MobileReminderService({ApiService? apiService, OfflineSyncService? sync})
-      : apiService = apiService ?? ApiService.instance,
-        sync = sync ?? OfflineSyncService.instance;
+  ReminderReconciliationResult? lastScheduleReconciliation;
+
+  MobileReminderService({
+    ApiService? apiService,
+    OfflineSyncService? sync,
+    AppDatabase? database,
+    ReminderScheduler? scheduler,
+  })  : apiService = apiService ?? ApiService.instance,
+        sync = sync ?? OfflineSyncService.instance,
+        database = database ?? (sync ?? OfflineSyncService.instance).db,
+        scheduler = scheduler ?? ReminderScheduler.instance;
 
   Future<List<ReminderScheduleModel>> getSchedules(String patientId) async {
+    final schedules = await _fetchSchedules(patientId);
+    try {
+      lastScheduleReconciliation = await scheduler.reconcile(schedules);
+    } on Object catch (error) {
+      debugPrint('Reminder schedule reconciliation unavailable: $error');
+      lastScheduleReconciliation = _unavailableReconciliation();
+    }
+    return schedules;
+  }
+
+  Future<void> reconcileOnStartup(String patientId) async {
+    final generation = ++_startupGeneration;
+    try {
+      final schedules = await _fetchSchedules(patientId);
+      if (generation != _startupGeneration) return;
+      lastScheduleReconciliation = await scheduler.reconcile(schedules);
+    } on Object catch (error) {
+      debugPrint('Reminder startup reconciliation failed: $error');
+      lastScheduleReconciliation = _unavailableReconciliation();
+    }
+  }
+
+  ReminderReconciliationResult _unavailableReconciliation() =>
+      const ReminderReconciliationResult(
+        permissionStatus: ReminderPermissionStatus.unavailable,
+        scheduledCount: 0,
+        canceledCount: 0,
+        unchangedCount: 0,
+      );
+
+  Future<void> stop() async {
+    _startupGeneration++;
+    lastScheduleReconciliation = null;
+    await scheduler.cancelAll();
+  }
+
+  Future<List<ReminderScheduleModel>> _fetchSchedules(String patientId) async {
     try {
       return await apiService.reminderSchedules(patientId);
-    } catch (e) {
-      debugPrint('Reminder fetch failed (offline?): $e');
+    } catch (error) {
+      debugPrint('Reminder fetch failed (offline?): $error');
       rethrow;
     }
   }
@@ -32,35 +99,164 @@ class MobileReminderService {
   Future<List<ReminderEventModel>> getTodaysEvents(String patientId) async {
     try {
       return await apiService.reminderEvents(patientId);
-    } catch (e) {
-      debugPrint('Reminder events fetch failed (offline?): $e');
+    } on Exception catch (error) {
+      debugPrint('Reminder events fetch failed (offline?): $error');
       return const [];
     }
   }
 
-  /// Acknowledge a reminder event by its real id. Returns true when the server
-  /// confirmed; false when offline — in which case the ack is queued for replay
-  /// (never dropped).
-  Future<bool> acknowledgeReminder({
+  Future<Set<String>> getLocalAcknowledgedScheduleIds(
+    String patientId, {
+    DateTime? now,
+  }) async {
+    final rows = await (database.select(database.reminderEvents)
+          ..where((table) =>
+              table.patientId.equals(patientId) &
+              table.acknowledgedAt.isNotNull()))
+        .get();
+    final localNow = (now ?? DateTime.now()).toLocal();
+    final today = DateTime(localNow.year, localNow.month, localNow.day);
+    return rows
+        .where((row) {
+          final scheduled = row.scheduledAt.toLocal();
+          return DateTime(scheduled.year, scheduled.month, scheduled.day) ==
+              today;
+        })
+        .map((row) => row.scheduleId)
+        .toSet();
+  }
+
+  Future<ReminderAcknowledgmentResult> acknowledgeReminder({
     required String patientId,
     required String eventId,
     required String method,
+    String? scheduleId,
+    DateTime? scheduledAt,
+    DateTime? deliveredAt,
   }) async {
+    ReminderEventModel? event;
     try {
-      await apiService.acknowledgeReminder(eventId, method: method);
-      return true;
-    } catch (e) {
-      debugPrint('Ack could not reach server (offline?), queueing for sync: $e');
+      event = await _localEvent(
+        eventId,
+        patientId: patientId,
+        scheduleId: scheduleId,
+        scheduledAt: scheduledAt,
+        deliveredAt: deliveredAt,
+      );
+    } on Object catch (error) {
+      debugPrint('Reminder acknowledgment could not be read locally: $error');
+      return const ReminderAcknowledgmentResult(
+        outcome: ReminderAcknowledgmentOutcome.failedToRecord,
+        acknowledgedAt: null,
+      );
+    }
+    if (event == null) {
+      return const ReminderAcknowledgmentResult(
+        outcome: ReminderAcknowledgmentOutcome.failedToRecord,
+        acknowledgedAt: null,
+      );
+    }
+    final acknowledgedAt = DateTime.now().toUtc();
+    try {
+      await database.upsertReminderEvent(ReminderEventModel(
+        id: event.id,
+        scheduleId: event.scheduleId,
+        patientId: event.patientId,
+        scheduledAt: event.scheduledAt,
+        deliveredAt: event.deliveredAt,
+        acknowledgedAt: acknowledgedAt,
+        acknowledgmentMethod: method,
+        status: ReminderStatus.acknowledged,
+      ));
+      final stored = await _localEvent(
+        eventId,
+        patientId: patientId,
+        scheduleId: scheduleId,
+        scheduledAt: scheduledAt,
+        deliveredAt: deliveredAt,
+      );
+      if (stored?.acknowledgedAt == null) {
+        throw StateError('Reminder acknowledgment was not stored durably');
+      }
+    } on Object catch (error) {
+      debugPrint('Reminder acknowledgment could not be stored locally: $error');
+      return const ReminderAcknowledgmentResult(
+        outcome: ReminderAcknowledgmentOutcome.failedToRecord,
+        acknowledgedAt: null,
+      );
+    }
+
+    try {
+      final confirmed = await apiService.acknowledgeReminder(
+        eventId,
+        method: method,
+      );
+      if (!confirmed) {
+        throw ApiException('Server did not record reminder acknowledgment');
+      }
+      try {
+        await database.markReminderSynced(eventId);
+      } on Exception catch (error) {
+        debugPrint('Reminder sync marker could not be updated: $error');
+      }
+      return ReminderAcknowledgmentResult(
+        outcome: ReminderAcknowledgmentOutcome.sentToServer,
+        acknowledgedAt: acknowledgedAt,
+      );
+    } on Exception catch (error) {
+      debugPrint(
+          'Ack could not reach server (offline?), queueing for sync: $error');
       try {
         await sync.enqueueReminderAck(
           patientId: patientId,
           eventId: eventId,
           method: method,
         );
-      } catch (qe) {
-        debugPrint('Failed to enqueue offline ack: $qe');
+      } on Object catch (queueError) {
+        debugPrint('Failed to enqueue offline ack: $queueError');
+        return ReminderAcknowledgmentResult(
+          outcome: ReminderAcknowledgmentOutcome.failedToRecord,
+          acknowledgedAt: acknowledgedAt,
+        );
       }
-      return false;
+      return ReminderAcknowledgmentResult(
+        outcome: ReminderAcknowledgmentOutcome.queuedOffline,
+        acknowledgedAt: acknowledgedAt,
+      );
     }
+  }
+
+  Future<ReminderEventModel?> _localEvent(
+    String eventId, {
+    required String patientId,
+    String? scheduleId,
+    DateTime? scheduledAt,
+    DateTime? deliveredAt,
+  }) async {
+    final row = await (database.select(database.reminderEvents)
+          ..where((table) => table.id.equals(eventId)))
+        .getSingleOrNull();
+    if (row == null) {
+      if (scheduleId == null || scheduleId.isEmpty || scheduledAt == null) {
+        return null;
+      }
+      return ReminderEventModel(
+        id: eventId,
+        scheduleId: scheduleId,
+        patientId: patientId,
+        scheduledAt: scheduledAt,
+        deliveredAt: deliveredAt,
+        status: ReminderStatus.pending,
+      );
+    }
+    return ReminderEventModel(
+      id: row.id,
+      scheduleId: row.scheduleId,
+      patientId: row.patientId,
+      scheduledAt: row.scheduledAt,
+      deliveredAt: row.deliveredAt,
+      acknowledgedAt: row.acknowledgedAt,
+      status: reminderStatusFromApi(row.status),
+    );
   }
 }

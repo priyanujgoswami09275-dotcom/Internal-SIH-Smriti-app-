@@ -31,11 +31,11 @@ class Monad {
   static const Color mint = Color(0xFFA7FCCD);
   static const Color coral = Color(0xFFFF9473);
   static const Color gold = Color(0xFFECDA98);
-  static const Color crimson = Color(0xFFF37A0A);
+  static const Color crimson = Color(0xFFA23B00);
   static const Color offBlack = Color(0xFF242424);
   static const Color ink = Color(0xFF000000);
   static const Color graphite = Color(0xFF4E4D4D);
-  static const Color smoke = Color(0xFF797776);
+  static const Color smoke = Color(0xFF5C5A59);
   static const Color ash = Color(0xFFCECAC8);
   static const Color white = Color(0xFFFFFFFF);
 
@@ -47,7 +47,8 @@ class Monad {
 
   // ===== Font families (bundled TTF, see header note) =====
   static const String serifFamily = 'Newsreader'; // Untitled Serif substitute
-  static const String monoFamily = 'JetBrainsMono'; // ABC Diatype Mono substitute
+  static const String monoFamily =
+      'JetBrainsMono'; // ABC Diatype Mono substitute
 
   // ===== Spacing (8px base unit, named constants) =====
   static const double spacing8 = 8;
@@ -201,9 +202,7 @@ class Monad {
           EdgeInsets.symmetric(horizontal: 32, vertical: 16)),
       shape: WidgetStatePropertyAll(RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(radiusButton),
-          side: border != null
-              ? BorderSide(color: border)
-              : BorderSide.none)),
+          side: border != null ? BorderSide(color: border) : BorderSide.none)),
       textStyle: const WidgetStatePropertyAll(monoButtonLabel),
     );
   }
@@ -221,14 +220,10 @@ class Monad {
   // Pastel face tints at ≤25% opacity over parchment — illustration surfaces
   // only, always paired with distinct art + text label (never color-alone).
   static const double _faceTintOpacity = 0.22;
-  static Color get tintCoral =>
-      Color.lerp(parchment, coral, _faceTintOpacity)!;
-  static Color get tintSky =>
-      Color.lerp(parchment, skyBlue, _faceTintOpacity)!;
-  static Color get tintMint =>
-      Color.lerp(parchment, mint, _faceTintOpacity)!;
-  static Color get tintGold =>
-      Color.lerp(parchment, gold, _faceTintOpacity)!;
+  static Color get tintCoral => Color.lerp(parchment, coral, _faceTintOpacity)!;
+  static Color get tintSky => Color.lerp(parchment, skyBlue, _faceTintOpacity)!;
+  static Color get tintMint => Color.lerp(parchment, mint, _faceTintOpacity)!;
+  static Color get tintGold => Color.lerp(parchment, gold, _faceTintOpacity)!;
 
   // Stable order for cycling tints across cards.
   static List<Color> get faceTints => [tintMint, tintSky, tintCoral, tintGold];
@@ -342,12 +337,11 @@ class Monad {
       textButtonTheme: TextButtonThemeData(
         style: ButtonStyle(
           foregroundColor: const WidgetStatePropertyAll(offBlack),
-          textStyle: const WidgetStatePropertyAll(
-              TextStyle(
-                  fontFamily: monoFamily,
-                  fontSize: 14,
-                  fontWeight: FontWeight.w400,
-                  letterSpacing: -0.28)),
+          textStyle: const WidgetStatePropertyAll(TextStyle(
+              fontFamily: monoFamily,
+              fontSize: 14,
+              fontWeight: FontWeight.w400,
+              letterSpacing: -0.28)),
         ),
       ),
       dropdownMenuTheme: DropdownMenuThemeData(
@@ -367,8 +361,7 @@ class Monad {
         shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(radiusMin)),
       ),
-      progressIndicatorTheme:
-          const ProgressIndicatorThemeData(color: lakeBlue),
+      progressIndicatorTheme: const ProgressIndicatorThemeData(color: lakeBlue),
     );
   }
 }

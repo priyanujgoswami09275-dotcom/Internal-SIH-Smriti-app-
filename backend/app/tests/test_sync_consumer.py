@@ -121,14 +121,20 @@ async def test_consumer_records_error_for_invalid_payload(db_session):
 
 
 @pytest.mark.asyncio
-async def test_consumer_acks_other_resource_types(db_session):
+async def test_consumer_never_acks_unmaterialized_resource_types(db_session):
     patient, _ = await _patient_and_entered_by(db_session)
     pid = patient.id  # snapshot before commits
-    # A game_session outbox row is acknowledged (replayed via live endpoints).
     item = {
         "resource_type": "game_session", "operation": "create",
         "resource_id": str(uuid.uuid4()), "payload": {"score": 10},
     }
     await process_sync_batch(db_session, pid, [item])
     counts = await consume_sync_queue(db_session, patient_id=pid)
-    assert counts == {"materialized": 0, "acked": 1, "errors": 0}
+    assert counts == {"materialized": 0, "acked": 0, "errors": 1}
+    row = (
+        await db_session.execute(
+            select(SyncQueue).where(SyncQueue.patient_id == pid)
+        )
+    ).scalar_one()
+    assert row.synced_at is None
+    assert "Unsupported sync resource_type/operation" in (row.last_error or "")

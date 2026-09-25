@@ -59,7 +59,8 @@ def test_cosine_similarity_is_true_cosine():
     # Degenerate inputs stay 0.0.
     assert RAGService.cosine_similarity([], [1.0]) == 0.0
     assert RAGService.cosine_similarity([0.0, 0.0], [1.0, 0.0]) == 0.0
-    assert RAGService.cosine_similarity([1.0, 2.0], [1.0]) == 0.0
+    with pytest.raises(ValueError, match="dimension mismatch"):
+        RAGService.cosine_similarity([1.0, 2.0], [1.0])
 
 
 def test_sarvam_tts_gated_bulbul_subset():

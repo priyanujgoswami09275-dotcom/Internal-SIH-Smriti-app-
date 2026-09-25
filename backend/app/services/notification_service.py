@@ -29,6 +29,18 @@ from app.models.all_models import AlertFlag, CaregiverPatientLink, UserDeviceTok
 from app.models.user import RoleEnum, User
 
 logger = logging.getLogger(__name__)
+NOT_CONFIGURED_MESSAGE = (
+    "Notification transport is not configured; notification logged only; "
+    "no recipient delivery was confirmed."
+)
+
+
+def _not_configured_result() -> Dict[str, Any]:
+    return {
+        "delivery_state": "not_configured",
+        "delivery_message": NOT_CONFIGURED_MESSAGE,
+        "confirmed_deliveries": 0,
+    }
 
 
 class NotificationError(RuntimeError):
@@ -48,7 +60,7 @@ class NotificationProvider(ABC):
         trigger: str,
         summary: str,
         recipients: List[Dict[str, Any]],
-    ) -> None:
+    ) -> Dict[str, Any]:
         """Notify family/ASHA that a clinical AlertFlag was raised."""
 
     @abstractmethod
@@ -58,7 +70,7 @@ class NotificationProvider(ABC):
         patient_id: UUID,
         event_id: UUID,
         reminder_type: str,
-    ) -> None:
+    ) -> Dict[str, Any]:
         """Secondary notification for an unacknowledged reminder (10-min rule)."""
 
 
@@ -74,17 +86,19 @@ class ConsoleNotificationProvider(NotificationProvider):
     def __init__(self) -> None:
         self.deliveries: List[Dict[str, Any]] = []
 
-    async def send_alert(self, **kwargs) -> None:
+    async def send_alert(self, **kwargs) -> Dict[str, Any]:
         record = {"kind": "alert", **kwargs, "recipients": [r.get("role") for r in kwargs["recipients"]]}
         self.deliveries.append(record)
         logger.info("[notification:console] alert %s -> %s: %s", kwargs["alert_id"],
                     record["recipients"], kwargs["summary"])
+        return _not_configured_result()
 
-    async def send_reminder_reprompt(self, **kwargs) -> None:
+    async def send_reminder_reprompt(self, **kwargs) -> Dict[str, Any]:
         record = {"kind": "reprompt", **kwargs}
         self.deliveries.append(record)
         logger.info("[notification:console] reprompt for event %s (%s)",
                     kwargs["event_id"], kwargs["reminder_type"])
+        return _not_configured_result()
 
 
 class FCMNotificationProvider(NotificationProvider):
@@ -119,11 +133,6 @@ class FCMNotificationProvider(NotificationProvider):
             return None
 
     async def _audit(self, provider: str, kind, event_id, recipient, address, status) -> None:
-        # Minimal audit: write to NotificationDelivery. No receipt confirmation
-        # (P2) — just record that the attempt happened. recipient arrives as a
-        # string (notify_escalation_results serializes user.id); the UUID column
-        # needs a real UUID object, so coerce — otherwise the INSERT raises
-        # StatementError and the swallowed except leaves NO audit row at all.
         from sqlalchemy import insert
         from uuid import UUID as _UUID
         if self.db is not None:
@@ -139,48 +148,66 @@ class FCMNotificationProvider(NotificationProvider):
                         "status": status.value if hasattr(status, "value") else str(status),
                     },
                 )
+                await self.db.commit()
             except Exception:
-                # Delivery must not break on an audit failure, but the failure
-                # is a real compliance gap — record it at error level (with
-                # traceback) instead of dropping it silently.
+                rollback = getattr(self.db, "rollback", None)
+                if rollback is not None:
+                    await rollback()
                 logger.exception(
                     "Notification-delivery audit failed (provider=%s kind=%s recipient=%s status=%s)",
                     provider, kind, recipient, status,
                 )
 
-    async def send_alert(self, *, patient_id: UUID, alert_id: UUID, severity: str, trigger: str, summary: str, recipients: List[Dict[str, Any]]) -> None:
+    async def send_alert(self, *, patient_id: UUID, alert_id: UUID, severity: str, trigger: str, summary: str, recipients: List[Dict[str, Any]]) -> Dict[str, Any]:
         token = await self._resolve_token(patient_id)
-        if token:
-            # Real FCM call: POST to FCM v1 endpoint with server key / service account.
-            # Not implemented here (needs FCM_SERVICE_ACCOUNT_JSON / FCM_SERVER_KEY).
-            # Degrades gracefully to logging. The audit records FAILED — nothing
-            # was actually delivered, and the trail must never claim SENT.
-            logger.info("[notification:fcm] alert %s for %s (token %s...): %s", alert_id, patient_id, token[:10], summary)
-            await self._audit("fcm", NotificationKindEnum.ALERT, alert_id, recipients[0].get("user_id") if recipients else None, token[:200], NotificationDeliveryStatusEnum.FAILED)
-        else:
-            logger.info("[notification:fcm] alert %s for %s — no device token; console fallback.", alert_id, patient_id)
-            await self._audit("fcm", NotificationKindEnum.ALERT, alert_id, recipients[0].get("user_id") if recipients else None, None, NotificationDeliveryStatusEnum.FAILED)
+        address = token[:200] if token else None
+        for recipient in recipients:
+            await self._audit(
+                "fcm",
+                NotificationKindEnum.ALERT,
+                alert_id,
+                recipient.get("user_id"),
+                address,
+                NotificationDeliveryStatusEnum.FAILED,
+            )
+        logger.info(
+            "[notification:fcm] alert %s for %s logged only: %s",
+            alert_id,
+            patient_id,
+            summary,
+        )
+        return _not_configured_result()
 
-    async def send_reminder_reprompt(self, *, patient_id: UUID, event_id: UUID, reminder_type: str) -> None:
+    async def send_reminder_reprompt(self, *, patient_id: UUID, event_id: UUID, reminder_type: str) -> Dict[str, Any]:
         token = await self._resolve_token(patient_id)
-        if token:
-            # No real FCM send is implemented — audit FAILED, never SENT.
-            logger.info("[notification:fcm] reprompt event %s (%s) for %s (token %s...)", event_id, reminder_type, patient_id, token[:10])
-            await self._audit("fcm", NotificationKindEnum.REPROMPT, event_id, None, token[:200], NotificationDeliveryStatusEnum.FAILED)
-        else:
-            logger.info("[notification:fcm] reprompt event %s — no device token; console fallback.", event_id)
-            await self._audit("fcm", NotificationKindEnum.REPROMPT, event_id, None, None, NotificationDeliveryStatusEnum.FAILED)
+        await self._audit(
+            "fcm",
+            NotificationKindEnum.REPROMPT,
+            event_id,
+            None,
+            token[:200] if token else None,
+            NotificationDeliveryStatusEnum.FAILED,
+        )
+        logger.info(
+            "[notification:fcm] reprompt event %s (%s) for %s logged only",
+            event_id,
+            reminder_type,
+            patient_id,
+        )
+        return _not_configured_result()
 
 
 class LogOnlyFallbackProvider(ConsoleNotificationProvider):
     """Alias used when a configured channel is unavailable — never raises."""
 
 
-def _build_provider(name: str) -> NotificationProvider:
+def _build_provider(
+    name: str, db: Optional[AsyncSession] = None
+) -> NotificationProvider:
     if name in ("console", "log", "logonly"):
         return ConsoleNotificationProvider()
     if name == "fcm":
-        return FCMNotificationProvider()
+        return FCMNotificationProvider(db=db)
     raise NotificationError(f"Unknown NOTIFICATION_PROVIDER: {name!r} (implement the ABC and register it)")
 
 
@@ -188,13 +215,24 @@ def get_notification_provider(name: Optional[str] = None, db: Optional[AsyncSess
     """Return the configured provider, falling back to console if unavailable."""
     name = (name or settings.NOTIFICATION_PROVIDER or "console").lower()
     try:
-        provider = _build_provider(name)
-        if isinstance(provider, FCMNotificationProvider):
-            provider.db = db
-        return provider
+        return _build_provider(name, db=db)
     except NotificationError as exc:
         logger.warning("Notification provider %r unavailable (%s) — using console.", name, exc)
         return ConsoleNotificationProvider()
+
+
+def _provider_outcome(value: Any) -> Dict[str, Any]:
+    if not isinstance(value, dict):
+        return {
+            "delivery_state": "unconfirmed",
+            "delivery_message": "Provider returned no delivery confirmation.",
+            "confirmed_deliveries": 0,
+        }
+    return {
+        "delivery_state": str(value.get("delivery_state") or "unconfirmed"),
+        "delivery_message": str(value.get("delivery_message") or ""),
+        "confirmed_deliveries": int(value.get("confirmed_deliveries") or 0),
+    }
 
 
 async def notify_escalation_results(
@@ -202,18 +240,17 @@ async def notify_escalation_results(
     patient_id: UUID,
     result: Dict[str, Any],
     provider: Optional[NotificationProvider] = None,
-) -> int:
-    """Fan out newly raised AlertFlags to the patient's family + ASHA links.
-
-    ``result`` is the return value of ReminderService.evaluate_escalations.
-    Returns the number of providers reached (alert recipients resolved). Never
-    raises — notification failures must not fail the escalation evaluation.
-    """
+) -> Dict[str, Any]:
+    """Resolve caregiver/ASHA recipients and report confirmed deliveries only."""
     alerts: List[AlertFlag] = result.get("alerts") or []
     if not alerts:
-        return 0
+        return {
+            "delivery_state": "not_applicable",
+            "delivery_message": "No alert notification was attempted.",
+            "recipients_resolved": 0,
+            "confirmed_deliveries": 0,
+        }
 
-    # Active links for this patient, restricted to family + ASHA roles.
     stmt = (
         select(User, CaregiverPatientLink.relationship_type)
         .join(CaregiverPatientLink, CaregiverPatientLink.caregiver_id == User.id)
@@ -236,50 +273,98 @@ async def notify_escalation_results(
     ]
     if not recipients:
         logger.warning("Alert raised for patient %s but no family/ASHA link to notify.", patient_id)
-        return 0
+        return {
+            "delivery_state": "no_recipients",
+            "delivery_message": "No active family or ASHA recipient was linked.",
+            "recipients_resolved": 0,
+            "confirmed_deliveries": 0,
+        }
 
-    provider = provider or get_notification_provider()
+    provider = provider or get_notification_provider(db=db)
+    outcomes: List[Dict[str, Any]] = []
     for alert in alerts:
         trigger = alert.trigger_type.value if hasattr(alert.trigger_type, "value") else str(alert.trigger_type)
         severity = alert.severity.value if hasattr(alert.severity, "value") else str(alert.severity)
         try:
-            await provider.send_alert(
-                patient_id=patient_id,
-                alert_id=alert.id,
-                severity=severity,
-                trigger=trigger,
-                summary=alert.alert_summary or trigger,
-                recipients=recipients,
+            outcomes.append(
+                _provider_outcome(
+                    await provider.send_alert(
+                        patient_id=patient_id,
+                        alert_id=alert.id,
+                        severity=severity,
+                        trigger=trigger,
+                        summary=alert.alert_summary or trigger,
+                        recipients=recipients,
+                    )
+                )
             )
-        except Exception as exc:  # delivery failure must not break escalation flow
+        except Exception as exc:
             logger.error("Alert notification failed for %s: %s", alert.id, exc)
-    return len(recipients)
+            outcomes.append(
+                {
+                    "delivery_state": "failed",
+                    "delivery_message": "Notification provider failed; no delivery was confirmed.",
+                    "confirmed_deliveries": 0,
+                }
+            )
+    states = {outcome["delivery_state"] for outcome in outcomes}
+    delivery_state = states.pop() if len(states) == 1 else "mixed"
+    messages = [outcome["delivery_message"] for outcome in outcomes if outcome["delivery_message"]]
+    return {
+        "delivery_state": delivery_state,
+        "delivery_message": " ".join(dict.fromkeys(messages)),
+        "recipients_resolved": len(recipients),
+        "confirmed_deliveries": sum(
+            outcome["confirmed_deliveries"] for outcome in outcomes
+        ),
+    }
 
 
 async def notify_reprompts(
+    db: AsyncSession,
     patient_id: UUID,
     result: Dict[str, Any],
     provider: Optional[NotificationProvider] = None,
-) -> int:
-    """Send the 10-minute secondary notification for each newly ESCALATED event.
-
-    ``result`` is the return value of ReminderService.evaluate_escalations.
-    Returns the number of reprompts sent. Never raises — a delivery failure must
-    not fail the escalation scan.
-    """
+) -> Dict[str, Any]:
+    """Dispatch each newly escalated event and report confirmed deliveries only."""
     reprompts: List[Dict[str, Any]] = result.get("reprompt_events") or []
     if not reprompts:
-        return 0
-    provider = provider or get_notification_provider()
-    sent = 0
+        return {
+            "delivery_state": "not_applicable",
+            "delivery_message": "No reprompt notification was attempted.",
+            "recipients_resolved": 0,
+            "confirmed_deliveries": 0,
+        }
+    provider = provider or get_notification_provider(db=db)
+    outcomes: List[Dict[str, Any]] = []
     for rp in reprompts:
         try:
-            await provider.send_reminder_reprompt(
-                patient_id=patient_id,
-                event_id=rp["event_id"],
-                reminder_type=rp.get("reminder_type", "reminder"),
+            outcomes.append(
+                _provider_outcome(
+                    await provider.send_reminder_reprompt(
+                        patient_id=patient_id,
+                        event_id=rp["event_id"],
+                        reminder_type=rp.get("reminder_type", "reminder"),
+                    )
+                )
             )
-            sent += 1
-        except Exception as exc:  # delivery failure must not break the scan
+        except Exception as exc:
             logger.error("Reprompt notification failed for event %s: %s", rp.get("event_id"), exc)
-    return sent
+            outcomes.append(
+                {
+                    "delivery_state": "failed",
+                    "delivery_message": "Notification provider failed; no delivery was confirmed.",
+                    "confirmed_deliveries": 0,
+                }
+            )
+    states = {outcome["delivery_state"] for outcome in outcomes}
+    delivery_state = states.pop() if len(states) == 1 else "mixed"
+    messages = [outcome["delivery_message"] for outcome in outcomes if outcome["delivery_message"]]
+    return {
+        "delivery_state": delivery_state,
+        "delivery_message": " ".join(dict.fromkeys(messages)),
+        "recipients_resolved": len(reprompts),
+        "confirmed_deliveries": sum(
+            outcome["confirmed_deliveries"] for outcome in outcomes
+        ),
+    }

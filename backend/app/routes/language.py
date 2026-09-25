@@ -72,6 +72,7 @@ async def language_status(
     return {
         "provider": getattr(lang_service, "name", "unknown"),
         "supported_languages": lang_service.supported_languages(),
+        "capabilities": lang_service.operation_capabilities(),
     }
 
 
@@ -86,7 +87,12 @@ async def speech_to_text(
         text = await lang_service.speech_to_text(req.audio_base64, req.source_language)
     except LanguageServiceError as exc:
         _handle(exc)
-    return {"recognized_text": text, "source_language": req.source_language, "provider": getattr(lang_service, "name", "unknown")}
+    return {
+        "recognized_text": text,
+        "source_language": req.source_language,
+        "provider": getattr(lang_service, "name", "unknown"),
+        "simulated": getattr(lang_service, "name", "unknown") == "mock",
+    }
 
 
 @router.post("/tts")
@@ -100,7 +106,12 @@ async def text_to_speech(
         audio = await lang_service.text_to_speech(req.text, req.target_language)
     except LanguageServiceError as exc:
         _handle(exc)
-    return {"audio_base64": audio, "target_language": req.target_language, "provider": getattr(lang_service, "name", "unknown")}
+    return {
+        "audio_base64": audio,
+        "target_language": req.target_language,
+        "provider": getattr(lang_service, "name", "unknown"),
+        "simulated": getattr(lang_service, "name", "unknown") == "mock",
+    }
 
 
 @router.post("/translate")
@@ -121,4 +132,6 @@ async def translate_text(
         "translated_text": translated,
         "source_language": req.source_language,
         "target_language": req.target_language,
+        "provider": getattr(lang_service, "name", "unknown"),
+        "simulated": getattr(lang_service, "name", "unknown") == "mock",
     }

@@ -113,6 +113,28 @@ def generate_odd_one_out_board(
     }
 
 
+def public_odd_one_out_board(board: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        key: value
+        for key, value in board.items()
+        if key not in {"answer_item_id", "explanation"}
+    }
+
+
+def odd_one_out_server_state(board: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "answer_item_id": board["answer_item_id"],
+        "explanation": board["explanation"],
+    }
+
+
+def odd_one_out_explanation(server_state: Optional[Dict[str, Any]]) -> Optional[str]:
+    if not isinstance(server_state, dict):
+        return None
+    explanation = server_state.get("explanation")
+    return explanation if isinstance(explanation, str) and explanation else None
+
+
 def score_odd_one_out(
     selected_item_id: str, answer_item_id: str
 ) -> Dict[str, Any]:

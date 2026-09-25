@@ -84,6 +84,7 @@ class ReminderEvents extends Table {
 class SyncQueue extends Table {
   TextColumn get id => text()();
   TextColumn get patientId => text().nullable()();
+  TextColumn get accountId => text().nullable()();
   TextColumn get resourceType => text()(); // game_session | reminder_event | ...
   TextColumn get operation => text()(); // create | update | delete
   TextColumn get resourceId => text()();
@@ -121,7 +122,17 @@ class AppDatabase extends _$AppDatabase {
   AppDatabase.forTesting(super.executor);
 
   @override
-  int get schemaVersion => 1;
+  int get schemaVersion => 2;
+
+  @override
+  MigrationStrategy get migration => MigrationStrategy(
+        onCreate: (m) async => m.createAll(),
+        onUpgrade: (m, from, to) async {
+          if (from < 2) {
+            await m.addColumn(syncQueue, syncQueue.accountId);
+          }
+        },
+      );
 
   // ----- game sessions -----
 
@@ -246,27 +257,53 @@ class AppDatabase extends _$AppDatabase {
   // ----- sync queue (outbox) -----
 
   Future<void> enqueueSyncItem(SyncQueueItem item) async {
+    final existing = await (select(syncQueue)..where((t) => t.id.equals(item.id)))
+        .getSingleOrNull();
+    final existingPayload =
+        existing == null ? null : _decodeMap(existing.payload);
+    final payload = <String, dynamic>{...item.payload};
+    final existingKey = existingPayload?['idempotency_key'];
+    if (existingKey is String && existingKey.isNotEmpty) {
+      payload['idempotency_key'] = existingKey;
+    }
+    final payloadAccount = payload['account_id'];
+    final accountId = existing?.accountId ??
+        item.accountId ??
+        (payloadAccount is String && payloadAccount.isNotEmpty
+            ? payloadAccount
+            : null);
     await into(syncQueue).insertOnConflictUpdate(SyncQueueCompanion.insert(
       id: item.id,
       patientId: Value(item.patientId),
+      accountId: Value(accountId),
       resourceType: item.resourceType,
       operation: item.operation,
       resourceId: item.resourceId,
-      payload: jsonEncode(item.payload),
+      payload: jsonEncode(payload),
       createdAt: item.createdAt,
     ));
   }
 
-  Future<List<SyncQueueItem>> pendingSyncItems({int limit = 200}) async {
-    final rows = await (select(syncQueue)
-          ..where((t) => t.syncedAt.isNull())
-          ..orderBy([(t) => OrderingTerm.asc(t.createdAt)])
-          ..limit(limit))
-        .get();
+  Future<List<SyncQueueItem>> pendingSyncItems({
+    int limit = 200,
+    String? accountId,
+    bool unscopedOnly = false,
+  }) async {
+    final query = select(syncQueue)
+      ..where((t) => t.syncedAt.isNull())
+      ..orderBy([(t) => OrderingTerm.asc(t.createdAt)])
+      ..limit(limit);
+    if (accountId != null) {
+      query.where((t) => t.accountId.equals(accountId));
+    } else if (unscopedOnly) {
+      query.where((t) => t.accountId.isNull());
+    }
+    final rows = await query.get();
     return rows
         .map((r) => SyncQueueItem(
               id: r.id,
               patientId: r.patientId,
+              accountId: r.accountId,
               resourceType: r.resourceType,
               operation: r.operation,
               resourceId: r.resourceId,

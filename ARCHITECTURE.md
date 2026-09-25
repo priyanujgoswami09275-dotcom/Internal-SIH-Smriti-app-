@@ -1,6 +1,6 @@
 # ARCHITECTURE.md — Smriti Technical Architecture
 
-**PPT/Slide-Friendly Technical Summary** · Date: 2026-09-21
+**Technical Architecture Summary** · Reconciled: 2026-09-25
 
 ---
 
@@ -10,26 +10,33 @@ Three user-facing surfaces share one FastAPI backend:
 
 ```
 ┌─────────────────────────┐
-│   Patient Mobile App      │  Flutter | Offline-first
+│   Patient Mobile App      │  Flutter | Offline-capable
 │  (Games, Voice, Reminders)│
 └───────────┬──────────────┘
-            │ Local storage (drift SQLite)
-            ▼
+             │ drift SQLite outbox + local caches
+             ▼
 ┌─────────────────────────┐
 │   FastAPI Backend         │  Python | PostgreSQL
-│  (REST API, risk-screening,     
-│   difficulty, compliance)   │
+│  (JWT/RBAC, consent, RAG,  │
+│   scoring, compliance)     │
 └───────────┬──────────────┘
-            │ REST API
-            ▼
+             │ REST API only; no direct client table access
+             ▼
 ┌─────────────────────────┐
-│   Caregiver Dashboard      │  Flutter Web + mobile
+│ Caregiver Dashboard      │  Flutter Web + mobile port
 │ (Trends, alerts, logs)     │
 └─────────────────────────┘
 ```
 
-**REST API** (`/api/v1`) connects all surfaces.  
-**Offline sync:** drift SQLite outbox → HTTP replay job on reconnect.  
+**REST API** (`/api/v1`) connects all surfaces. Mobile/dashboard use JWT bearer
+requests; neither embeds a Supabase/Firebase table SDK or privileged database
+credential.
+
+**Offline durability:** bundled/generated boards where available, cached level
+configuration and public Odd-One-Out board snapshots, a drift-backed replay
+outbox scoped to the active account, and scheduled local reminder notifications.
+An in-progress game round is memory-only and is not resumed after app death.
+
 **Background jobs:** reminder generation (60s), escalation scan (60s), sync consume (300s), retention (24h).
 
 ---
@@ -39,9 +46,9 @@ Three user-facing surfaces share one FastAPI backend:
 ### Backend
 - **Language:** Python 3.12 (pinned runtime)
 - **Framework:** FastAPI (async-first, Pydantic validation, OpenAPI docs)
-- **ORM:** SQLAlchemy 2.0 + Alembic (reversible migrations, schema version `0010_odd_one_out`)
-- **Database:** PostgreSQL 16 (Homebrew `localhost:5432/eldercare`, sysid `7681754862742343790`)
-- **Cache/Queue:** Redis (session cache, rate limiting) with in-process fallback
+- **ORM:** SQLAlchemy 2.0 + Alembic; current single head `0014_reminder_idempotency`
+- **Database:** PostgreSQL 16. The compose image includes pgvector, but current RAG vectors use a JSON column and Python cosine scoring rather than a pgvector index.
+- **Cache/rate limit:** Redis with in-process fallback
 - **Key files:**
   - `app/models/all_models.py` (15 tables: user, compliance, patient, game, reminder, alert, sync, symptom, medical document/chunk, voice_companion_config)
   - `app/services/` (20+ services: auth, compliance, dashboard, game, difficulty_engine, adaptive_shadow, adaptive_training, adaptive_features, content_packs, reminder, routine, sync, notification, language, llm_client, rag, embedding_provider, document_extraction, report, retention, risk_screening, voice_companion, odd_one_out_service)
@@ -53,36 +60,52 @@ Three user-facing surfaces share one FastAPI backend:
   - `main.py` (app factory, middleware wiring, lifespan)
 
 ### Mobile (Patient App)
-- **Framework:** Flutter (Dart 3.x), single codebase iOS/Android
-- **Local store:** drift SQLite (offline-first) + committed codegen (`app_database.g.dart`)
+- **Framework:** Flutter/Dart for Android/iOS
+- **Local store:** drift SQLite + committed codegen. The sync outbox is durable and account-scoped; pending items remain across logout/restart and only the active account is replayed.
+- **Caches:** server level configuration and public Odd-One-Out board snapshots in `SharedPreferences`; synthesized reminder audio in a temporary text+language keyed cache.
+- **Non-durable state:** the active board, moves, timers, and action buffer are widget memory. App death starts a new local/cached round; no exact in-progress resume exists.
 - **Key files:**
-  - `mobile/lib/main.dart` (auth gate, home shell, profile setup)
-  - `mobile/lib/services/` (api_service, auth_session, offline_sync_service, reminder_service, tts_cache, voice_audio_service, voice_languages, reminder_scheduler, routine_service, match_it_service)
-  - `mobile/lib/games/` (game_analytics_engine.dart [pure Dart, no Flutter imports], game_labels.dart, game_visuals.dart, recall_service.dart)
-  - `mobile/lib/screens/` (auth, match_it, pack_picker, routine, reminders, voice_companion [10-lang picker, provider-gated], caregiver_dashboard [role-gated], caregiver/ (sections: patient_switcher, alerts_card, metrics_tiles, trends_section, compliance_log, schedules_card, documents_card, risk_screening_section), audit_viewer_screen, recall_screen, odd_one_out_screen)
-  - `mobile/lib/theme/monad_theme.dart` (Monad design tokens — colors, type, spacing, radii)
-  - `mobile/test/` (api_live_test, game_analytics_engine_test, level_config_test, monad_widgets_test, odd_one_out_screen_test, recall_service_test, reminder_voice_test, silence_detector_test, voice_languages_test, schedule_delete_contract_test [2A], rag_upload_test [2C], clinical_notes_sync_test [2D], refresh_single_flight_test [5D], widget_test)
-  - `mobile/lib/screens/caregiver/` (port of the caregiver dashboard sections + `audit_viewer_screen`; RAG upload via `file_picker` — no dart:html/dart:io file reads on mobile)
+  - `mobile/lib/main.dart` — auth gate, home shell, profile setup, role routing
+  - `mobile/lib/services/` — REST/auth, outbox sync, local reminders/TTS cache, language capability gating
+  - `mobile/lib/games/game_analytics_engine.dart` — pure-Dart local metrics/tags/hints; it does not apply difficulty
+  - `mobile/lib/games/level_config.dart` — server config cache with bundled fallback
+  - `mobile/lib/screens/` — four games, reminders, voice, documents/RAG, caregiver sections, audit viewer, profile/risk flows
+  - `mobile/test/` — pure logic, widget, sync-integrity, role/consent, and upload contract tests
+
+**Adaptive flow:** the backend scores durable action rows, evaluates its rule
+strategy, and returns `recommended_level`; the client applies that value for the
+next online round. Offline completion remains pending server scoring. Shadow ML
+metadata is display/logging only.
 
 ### Caregiver Dashboard
-- **Framework:** Flutter Web + mobile app (role-routed in mobile/lib/main.dart; same Monad design system)
-- **Key files:**
-  - `dashboard/lib/main.dart` (single-file app: login, roster, summary tiles, alerts, insights) + `dashboard/lib/api_client.dart` extraction pending; `dashboard/lib/widgets/` (risk_screening_card, risk_intake_form [authed, tier-gated], rag_upload_widget + rag_upload_picker_web/stub [real upload, 2C])
-  - `dashboard/lib/theme/monad_theme.dart` (copy of mobile's, minus game tints)
-- **Features:** JWT login + auto-refresh (single-flight refresh, server-side logout revocation), patient roster dropdown, 7-day metric tiles (cognitive accuracy, reminder compliance with honest no-data state, response time), 14-day accuracy + response-time trend sparklines (all games, pure CustomPaint, no chart dependency), active-alerts acknowledge (patient-access gated server-side), clinical-flags insight, risk screening (clinical tier only, authed), reminder-schedule editing (list/add/delete), RAG document upload (real multipart, 2C), admin audit-trail viewer (`GET /compliance/audit-logs`), responsive layout
+- **Framework:** Flutter Web plus a role-routed mobile caregiver port; they share the API contract and design tokens, not a Dart model package.
+- **Structure:** `dashboard/lib/main.dart` (shell, API client, views), `dashboard/lib/config.dart` (release URL guard), focused risk/RAG widgets, and the Monad theme.
+- **Authorization UX:** login/refresh role and each patient's server permission tier drive visible metric/trend/risk/document controls. A `health_data` consent preflight gates screening/upload. Hiding a control is never the security boundary; backend role, link, consent, and tier checks remain authoritative.
+- **Features:** roster, honest metric tiles, 14-day all-game trends, alert acknowledgement, clinical insight, risk screening, reminder schedule add/remove, RAG upload, and admin-only audit pagination (50 rows per offset page).
+- **Configuration:** `flutter run -d chrome --dart-define=API_BASE_URL=http://localhost:8000` for development. `flutter build web --release --dart-define=API_BASE_URL=https://api.example.org` is required for release because an empty URL fails configuration.
 
 ---
 
 ## 3. External Integrations Table
 
-| Integration | Provider Chain | Graceful-Degradation Behavior |
+| Integration | Provider chain | Graceful-degradation behavior |
 |---|---|---|
-| **LLM** (companion + RAG answers) | OpenRouter free-tier (`minimax/minimax-m3:free`; fallback chain `nemotron-3-*:free`). Anthropic alternative. `LLM_PROVIDER=auto` detects `sk-or-` prefix | Canned persona reply (`LLM_AUTO_FALLBACK`), or extractive RAG answers; never errors on elder UX |
-| **Speech** (ASR/TTS/NMT) | **Sarvam AI primary**, Bhashini fallback (`auto\|sarvam\|bhashini\|mock`); AI4Bharat implemented but currently non-functional pending a dedicated HF endpoint | Deterministic local mock; unsupported languages surface as "not yet available" in picker |
-| **Embeddings** (RAG) | `heuristic` (deterministic md5-TF hashing, no dependencies); `local` (sentence-transformers e5-small); `openai` | Missing/unknown backends log a warning and return heuristic — RAG always works |
-| **Notifications** (reminder escalation / alert fan-out) | `console` (logs + records deliveries in-process) | Default until real channel (SMS/FCM/email) configured; always logs locally |
+| **LLM** (companion + RAG answers) | OpenRouter default; Anthropic alternative; `auto` selects from configured key | Canned persona reply or extractive RAG answer |
+| **Speech** (ASR/NMT/TTS) | `auto`: Sarvam → AI4Bharat → Bhashini → mock | With no shipped provider credentials, deterministic simulated operations; status response marks them simulated |
+| **Embeddings** | `heuristic` default; `local` sentence-transformers; `openai` | Missing/unknown configured backend warns and uses heuristic |
+| **Notifications** | `console`; current `fcm` class logs/failed-audits but sends nothing | `delivery_state: not_configured`, zero confirmed deliveries |
 
-**Hard guard:** `OPENROUTER_FREE_ONLY=true` refuses any model slug not `:free`. Live usage needs API keys in `.env`; everything degrades gracefully when absent.
+NER-relevant speech coverage is operation-specific:
+
+| Provider | ASR/NMT languages | TTS languages | Reality |
+|---|---|---|---|
+| Sarvam | Assamese, Bengali, Hindi, English, Manipuri/Meitei, Bodo, Nepali | Bengali, Hindi, English | Requires `SARVAM_API_KEY`; Khasi/Mizo/Garo unsupported |
+| AI4Bharat | Assamese, Bengali, Bodo, Manipuri/Meitei, Nepali, Hindi, English | Same seven | Client implemented; default HF router lacks these models, so a dedicated endpoint is required |
+| Bhashini | Assamese, Bengali, Hindi, English, Manipuri/Meitei, Bodo, Nepali, Mizo, Khasi | Same nine | Requires API key + user ID; Garo unsupported |
+| Mock | Picker languages, simulated | Picker languages, simulated | Default; not live speech |
+
+**Hard guard:** `OPENROUTER_FREE_ONLY=true` refuses any model slug not `:free`.
+No provider secret is needed for CI; live calls remain operator-configured.
 
 ---
 
@@ -90,21 +113,55 @@ Three user-facing surfaces share one FastAPI backend:
 
 | Component | Implementation | Evidence |
 |---|---|---|
-| **JWT with refresh rotation** | Access: 15 min (stateless); Refresh: 7 days, single-use with rotation (`users.refresh_jti` holds only accepted token; presenting reused/superseded token clears `refresh_jti`, killing chain — replay defence) | `app/core/security.py`, `app/deps.py`, migration `0003_refresh_rotation`, `test_phase12_gates.py` |
-| **Role-based access control** | Roles: `patient` (plays games, acknowledges reminders), `family_caregiver` (manages patient, sees basic activity), `asha_worker` (field worker, manages multiple patients, sees clinical detail), `clinician` (healthcare provider, sees raw scores + health data), `admin` (system administration) | `app/deps.py`: `ensure_patient_access`, `ensure_clinical_access`, `get_permission_tier`; `test_phase12_gates.py` |
-| **Consent-scope enforcement** | Explicit consent BEFORE any health data storage; scopes: `game_data` \| `health_data` \| `voice_companion`; `ensure_consent` in `deps.py` blocks cross-scope access | `app/deps.py`, `app/services/compliance_service.py`, `test_phase11_gates.py` |
-| **Audit logging** | Immutable `AuditLog` table: user_id, action (read/write/delete), resource_type, resource_id, timestamp, ip, details; every health data access logged; retention: indefinite | `app/models/all_models.py`, `app/services/compliance_service.py`, `test_phase11_gates.py` |
-| **At-rest encryption** | `EncryptionService` (Fernet, key SHA-256-derived from `ENCRYPTION_KEY`) on `SymptomLog.notes` and `MedicalDocument.extracted_text`; audit tokens verify Fernet `gAAAA` prefix | `app/services/compliance_service.py`, `test_phase11_gates.py` |
-| **No implicit access** | Every caregiver-to-patient access is a 403 at every route; unknown patient IDs return 404 (no existence leak) | `test_phase0_fixes.py` (5 P0 regressions), `test_phase11_gates.py` (cross-patient 403/404, read-audit rows, encrypted docs) |
-| **Production posture** | Rate limiting (Redis+fallback, fixed-window per-IP 100/min), CORS whitelist (production refuses `*`), placeholder-secret refusal (`Settings.validate_for_environment()`), CI with PostgreSQL migration + E2E smoke | `app/middleware/rate_limit.py`, `app/config.py`, `.github/workflows/ci.yml` |
+| **JWT with refresh rotation** | Access: 15 min; refresh: 7 days, single-use with `users.refresh_jti`; replay/superseded refresh clears the chain | `app/core/security.py`, `app/deps.py`, migration `0003_refresh_rotation` |
+| **App-layer RBAC/consent** | JWT resolves the user; patient owner/link/staff access, purpose scope, and `basic`/`clinical` tier checks run in FastAPI dependencies | `app/deps.py`, access/consent suites |
+| **API-only client access** | Mobile/dashboard call REST with bearer tokens; no Supabase/Firebase table SDK, anon table credential, or service-role key is present | Flutter `http` clients; dependency manifests |
+| **Audit logging** | Broad read plus representative write rows. Most read/write helpers are best-effort; consent changes, document ingest/reindex, and export are fail-closed. Retention excludes rows, but there are no DB immutability controls. | `app/services/compliance_service.py`, audit failure/matrix suites |
+| **At-rest encryption** | Fernet protects `SymptomLog.notes`, `MedicalDocument.extracted_text`, and new `DocumentChunk.chunk_text`; plaintext is transient in memory | `app/services/compliance_service.py`, RAG integrity tests |
+| **No implicit access** | Unauthorized cross-patient access is rejected; unknown IDs return 404. Covered successful paths create audit rows under the mixed policy above. | access-gate and audit suites |
+| **Production posture** | Rate limiting, production CORS/secret refusal, clean-PG migration smoke, frontend build/test gates | config/middleware/workflow |
 
-**CI verification:** backend pytest + standalone, `alembic upgrade head` on clean Postgres 16, live `smoke_e2e.py`; frontend: `flutter pub get` + drift codegen + `flutter analyze` for mobile and dashboard.
+### RAG provenance, encryption, and migration
+
+Every new document stores provider/model/dimension provenance. Retrieval rejects
+missing or mismatched provenance instead of mixing vector spaces. Patient-scoped
+maintenance is:
+
+```sh
+cd backend && python -m app.services.rag_service reindex \
+  --patient-id <patient-uuid> --actor-id <operator-user-uuid>
+```
+
+Changed documents are re-embedded, legacy plaintext chunks are rewritten as
+Fernet ciphertext, and a `rag_reindex` write row is committed. This is the
+implemented plaintext-PHI migration path for chunk rows; arbitrary legacy
+plaintext source text still requires a controlled re-ingest/backfill. OCR is not
+part of this build, so scanned/image-only PDFs are rejected before persistence.
+
+### Audit and API boundaries
+
+Audit rows are append-oriented application records with actor, action, resource,
+time, IP, and details. They are not database-immutable: no trigger, restricted
+DB grant, RLS, or update/delete denial policy prevents a privileged SQL actor
+from changing them. Database-level append-only controls remain operator/infrastructure
+work.
+
+If direct client database access is ever introduced, it needs a new threat model,
+publishable-only credentials, table/action RLS, JWT claim propagation,
+tenant/patient/consent scoping, revocation/session behavior, migrations and
+integration tests, plus proof that no service-role secret reaches a client. The
+current clients have none of that access.
+
+**CI verification:** backend pytest + standalone checks, `alembic upgrade head`
+on a clean PostgreSQL 16 service, and live `smoke_e2e.py`; mobile deps/codegen/
+analyze/unit tests; dashboard deps/analyze/VM tests, Chrome-platform tests, and
+an explicit-URL release web build.
 
 ---
 
 ## 5. ML Architecture — Two Independent Systems
 
-The two systems are **independent**: the risk-screening model is fully live and callable but is experimental/not clinically validated; the difficulty model runs in shadow mode only and is never used for real decisions without explicit approval.
+The two systems are **independent**: the risk-screening model is callable but experimental/not clinically validated; the difficulty ML model is shadow-only. Real game level changes come from the server's deterministic rule strategy and its returned `recommended_level`, never from the client calculator or shadow probability.
 
 ### Risk-Screening Model (Phase A)
 - **Purpose:** Experimental preliminary screening for cognitive decline indicators (not diagnosis)
@@ -134,9 +191,16 @@ The two systems are **independent**: the risk-screening model is fully live and 
 
 | Limitation | Impact | Status |
 |---|---|---|
-| **Backend/mobile difficulty decision-logic divergence** | Backend: drops after 2 consecutive <50 accuracy sessions. Mobile (`game_analytics_engine.dart`): requires 3 agreeing verdicts (where slowness alone can force a lower verdict) before moving a level. Server remains authoritative for real decisions (`POST /games/difficulty/evaluate`), but in-app hints can disagree with the server. | **Open** — unification was scoped to the archived B-04/B-05 and is **not done**. For the demo this is invisible (both behave sanely), but do not claim one engine. |
-| **No physical-device validation for voice** | Mic capture + TTS playback and notification permissions have not been confirmed on a real phone (emulator/macOS only). The software path is fully wired and unit-tested. | **Open** — device checklist in DEPLOYMENT.md is written and waiting on physical-device testing. |
+| **Client calculator is not difficulty authority** | `game_analytics_engine.dart` computes local metrics/tags/hints and has its own streak helper, but online next-level state comes only from server `recommended_level`; offline completion remains pending. | **Reconciled** — do not describe two engines making live difficulty decisions. |
+| **No physical-device validation for voice/notifications** | Microphone, speaker, permission, and notification behavior have not been confirmed on a physical phone. The shipped default provider is simulated unless credentials are configured. | **Open** — device checklist in `DEPLOYMENT.md`; opt-in live provider tests need secrets. |
+| **No OCR in the document build** | Image-only PDFs have no selectable text and are rejected; users must paste text or upload a text-layer PDF. | **By scope** — scanner + OCR needs separate approval and native dependencies. |
+| **No exact active-round resume** | In-progress board/move/timer state is widget memory; app death restarts from bundled or cached data. | **Open product choice** — only completed outbox work is durable. |
+| **Audit rows are not database-immutable** | Application retention excludes audit rows, but privileged SQL can still update/delete them. | **Open deployment control** — add DB role/trigger/RLS/storage controls if tamper resistance is required. |
+| **Notification delivery unconfirmed** | Current FCM adapter logs/audits failures and returns `not_configured`; it does not deliver. | **Open** — real transport and device validation required. |
 | **Level-3 Odd-One-Out content is festivals-pack-only** | Festivals is the sole content group with ≥5 unambiguous items, so L3 majority boards always draw from it (L1/L2 span five groups). Boards remain valid and fully scored; broader content authoring is pending. | **Open** — content task, not a code change. |
 | **ML models not activated** | Risk-screening model is experimental/not clinically validated; difficulty model is shadow-mode only. Neither is used for real decisions without explicit approval. | **By design** — requires separate approval for activation. |
 
-Judges respect honesty about tradeoffs more than a document that hides them. These limitations are explicit, scoped, and do not invalidate the core value delivered: a fully functional, tested, compliant cognitive gaming platform with voice assistance, reminders, and caregiver dashboard.
+These limitations are explicit and scoped. The current build provides tested
+game, reminder, API/RBAC, RAG, and caregiver-dashboard paths; it does not claim
+live default speech, confirmed push delivery, OCR, exact active-round resume,
+clinical efficacy, or database-immutable audit storage.

@@ -1,12 +1,10 @@
 """Reminder Service — Schedules, Events, Acknowledgments, and Escalation Rules.
 
-Cadence grammar (parsed by ``parse_cadence``):
-    "08:00"                 one event/day at 08:00
-    "daily@08:00"           same, with an explicit 'daily@' prefix
-    "08:00,20:00"           two events/day
-    "daily@08:00,13:00,20:00"  three events/day
-Times are wall-clock in settings.REMINDER_TIMEZONE (IST for NER). Free-text
-cadences that don't match (legacy rows) simply generate no events.
+Cadence grammar:
+    [daily|everyday|every day][@|at|:]? HH:MM[,HH:MM;HH:MM]...
+Legacy ``HH:MM AM|PM Daily`` is also accepted. Matching is case-insensitive,
+times are 24-hour wall-clock values in settings.REMINDER_TIMEZONE, and duplicate
+times collapse to one daily occurrence.
 
 Lifecycle (generation job + escalation scan):
     (generation)  -> PENDING
@@ -19,41 +17,102 @@ import uuid
 from datetime import datetime, timedelta, timezone, time as dtime
 from zoneinfo import ZoneInfo
 from typing import List, Optional, Dict, Any
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, and_, or_, update
+from sqlalchemy import select, func
 from app.config import settings
 from app.models.all_models import (
-    ReminderSchedule, ReminderEvent, AlertFlag,
+    AlertFlag, PatientProfile, ReminderEvent, ReminderSchedule,
     ReminderTypeEnum, ReminderStatusEnum, AcknowledgmentMethodEnum,
     AlertTriggerTypeEnum, AlertSeverityEnum,
 )
 
-_CADENCE_PREFIX = re.compile(r"^(daily|everyday|every\s+day)\s*(@|at|:)?\s*", re.IGNORECASE)
-_TIME_TOKEN = re.compile(r"^(\d{1,2}):(\d{2})$")
+CADENCE_GRAMMAR = (
+    "Accepted grammar: [daily|everyday|every day][@|at|:]? "
+    "HH:MM[,HH:MM;HH:MM]... (case-insensitive, 24-hour); "
+    "legacy HH:MM AM|PM Daily is accepted."
+)
+CADENCE_ERROR = f"Invalid cadence. {CADENCE_GRAMMAR}"
+_CADENCE_PREFIX = re.compile(r"^(?:(?:daily|everyday|every\s+day)\s*)?(?:@|at|:)?\s*", re.IGNORECASE)
+_TIME_TOKEN = re.compile(
+    r"^(?P<hour>\d{1,2}):(?P<minute>\d{2})"
+    r"(?:\s*(?P<meridiem>am|pm))?"
+    r"(?:\s+(?P<daily>daily))?$",
+    re.IGNORECASE,
+)
+
+
+def _occurrence_key(scheduled_at: datetime) -> str:
+    utc_value = (
+        scheduled_at.replace(tzinfo=timezone.utc)
+        if scheduled_at.tzinfo is None
+        else scheduled_at.astimezone(timezone.utc)
+    )
+    return utc_value.strftime("%Y%m%dT%H%M")
+
+
+def alert_dedup_key(now: datetime) -> str:
+    utc_value = (
+        now.replace(tzinfo=timezone.utc)
+        if now.tzinfo is None
+        else now.astimezone(timezone.utc)
+    )
+    return utc_value.strftime("%Y%m%d")
+
+
+def is_unique_violation(exc: IntegrityError) -> bool:
+    original = exc.orig
+    if getattr(original, "sqlstate", None) == "23505":
+        return True
+    if getattr(original, "sqlite_errorcode", None) in {1555, 2067}:
+        return True
+    message = str(original).lower()
+    return "unique constraint failed" in message or "duplicate key value" in message
 
 
 class ReminderService:
     @staticmethod
     def parse_cadence(cadence: str) -> List[dtime]:
-        """Parse a cadence string into a sorted list of daily wall-clock times.
-
-        Unparseable tokens are skipped; an entirely free-text cadence yields [].
-        """
-        if not cadence:
-            return []
+        """Parse one complete cadence expression into unique daily times."""
+        if not cadence or not cadence.strip():
+            raise ValueError(CADENCE_ERROR)
         raw = _CADENCE_PREFIX.sub("", cadence.strip())
+        if not raw:
+            raise ValueError(CADENCE_ERROR)
         times: List[dtime] = []
         for part in re.split(r"[,;]+", raw):
-            token = part.strip()
-            m = _TIME_TOKEN.match(token)
-            if not m:
-                continue
-            hh, mm = int(m.group(1)), int(m.group(2))
-            if 0 <= hh < 24 and 0 <= mm < 60:
-                t = dtime(hour=hh, minute=mm)
-                if t not in times:
-                    times.append(t)
+            match = _TIME_TOKEN.fullmatch(part.strip())
+            if not match:
+                raise ValueError(CADENCE_ERROR)
+            hour = int(match.group("hour"))
+            minute = int(match.group("minute"))
+            meridiem = match.group("meridiem")
+            daily_suffix = match.group("daily")
+            if bool(daily_suffix) != bool(meridiem):
+                raise ValueError(CADENCE_ERROR)
+            if meridiem:
+                if not 1 <= hour <= 12 or not 0 <= minute < 60:
+                    raise ValueError(CADENCE_ERROR)
+                if meridiem.lower() == "am" and hour == 12:
+                    hour = 0
+                elif meridiem.lower() == "pm" and hour != 12:
+                    hour += 12
+            elif not 0 <= hour < 24 or not 0 <= minute < 60:
+                raise ValueError(CADENCE_ERROR)
+            value = dtime(hour=hour, minute=minute)
+            if value not in times:
+                times.append(value)
+        if not times:
+            raise ValueError(CADENCE_ERROR)
         return sorted(times)
+
+    @staticmethod
+    async def lock_patient(db: AsyncSession, patient_id: uuid.UUID) -> None:
+        await db.execute(
+            select(PatientProfile.id)
+            .where(PatientProfile.id == patient_id)
+            .with_for_update()
+        )
 
     @staticmethod
     async def generate_due_events_for_all(
@@ -78,35 +137,57 @@ class ReminderService:
 
         created = 0
         for sched in scheds:
-            for t in ReminderService.parse_cadence(sched.cadence):
+            try:
+                cadence_times = ReminderService.parse_cadence(sched.cadence)
+            except ValueError:
+                cadence_times = []
+            for t in cadence_times:
                 local_due = local_now.replace(
                     hour=t.hour, minute=t.minute, second=0, microsecond=0
                 )
                 due_utc = local_due.astimezone(timezone.utc)
                 if due_utc > now:
-                    continue  # not due yet today
+                    continue
+                occurrence_key = _occurrence_key(due_utc)
                 exists = (
                     await db.execute(
                         select(ReminderEvent.id).where(
+                            ReminderEvent.patient_id == sched.patient_id,
                             ReminderEvent.schedule_id == sched.id,
-                            ReminderEvent.scheduled_at >= due_utc,
-                            ReminderEvent.scheduled_at < due_utc + timedelta(minutes=1),
+                            ReminderEvent.occurrence_key == occurrence_key,
                         )
                     )
                 ).first()
+                if not exists:
+                    exists = (
+                        await db.execute(
+                            select(ReminderEvent.id).where(
+                                ReminderEvent.schedule_id == sched.id,
+                                ReminderEvent.scheduled_at >= due_utc,
+                                ReminderEvent.scheduled_at < due_utc + timedelta(minutes=1),
+                            )
+                        )
+                    ).first()
                 if exists:
                     continue
-                db.add(
-                    ReminderEvent(
-                        id=uuid.uuid4(),
-                        schedule_id=sched.id,
-                        patient_id=sched.patient_id,
-                        scheduled_at=due_utc,
-                        delivered_at=now,
-                        status=ReminderStatusEnum.PENDING,
-                        created_at=now,
-                    )
+                event = ReminderEvent(
+                    id=uuid.uuid4(),
+                    schedule_id=sched.id,
+                    patient_id=sched.patient_id,
+                    scheduled_at=due_utc,
+                    occurrence_key=occurrence_key,
+                    delivered_at=now,
+                    status=ReminderStatusEnum.PENDING,
+                    created_at=now,
                 )
+                try:
+                    async with db.begin_nested():
+                        db.add(event)
+                        await db.flush()
+                except IntegrityError as exc:
+                    if not is_unique_violation(exc):
+                        raise
+                    continue
                 created += 1
         if created:
             await db.commit()
@@ -120,6 +201,7 @@ class ReminderService:
         cadence: str,
         created_by: uuid.UUID,
     ) -> ReminderSchedule:
+        ReminderService.parse_cadence(cadence)
         schedule = ReminderSchedule(
             id=uuid.uuid4(),
             patient_id=patient_id,
@@ -173,17 +255,60 @@ class ReminderService:
         delivered_at: Optional[datetime] = None,
         event_id: Optional[uuid.UUID] = None,
     ) -> ReminderEvent:
+        occurrence_key = _occurrence_key(scheduled_at)
+        existing = (
+            await db.execute(
+                select(ReminderEvent).where(
+                    ReminderEvent.patient_id == patient_id,
+                    ReminderEvent.schedule_id == schedule_id,
+                    ReminderEvent.occurrence_key == occurrence_key,
+                )
+            )
+        ).scalars().first()
+        if not existing:
+            minute_start = scheduled_at.replace(second=0, microsecond=0)
+            existing = (
+                await db.execute(
+                    select(ReminderEvent).where(
+                        ReminderEvent.schedule_id == schedule_id,
+                        ReminderEvent.scheduled_at >= minute_start,
+                        ReminderEvent.scheduled_at < minute_start + timedelta(minutes=1),
+                    )
+                )
+            ).scalars().first()
+        if existing:
+            return existing
+
         event = ReminderEvent(
             id=event_id or uuid.uuid4(),
             schedule_id=schedule_id,
             patient_id=patient_id,
             scheduled_at=scheduled_at,
+            occurrence_key=occurrence_key,
             delivered_at=delivered_at or datetime.now(timezone.utc),
             status=ReminderStatusEnum.PENDING,
             synced_at=datetime.now(timezone.utc),
             created_at=datetime.now(timezone.utc),
         )
-        db.add(event)
+        try:
+            async with db.begin_nested():
+                db.add(event)
+                await db.flush()
+        except IntegrityError as exc:
+            if not is_unique_violation(exc):
+                raise
+            existing = (
+                await db.execute(
+                    select(ReminderEvent).where(
+                        ReminderEvent.patient_id == patient_id,
+                        ReminderEvent.schedule_id == schedule_id,
+                        ReminderEvent.occurrence_key == occurrence_key,
+                    )
+                )
+            ).scalars().first()
+            if not existing:
+                raise
+            return existing
         await db.commit()
         await db.refresh(event)
         return event
@@ -304,15 +429,19 @@ class ReminderService:
         alert_summaries = []
         for rem_type, count in recent_unresolved:
             if count >= 3:
-                # Check if alert already raised today
-                existing_alert_stmt = select(AlertFlag).where(
-                    AlertFlag.patient_id == patient_id,
-                    AlertFlag.trigger_type == AlertTriggerTypeEnum.MISSED_REMINDERS,
-                    AlertFlag.created_at >= now - timedelta(hours=24),
+                await ReminderService.lock_patient(db, patient_id)
+                existing_alert_stmt = (
+                    select(AlertFlag)
+                    .where(
+                        AlertFlag.patient_id == patient_id,
+                        AlertFlag.trigger_type == AlertTriggerTypeEnum.MISSED_REMINDERS,
+                        AlertFlag.created_at >= now - timedelta(hours=24),
+                    )
+                    .limit(1)
                 )
-                existing_alert_res = await db.execute(existing_alert_stmt)
-                existing_alert = existing_alert_res.scalar_one_or_none()
-
+                existing_alert = (
+                    await db.execute(existing_alert_stmt)
+                ).scalars().first()
                 if not existing_alert:
                     type_str = rem_type.value if hasattr(rem_type, 'value') else str(rem_type)
                     summary_msg = f"Patient missed {count} {type_str} reminders in the past 7 days."
@@ -320,12 +449,20 @@ class ReminderService:
                         id=uuid.uuid4(),
                         patient_id=patient_id,
                         trigger_type=AlertTriggerTypeEnum.MISSED_REMINDERS,
+                        dedup_key=alert_dedup_key(now),
                         severity=AlertSeverityEnum.CRITICAL if rem_type == ReminderTypeEnum.MEDICINE else AlertSeverityEnum.WARNING,
                         alert_summary=summary_msg,
                         threshold_detail={"reminder_type": type_str, "missed_count": count, "window_days": 7},
                         created_at=now,
                     )
-                    db.add(alert)
+                    try:
+                        async with db.begin_nested():
+                            db.add(alert)
+                            await db.flush()
+                    except IntegrityError as exc:
+                        if not is_unique_violation(exc):
+                            raise
+                        continue
                     alerts_generated.append(alert)
                     alert_summaries.append(summary_msg)
 
