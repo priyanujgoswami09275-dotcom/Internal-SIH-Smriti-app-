@@ -20,6 +20,7 @@ from app.models.all_models import (
     SyncOperationEnum,
 )
 from app.models.user import User
+from app.services.datetime_utils import iso_utc
 from app.services.sync_service import process_sync_batch, get_pending_sync
 
 router = APIRouter(prefix="/sync", tags=["sync"])
@@ -135,8 +136,8 @@ async def pending_sync_items(
             "operation": i.operation.value if hasattr(i.operation, "value") else str(i.operation),
             "resource_id": str(i.resource_id),
             "payload": i.payload,
-            "created_at": i.created_at.isoformat() if i.created_at else None,
-            "synced_at": i.synced_at.isoformat() if i.synced_at else None,
+            "created_at": iso_utc(i.created_at),
+            "synced_at": iso_utc(i.synced_at),
             "retry_count": i.retry_count,
             "last_error": i.last_error,
         }

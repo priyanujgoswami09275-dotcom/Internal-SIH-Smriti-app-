@@ -16,6 +16,7 @@ from app.models.all_models import (
 )
 from app.middleware.auth_middleware import get_current_user, require_role
 from app.services.compliance_service import ComplianceService
+from app.services.datetime_utils import iso_utc
 
 router = APIRouter(prefix="/compliance", tags=["DPDP Act 2023 & Compliance"])
 
@@ -56,8 +57,8 @@ async def grant_consent(
         patient_id=str(record.patient_id),
         consent_type=record.consent_type.value if hasattr(record.consent_type, 'value') else str(record.consent_type),
         scope=record.scope,
-        granted_at=record.granted_at.isoformat(),
-        revoked_at=record.revoked_at.isoformat() if record.revoked_at else None,
+        granted_at=iso_utc(record.granted_at),
+        revoked_at=iso_utc(record.revoked_at),
     )
 
 
@@ -79,8 +80,8 @@ async def list_patient_consents(
             patient_id=str(r.patient_id),
             consent_type=r.consent_type.value if hasattr(r.consent_type, 'value') else str(r.consent_type),
             scope=r.scope,
-            granted_at=r.granted_at.isoformat(),
-            revoked_at=r.revoked_at.isoformat() if r.revoked_at else None,
+            granted_at=iso_utc(r.granted_at),
+            revoked_at=iso_utc(r.revoked_at),
         )
         for r in records
     ]
@@ -124,7 +125,7 @@ async def list_audit_logs(
             "action": log.action.value if hasattr(log.action, "value") else str(log.action),
             "resource_type": log.resource_type,
             "resource_id": str(log.resource_id),
-            "timestamp": log.timestamp.isoformat() if log.timestamp else None,
+            "timestamp": iso_utc(log.timestamp),
             "ip_address": log.ip_address,
             "details": log.details or {},
         }
@@ -163,5 +164,5 @@ async def revoke_consent(
     record = await ComplianceService.revoke_consent(db, consent_id, actor=current_user)
     return {
         "message": "Consent record revoked.",
-        "revoked_at": record.revoked_at.isoformat() if record and record.revoked_at else None,
+        "revoked_at": iso_utc(record.revoked_at if record else None),
     }

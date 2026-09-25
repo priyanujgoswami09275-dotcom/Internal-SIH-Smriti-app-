@@ -24,7 +24,7 @@ from sqlalchemy import select
 from app.config import settings
 from app.middleware.request_context import resolve_audit_ip
 from app.models.all_models import ConsentRecord, AuditLog, ConsentTypeEnum
-from app.services.game_service import iso_utc
+from app.services.datetime_utils import iso_utc
 
 logger = logging.getLogger(__name__)
 
@@ -365,10 +365,10 @@ class ComplianceService:
                 "probability": screening.probability,
                 "risk_score": screening.risk_score,
                 "model_version": screening.model_version,
-                "screened_at": screening.screened_at.isoformat(),
+                "screened_at": iso_utc(screening.screened_at),
                 "note": "Preliminary screening only; not a clinical diagnosis",
             } if screening else None,
-            "exported_at": datetime.now(timezone.utc).isoformat(),
+            "exported_at": iso_utc(datetime.now(timezone.utc)),
             "patient": {
                 "id": str(patient.id),
                 "name": patient.name,
@@ -385,8 +385,8 @@ class ComplianceService:
                     "id": str(c.id),
                     "scope": c.scope,
                     "consent_type": c.consent_type.value if hasattr(c.consent_type, "value") else str(c.consent_type),
-                    "granted_at": c.granted_at.isoformat() if c.granted_at else None,
-                    "revoked_at": c.revoked_at.isoformat() if c.revoked_at else None,
+                    "granted_at": iso_utc(c.granted_at),
+                    "revoked_at": iso_utc(c.revoked_at),
                 }
                 for c in consents
             ],
@@ -415,8 +415,8 @@ class ComplianceService:
                 {
                     "id": str(e.id),
                     "status": e.status.value if hasattr(e.status, "value") else str(e.status),
-                    "scheduled_at": e.scheduled_at.isoformat() if e.scheduled_at else None,
-                    "acknowledged_at": e.acknowledged_at.isoformat() if e.acknowledged_at else None,
+                    "scheduled_at": iso_utc(e.scheduled_at),
+                    "acknowledged_at": iso_utc(e.acknowledged_at),
                 }
                 for e in events
             ],
@@ -432,8 +432,8 @@ class ComplianceService:
                     ),
                     "notes": encryption.decrypt(log.notes) if log.notes else "",
                     "severity": log.severity,
-                    "timestamp": log.timestamp.isoformat() if log.timestamp else None,
-                    "created_at": log.created_at.isoformat() if log.created_at else None,
+                    "timestamp": iso_utc(log.timestamp),
+                    "created_at": iso_utc(log.created_at),
                 }
                 for log in symptom_logs
             ],
@@ -462,11 +462,7 @@ class ComplianceService:
                         if document.extracted_text
                         else None
                     ),
-                    "created_at": (
-                        document.created_at.isoformat()
-                        if document.created_at
-                        else None
-                    ),
+                    "created_at": iso_utc(document.created_at),
                 }
                 for document in documents
             ],
@@ -486,15 +482,11 @@ class ComplianceService:
                         else str(alert.severity)
                     ),
                     "alert_summary": alert.alert_summary,
-                    "created_at": alert.created_at.isoformat() if alert.created_at else None,
+                    "created_at": iso_utc(alert.created_at),
                     "acknowledged_by": (
                         str(alert.acknowledged_by) if alert.acknowledged_by else None
                     ),
-                    "acknowledged_at": (
-                        alert.acknowledged_at.isoformat()
-                        if alert.acknowledged_at
-                        else None
-                    ),
+                    "acknowledged_at": iso_utc(alert.acknowledged_at),
                 }
                 for alert in alerts
             ],
@@ -513,13 +505,9 @@ class ComplianceService:
                         if hasattr(link.permission_tier, "value")
                         else str(link.permission_tier)
                     ),
-                    "consent_granted_at": (
-                        link.consent_granted_at.isoformat()
-                        if link.consent_granted_at
-                        else None
-                    ),
+                    "consent_granted_at": iso_utc(link.consent_granted_at),
                     "is_active": link.is_active,
-                    "created_at": link.created_at.isoformat() if link.created_at else None,
+                    "created_at": iso_utc(link.created_at),
                 }
                 for link in caregiver_links
             ],
@@ -540,8 +528,8 @@ class ComplianceService:
                     "resource_id": str(row.resource_id),
                     "idempotency_key": row.idempotency_key,
                     "payload": row.payload,
-                    "created_at": row.created_at.isoformat() if row.created_at else None,
-                    "synced_at": row.synced_at.isoformat() if row.synced_at else None,
+                    "created_at": iso_utc(row.created_at),
+                    "synced_at": iso_utc(row.synced_at),
                     "retry_count": row.retry_count,
                     "last_error": row.last_error,
                 }
@@ -554,7 +542,7 @@ class ComplianceService:
                     "fcm_token": token.fcm_token,
                     "phone": token.phone,
                     "platform": token.platform,
-                    "updated_at": token.updated_at.isoformat() if token.updated_at else None,
+                    "updated_at": iso_utc(token.updated_at),
                 }
                 for token in device_tokens
             ],

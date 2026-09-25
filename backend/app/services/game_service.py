@@ -23,6 +23,7 @@ from app.services import (
     recall_service,
     routine_service,
 )
+from app.services.datetime_utils import iso_utc
 
 
 _SESSION_LOCKS: WeakKeyDictionary[
@@ -38,15 +39,6 @@ def _session_lock(session_id: UUID) -> asyncio.Lock:
         locks = tuple(asyncio.Lock() for _ in range(64))
         _SESSION_LOCKS[loop] = locks
     return locks[session_id.int % len(locks)]
-
-
-def iso_utc(value: Optional[datetime]) -> Optional[str]:
-    """Serialize a (possibly naive UTC) DateTime column as ISO-8601 with Z."""
-    if value is None:
-        return None
-    if value.tzinfo is None:
-        value = value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc).isoformat()
 
 
 _GAME_TIMESTAMP_MAX_AGE = timedelta(days=730)
@@ -199,7 +191,7 @@ class GameCompletionConflictError(RuntimeError):
 
 def _game_action_event(action: GameAction) -> Dict[str, Any]:
     event = {
-        "timestamp": action.created_at.isoformat() if action.created_at else None,
+        "timestamp": iso_utc(action.created_at),
         "idempotency_key": action.idempotency_key,
         "action_type": action.action_type,
         "action_data": action.action_data or {},
@@ -560,8 +552,8 @@ async def complete_game_session(
             "incorrect_count": incorrect_count,
             "accuracy_pct": accuracy_pct,
             "avg_response_time_ms": avg_response_time_ms,
-            "started_at": session.started_at.isoformat(),
-            "completed_at": session.completed_at.isoformat(),
+            "started_at": iso_utc(session.started_at),
+            "completed_at": iso_utc(session.completed_at),
             "recommended_level": recommended_level,
             "difficulty_reason": difficulty["reason"],
             "difficulty_source": difficulty.get("source"),
@@ -597,8 +589,8 @@ async def get_session_summary(db: AsyncSession, session_id: UUID) -> Dict[str, A
         "attempts": session.attempts,
         "accuracy_pct": session.accuracy_pct,
         "avg_response_time_ms": session.avg_response_time_ms,
-        "started_at": session.started_at.isoformat() if session.started_at else None,
-        "completed_at": session.completed_at.isoformat() if session.completed_at else None,
+        "started_at": iso_utc(session.started_at),
+        "completed_at": iso_utc(session.completed_at),
     }
 
 
@@ -628,7 +620,7 @@ async def get_patient_game_history(
             "difficulty_level": s.difficulty_level,
             "accuracy_pct": s.accuracy_pct,
             "avg_response_time_ms": s.avg_response_time_ms,
-            "completed_at": s.completed_at.isoformat() if s.completed_at else None,
+            "completed_at": iso_utc(s.completed_at),
         }
         for s in sessions
     ]

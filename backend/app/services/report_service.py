@@ -18,6 +18,7 @@ from app.models.all_models import (
     SymptomLog, ReminderStatusEnum, WeeklyReport,
 )
 from app.services.compliance_service import EncryptionService
+from app.services.datetime_utils import iso_utc
 
 
 class ReportService:
@@ -94,8 +95,8 @@ class ReportService:
             "region": region,
             "cognitive_baseline": baseline,
             "reporting_period": {
-                "start": start_date.isoformat(),
-                "end": now.isoformat(),
+                "start": iso_utc(start_date),
+                "end": iso_utc(now),
             },
             "cognitive_metrics": {
                 "total_sessions": total_games,
@@ -110,7 +111,7 @@ class ReportService:
             },
             "symptom_observations": symptom_notes,
             "clinical_recommendations": recommendations,
-            "generated_at": now.isoformat(),
+            "generated_at": iso_utc(now),
         }
 
     # =====================================================================

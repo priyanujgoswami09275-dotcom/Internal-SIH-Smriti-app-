@@ -34,6 +34,7 @@ from app.models.all_models import GameTypeEnum, PatientProfile, GameSession
 from app.models.user import User
 from app.services import game_service, difficulty_engine, routine_service, content_packs
 from app.services import level_config_service, recall_service, odd_one_out_service
+from app.services.datetime_utils import iso_utc
 
 router = APIRouter(prefix="/games", tags=["games"])
 
@@ -313,7 +314,7 @@ async def start_game(
     # Snapshot values, then commit: start_game_session only flushes, and reading
     # ORM attributes after commit requires expire_on_commit=False.
     session_id = str(session.id)
-    started_at = session.started_at.isoformat()
+    started_at = iso_utc(session.started_at)
     await db.commit()
 
     return {
@@ -472,9 +473,7 @@ async def get_my_history(
             total_attempts=session.attempts or 0,
             accuracy_pct=session.accuracy_pct,
             avg_response_time_ms=session.avg_response_time_ms,
-            completed_at=(
-                session.completed_at.isoformat() if session.completed_at else None
-            ),
+            completed_at=iso_utc(session.completed_at),
         )
         for session in sessions
     ]

@@ -755,13 +755,15 @@ async def test_replay_preserves_original_timestamps(client, db_session):
 
     assert response.status_code == 200, response.text
     session_id = response.json()["session_id"]
-    expected_started = original_started.replace(tzinfo=None).isoformat()
-    expected_completed = original_completed.replace(tzinfo=None).isoformat()
+    expected_stored_started = original_started.replace(tzinfo=None).isoformat()
+    expected_stored_completed = original_completed.replace(tzinfo=None).isoformat()
+    expected_started = original_started.isoformat().replace("+00:00", "Z")
+    expected_completed = original_completed.isoformat().replace("+00:00", "Z")
     assert response.json()["started_at"] == expected_started
 
     stored = await db_session.get(GameSession, uuid.UUID(session_id))
     await db_session.refresh(stored)
-    assert stored.started_at.isoformat() == expected_started
+    assert stored.started_at.isoformat() == expected_stored_started
 
     completed = await _complete(
         client,
@@ -772,6 +774,8 @@ async def test_replay_preserves_original_timestamps(client, db_session):
 
     assert completed.status_code == 200, completed.text
     assert completed.json()["completed_at"] == expected_completed
+    await db_session.refresh(stored)
+    assert stored.completed_at.isoformat() == expected_stored_completed
 
 
 @pytest.mark.asyncio

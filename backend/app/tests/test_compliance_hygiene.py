@@ -1,6 +1,6 @@
 import json
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi import FastAPI
@@ -343,3 +343,20 @@ def test_model_metadata_matches_production_constraints_and_indexes():
             for index in table.indexes
         }
         assert actual == indexes
+
+
+def test_existing_iso_utc_import_normalizes_to_literal_z():
+    from app.services.game_service import iso_utc
+
+    assert iso_utc(datetime(2026, 1, 2, 3, 4, 5)) == "2026-01-02T03:04:05Z"
+    assert iso_utc(
+        datetime(
+            2026,
+            1,
+            2,
+            3,
+            4,
+            5,
+            tzinfo=timezone(timedelta(hours=5, minutes=30)),
+        )
+    ) == "2026-01-01T21:34:05Z"

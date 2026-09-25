@@ -12,6 +12,7 @@ from app.database import get_db
 from app.deps import ensure_clinical_access, ensure_consent
 from app.models.all_models import DocumentTypeEnum, MedicalDocument, User
 from app.services.compliance_service import ComplianceService
+from app.services.datetime_utils import iso_utc
 from app.services.document_extraction import (
     ExtractedTextLimitError,
     MAX_UPLOAD_BYTES,
@@ -241,7 +242,7 @@ async def list_patient_documents(
                 if hasattr(embedding_status, "value")
                 else str(embedding_status)
             ),
-            "created_at": created_at.isoformat() if created_at else None,
+            "created_at": iso_utc(created_at),
         }
         for doc_id, title, file_ref, doc_type, embedding_status, created_at in res.all()
     ]
@@ -266,8 +267,8 @@ async def get_latest_weekly_report(
     return {
         "report_id": str(report.id),
         "patient_id": str(report.patient_id),
-        "week_start": report.week_start.isoformat(),
-        "generated_at": report.generated_at.isoformat(),
+        "week_start": iso_utc(report.week_start),
+        "generated_at": iso_utc(report.generated_at),
         "report": report.report_json,
     }
 

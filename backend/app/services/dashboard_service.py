@@ -17,6 +17,7 @@ from app.models.all_models import (
     ReminderEvent, ReminderSchedule, AlertFlag,
     GameTypeEnum, ReminderStatusEnum, PermissionTierEnum
 )
+from app.services.datetime_utils import iso_utc
 
 
 class DashboardService:
@@ -141,7 +142,7 @@ class DashboardService:
                 "trigger_type": a.trigger_type.value if hasattr(a.trigger_type, 'value') else str(a.trigger_type),
                 "severity": a.severity.value if hasattr(a.severity, 'value') else str(a.severity),
                 "summary": a.alert_summary,
-                "created_at": a.created_at.isoformat() if a.created_at else None,
+                "created_at": iso_utc(a.created_at),
                 "threshold_detail": a.threshold_detail,
             })
 
