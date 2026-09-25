@@ -3,7 +3,11 @@ import uuid
 from datetime import datetime, timezone
 
 import pytest
+from fastapi import FastAPI
+from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
 
+from app.middleware.rate_limit import RateLimitMiddleware
 from app.models.all_models import (
     AlertFlag,
     AlertSeverityEnum,
@@ -245,3 +249,64 @@ async def test_admin_audit_api_discloses_its_integrity_scope(client, db_session)
         "ip_address",
         "details",
     }
+
+
+@pytest.mark.asyncio
+async def test_request_audit_records_originating_client_address(db_session):
+    user = User(
+        phone=f"+91{uuid.uuid4().int % 10**10}",
+        password_hash="x",
+        role=RoleEnum.ADMIN,
+    )
+    db_session.add(user)
+    await db_session.commit()
+    probe = FastAPI()
+    probe.add_middleware(RateLimitMiddleware)
+
+    @probe.post("/audit")
+    async def create_audit():
+        entry = await ComplianceService.log_audit_access(
+            db_session,
+            user.id,
+            "read",
+            "patient_profile",
+            uuid.uuid4(),
+        )
+        return {"id": str(entry.id)}
+
+    transport = ASGITransport(
+        app=probe,
+        client=("198.51.100.42", 43123),
+    )
+    async with AsyncClient(transport=transport, base_url="http://probe") as http:
+        response = await http.post("/audit")
+
+    assert response.status_code == 200, response.text
+    rows = (
+        await db_session.execute(
+            select(AuditLog).where(AuditLog.resource_type == "patient_profile")
+        )
+    ).scalars().all()
+    assert len(rows) == 1
+    assert rows[0].ip_address == "198.51.100.42"
+
+
+@pytest.mark.asyncio
+async def test_background_audit_records_non_request_marker(db_session):
+    user = User(
+        phone=f"+91{uuid.uuid4().int % 10**10}",
+        password_hash="x",
+        role=RoleEnum.ADMIN,
+    )
+    db_session.add(user)
+    await db_session.commit()
+
+    entry = await ComplianceService.log_audit_access(
+        db_session,
+        user.id,
+        "write",
+        "patient_profile",
+        uuid.uuid4(),
+    )
+
+    assert entry.ip_address == "non-request"

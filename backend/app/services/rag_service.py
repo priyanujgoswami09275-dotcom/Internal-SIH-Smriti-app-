@@ -31,6 +31,7 @@ from typing import List, Dict, Any, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
+from app.middleware.request_context import resolve_audit_ip
 from app.models.all_models import MedicalDocument, DocumentChunk, EmbeddingStatusEnum
 from app.models.compliance import AuditActionEnum, AuditLog
 from app.services.compliance_service import EncryptionService
@@ -253,7 +254,7 @@ class RAGService:
                 action=AuditActionEnum.WRITE,
                 resource_type="medical_document",
                 resource_id=doc.id,
-                ip_address="127.0.0.1",
+                ip_address=resolve_audit_ip(),
                 details={},
             )
         )
@@ -358,7 +359,7 @@ class RAGService:
                     action=AuditActionEnum.WRITE,
                     resource_type="medical_document",
                     resource_id=document.id,
-                    ip_address="127.0.0.1",
+                    ip_address=resolve_audit_ip(),
                     details={
                         "operation": "rag_reindex",
                         "patient_id": str(patient_id),

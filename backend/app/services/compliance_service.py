@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from app.config import settings
+from app.middleware.request_context import resolve_audit_ip
 from app.models.all_models import ConsentRecord, AuditLog, ConsentTypeEnum
 from app.services.game_service import iso_utc
 
@@ -193,7 +194,7 @@ class ComplianceService:
         action: str,
         resource_type: str,
         resource_id: str,
-        ip_address: Optional[str] = "127.0.0.1",
+        ip_address: Optional[str] = None,
         details: Optional[Dict[str, Any]] = None,
     ) -> AuditLog:
         """Append an ORM audit event; database enforcement remains unverified."""
@@ -202,7 +203,7 @@ class ComplianceService:
             action=action,
             resource_type=resource_type,
             resource_id=resource_id,
-            ip_address=ip_address,
+            ip_address=resolve_audit_ip(ip_address),
             details=details or {},
             timestamp=datetime.now(timezone.utc),
         )
@@ -237,7 +238,7 @@ class ComplianceService:
                 action="read",
                 resource_type=resource_type,
                 resource_id=rid,
-                ip_address=ip_address or "127.0.0.1",
+                ip_address=ip_address,
                 details=details or {},
             )
         except Exception:  # noqa: BLE001 — audit is best-effort
@@ -278,7 +279,7 @@ class ComplianceService:
                 action="write",
                 resource_type=resource_type,
                 resource_id=rid,
-                ip_address=ip_address or "127.0.0.1",
+                ip_address=ip_address,
                 details=details or {},
             )
         except Exception:  # noqa: BLE001 — audit is best-effort
