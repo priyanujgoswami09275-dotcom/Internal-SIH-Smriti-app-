@@ -174,7 +174,13 @@ async def test_session_complete_returns_shadow_fields_without_rule_decision(clie
     assert body["recommended_level"] == 1
     logs = (await db_session.execute(select(DifficultyAdjustmentLog))).scalars().all()
     assert len(logs) == 1
-    assert logs[0].metadata.get("shadow_probability") == 0.42
+    # The prediction is recorded on the audit row...
+    assert logs[0].shadow_probability == 0.42
+    assert logs[0].shadow_model_version == "test-candidate"
+    # ...while the level itself was decided by the rules and held steady.
+    assert logs[0].source == "rule_fallback"
+    assert logs[0].old_difficulty == 1
+    assert logs[0].new_difficulty == 1
 
 
 async def test_session_complete_surfaces_unsupported_shadow_for_odd_one_out(client, db_session):
