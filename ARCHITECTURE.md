@@ -46,7 +46,7 @@ An in-progress game round is memory-only and is not resumed after app death.
 ### Backend
 - **Language:** Python 3.12 (pinned runtime)
 - **Framework:** FastAPI (async-first, Pydantic validation, OpenAPI docs)
-- **ORM:** SQLAlchemy 2.0 + Alembic; current single head `0014_reminder_idempotency`
+- **ORM:** SQLAlchemy 2.0 + Alembic; current single head `0015_rls_public_tables`
 - **Database:** PostgreSQL 16. The compose image includes pgvector, but current RAG vectors use a JSON column and Python cosine scoring rather than a pgvector index.
 - **Cache/rate limit:** Redis with in-process fallback
 - **Key files:**

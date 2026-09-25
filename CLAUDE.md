@@ -16,7 +16,7 @@ docs written before it landed are stale on those points.
 
 | Phase / area | Scope | Status | Evidence |
 |---|---|---|---|
-| 1–7 | Backend scaffold, data models, auth/RBAC, games, reminders + escalation, dashboard analytics, sync, and patient endpoints | Implemented + tested | Migrations `0001_initial_schema` through `0014_reminder_idempotency`; models/services/routes; access-gate tests |
+| 1–7 | Backend scaffold, data models, auth/RBAC, games, reminders + escalation, dashboard analytics, sync, and patient endpoints | Implemented + tested | Migrations `0001_initial_schema` through `0015_rls_public_tables`; models/services/routes; access-gate tests |
 | 8 | Pluggable ASR / NMT / TTS providers | Implemented + contract-tested | `language_service.py`; `auto` selects Sarvam → AI4Bharat → Bhashini → mock. The shipped example configuration has no provider credentials, so its default is deterministic simulated speech, not live speech. |
 | 9 | Voice companion (LLM) | Implemented | `llm_client.py` (OpenRouter default / Anthropic alternative), DB-versioned prompts, auth + config endpoints, canned-reply fallback |
 | 10 | RAG pipeline for medical documents | Implemented | Text PDF/text upload, chunking, embedding provenance checks, cited answers, encrypted source/chunk text, per-patient reindex command, and extractive fallback without an LLM key. Image-only PDFs are rejected because this build has no OCR. |
@@ -55,8 +55,8 @@ an emulator/device plus a backend at `10.0.2.2:8000`; for a physical device use
 
 Three surfaces share one FastAPI backend (`/api/v1` prefix, `GET /health` unprefixed):
 
-- **`mobile/`** — Flutter patient app (Android/iOS). It can start Match It, Routine Sequencing, and Number Recall from bundled offline data; Odd-One-Out requires a previously cached public board. Completed offline sessions/actions and reminder acknowledgments enter a durable drift SQLite outbox. `OfflineSyncService` polls every 30 seconds, scopes queued items to the active account, replays idempotently, and retains failed items for retry. Logout stops replay but does not delete another account's pending rows. Level configuration and public Odd-One-Out board snapshots use `SharedPreferences`; synthesized reminder audio uses a temporary text+language keyed cache. **An in-progress round is not checkpointed: process/app death starts a new board or cached round rather than resuming the exact board.**
-- **`dashboard/`** — Flutter Web caregiver dashboard split across `lib/main.dart`, `lib/config.dart`, theme code, and focused widgets. It has JWT login + serialized refresh, roster selection, role/permission-driven metric/trend/risk/document controls, an admin-only audit control with 50-row offset pagination, and a consent preflight before clinical screening or document upload. The server view remains authoritative. A release build refuses to configure without `--dart-define=API_BASE_URL=<absolute URL>`; development defaults to `http://localhost:8000`.
+- **`mobile/`** — Flutter patient app (Android/iOS). The API base URL comes from `--dart-define=API_BASE_URL`; a **release** build additionally requires it to be an explicit public `https://` URL and refuses to compile otherwise (unset, `http://`, loopback, or private-range hosts all fail the build). Debug/JIT builds keep the `localhost` / `10.0.2.2` defaults. The app can start Match It, Routine Sequencing, and Number Recall from bundled offline data; Odd-One-Out requires a previously cached public board. Completed offline sessions/actions and reminder acknowledgments enter a durable drift SQLite outbox. `OfflineSyncService` polls every 30 seconds, scopes queued items to the active account, replays idempotently, and retains failed items for retry. Logout stops replay but does not delete another account's pending rows. Level configuration and public Odd-One-Out board snapshots use `SharedPreferences`; synthesized reminder audio uses a temporary text+language keyed cache. **An in-progress round is not checkpointed: process/app death starts a new board or cached round rather than resuming the exact board.**
+- **`dashboard/`** — Flutter Web caregiver dashboard split across `lib/main.dart`, `lib/config.dart`, theme code, and focused widgets. It has JWT login + serialized refresh, roster selection, role/permission-driven metric/trend/risk/document controls, an admin-only audit control with 50-row offset pagination, and a consent preflight before clinical screening or document upload. The server view remains authoritative. A release build **fails to compile** without `--dart-define=API_BASE_URL=<public https URL>`; `http://` and loopback/private hosts are rejected too, because a served web build is itself loaded over HTTPS. Development defaults to `http://localhost:8000`.
 - **`backend/`** — FastAPI + SQLAlchemy 2.0 + Alembic + PostgreSQL. Routes: `auth`, `patients`, `games`, `reminders`, `compliance`, `dashboard`, `language`, `voice_companion`, `reports` (RAG + weekly summary), and `sync`. RAG vectors currently use a portable JSON column; pgvector is available in the compose image but is not the active vector index.
 
 **Access model** (`app/deps.py`): clients call the API with JWT bearer tokens; they have no Supabase/Firebase client SDK and no direct table access. The app layer resolves the user, then enforces `ensure_patient_access` (owner, active `CaregiverPatientLink`, or staff role), `ensure_consent` for `game_data`/`health_data`/`voice_companion`, and `get_permission_tier` → `basic`/`clinical`; clinical routes additionally call `ensure_clinical_access`. Enabling direct client database access later would require a new threat model plus publishable-only credentials, per-table/per-operation RLS, authenticated JWT claim propagation, tenant/patient/consent scoping, revocation/session handling, migration and integration tests, and proof that no service-role secret can reach a client. None of that exists in the current build.
@@ -115,6 +115,7 @@ Hard guard: `OPENROUTER_FREE_ONLY=true` refuses any model slug that is not
 - **Secret validation** — `Settings.validate_for_environment()` refuses placeholder/short `SECRET_KEY`/`ENCRYPTION_KEY` and wildcard CORS when `ENVIRONMENT=production`.
 - **No implicit access** — cross-patient access is rejected and unknown patient IDs return 404. Patient-link, consent-purpose, role, and clinical-tier checks happen in the FastAPI app layer.
 - **No direct client data access** — mobile and dashboard use only the REST API. They do not embed Supabase/Firebase table SDKs, anon table credentials, or a service-role key.
+- **Row-level security (defense in depth)** — migration `0015` enables RLS on every public table and creates **no policies**, so any non-owner role reads zero rows even if it holds a table `GRANT`. The API connects as the table owner, which bypasses RLS because `FORCE ROW LEVEL SECURITY` is deliberately not set. The app layer therefore remains the single authorization point; RLS is a backstop against a leaked anon/publishable key, not a replacement for `app/deps.py`. See **Schema parity and row-level security**.
 - **Permission tiers** — `basic` for linked family caregivers by default; `clinical` for ASHA workers, clinicians, admins, patient owners, or an explicitly clinical link. Controls are role/permission-driven, but the server remains authoritative.
 - **At-rest encryption** — `EncryptionService` (Fernet, key SHA-256-derived from `ENCRYPTION_KEY`) protects `SymptomLog.notes`, `MedicalDocument.extracted_text`, and every new `DocumentChunk.chunk_text`. Plaintext exists only during processing/retrieval in memory.
 - **Audit trail** — broad read coverage plus tested write coverage for consent, reminders, alerts, document ingest/reindex, voice conversations, sync materialization, and other patient-data paths. Most read/write helper calls are best-effort (failure is logged and the request continues); consent grant/revoke, document ingest/reindex, and data export are fail-closed. Retention excludes audit rows. **Database-level immutability is not enforced**: there are no database triggers, grants, or update/delete denial policies, so an actor with database write privileges can alter or remove a row.
@@ -143,13 +144,41 @@ there is no OCR, so image-only PDFs fail before persistence.
 
 ### Migrations
 
-The single Alembic head is `0014_reminder_idempotency`. The canonical migration
+The single Alembic head is `0015_rls_public_tables`. The canonical migration
 test is part of `cd backend && python3 -m pytest app/tests tests -q`; CI also
 runs `alembic upgrade head` against a clean PostgreSQL 16 service. Never run
 `alembic upgrade head` casually against the populated demo database: back it up,
 verify the exact database/system identifier and current revision, review the
 migration, and obtain explicit approval first. `smoke_e2e.py` also writes
 synthetic records and is not a read-only check.
+
+### Schema parity and row-level security
+
+Two opt-in suites compare the ORM models to the migration-built schema and
+assert the database security posture. Both run in CI against the freshly
+migrated service and skip cleanly elsewhere:
+
+```sh
+cd backend
+SCHEMA_PARITY_POSTGRES_URL="$DATABASE_URL" python3 -m pytest tests/test_model_schema_parity.py -q
+RLS_MIGRATION_POSTGRES_URL="$DATABASE_URL" python3 -m pytest tests/test_migrations.py -q
+```
+
+`test_model_schema_parity.py` asserts the model metadata and the migrated
+schema agree on table set, columns, nullability, and unique
+constraints/indexes — so a column that exists in only one of them fails the
+build rather than a request. `test_migrations.py` additionally asserts every
+public table has RLS enabled, that **zero** policies exist, and that the owner
+role (the API's connection) still reads its rows.
+
+Migration `0015` is what makes RLS reproducible. It enables RLS on every
+public table discovered from the live catalog and creates **no policies**, so a
+non-owner role reads zero rows even if it holds a table GRANT. It is idempotent,
+so applying it to a project that was fixed by hand is safe. Its downgrade
+disables RLS; that is a deliberate security regression kept only for a
+reversible chain and should not be run against a deployed database. Do not add
+permissive policies: the FastAPI app layer is the single authorization point
+(see **Access model**), and a second, weaker path is a regression.
 
 ---
 
@@ -423,7 +452,7 @@ preferred language on the user and gates controls from the status endpoint.
 | Auth | REST JWT + app-layer RBAC | No direct client database credentials or table SDK |
 | LLM | OpenRouter default / Anthropic alternative | Configurable free-model fallback chain and deterministic fallback |
 | Speech | Sarvam / AI4Bharat / Bhashini / mock | Operation-specific language gating; default is simulated without credentials |
-| Migrations | Alembic | SQLAlchemy-native chain; current head `0014_reminder_idempotency` |
+| Migrations | Alembic | SQLAlchemy-native chain; current head `0015_rls_public_tables` |
 
 ---
 
@@ -448,7 +477,7 @@ backend/
 │   ├── config.py         # Settings, environment loading, production secret/CORS refusal
 │   ├── main.py           # app factory, middleware, lifespan jobs + validation
 │   └── tests/            # pytest API/security/service/provider coverage
-├── alembic/              # migration chain 0001_initial_schema → 0014_reminder_idempotency
+├── alembic/              # migration chain 0001_initial_schema → 0015_rls_public_tables
 ├── tests/                # auth, models, migrations, model/artifact tests
 ├── test_phase2_services.py  # standalone service checks
 ├── smoke_e2e.py          # live-server E2E walk (writes synthetic records)

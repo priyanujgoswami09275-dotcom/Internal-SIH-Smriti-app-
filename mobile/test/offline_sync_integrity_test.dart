@@ -36,6 +36,9 @@ class _Transport {
   bool failFirstComplete = false;
   bool failSync = false;
 
+  /// Server answers 422 for a sync item it cannot materialize.
+  bool rejectSyncUnprocessable = false;
+
   final List<_CapturedRequest> requests = [];
   final Map<String, String> sessionsByKey = {};
   final Set<String> actionKeys = {};
@@ -151,6 +154,12 @@ class _Transport {
     if (request.method == 'POST' && path.endsWith('/sync')) {
       if (failSync) {
         return _StubResponse.json(500, {'detail': 'sync unavailable'});
+      }
+      if (rejectSyncUnprocessable) {
+        return _StubResponse.json(422, {
+          'detail': 'Unsupported sync resource_type/operation: '
+              'offline_symptom/create',
+        });
       }
       return _StubResponse.json(200, {
         'patient_id': 'patient-a',
@@ -542,6 +551,35 @@ void main() {
     final visibleFailure = (fixture.sync as dynamic).lastFailure;
     expect(visibleFailure, isNotNull);
     expect('$visibleFailure', contains('sync'));
+  });
+
+  test('a 422 sync rejection is not falsely acknowledged', () async {
+    final fixture = await _fixture(transport);
+    transport.rejectSyncUnprocessable = true;
+    await fixture.db.enqueueSyncItem(SyncQueueItem(
+      id: 'rejected-item',
+      patientId: 'patient-original',
+      resourceType: 'offline_symptom',
+      operation: 'create',
+      resourceId: '00000000-0000-4000-8000-0000000000aa',
+      payload: {
+        'account_id': 'user-a',
+        'entered_by': 'user-a',
+        'notes': 'chest pain',
+      },
+      createdAt: DateTime.utc(2026, 9, 25, 9),
+    ));
+
+    // Nothing is reported as synced.
+    expect(await fixture.sync.syncNow(), 0);
+
+    // The item is still queued, unsynced, and carries a visible reason.
+    final pending = await fixture.db.pendingSyncItems();
+    final rejected = pending.firstWhere((item) => item.id == 'rejected-item');
+    // A pending item is by definition unsynced; the failure must be visible.
+    expect(rejected.lastError, isNotNull);
+    expect('${rejected.lastError}'.toLowerCase(),
+        anyOf(contains('422'), contains('unprocessable'), contains('resource_type')));
   });
 
   test('a legitimate offline game session still syncs end to end', () async {

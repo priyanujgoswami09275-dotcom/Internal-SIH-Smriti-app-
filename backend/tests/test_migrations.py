@@ -1,8 +1,13 @@
+import os
+import pathlib
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 import sqlalchemy as sa
+from alembic import command
+from alembic.config import Config
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
 from alembic.script import ScriptDirectory
@@ -42,7 +47,7 @@ def test_risk_screening_migration_is_additive_and_cascades():
 
 def test_shadow_migration_preserves_legacy_rows_and_round_trips():
     script = ScriptDirectory(str(MIGRATIONS))
-    assert script.get_heads() == ["0014_reminder_idempotency"]
+    assert script.get_heads() == ["0015_rls_public_tables"]
     revision = script.get_revision("0009_shadow_difficulty")
     assert revision.down_revision == "0008_risk_screening"
     engine = sa.create_engine("sqlite://")
@@ -68,7 +73,7 @@ def test_odd_one_out_migration_additive_and_round_trips():
     import json
 
     script = ScriptDirectory(str(MIGRATIONS))
-    assert script.get_heads() == ["0014_reminder_idempotency"]
+    assert script.get_heads() == ["0015_rls_public_tables"]
     revision = script.get_revision("0010_odd_one_out")
     assert revision.revision == "0010_odd_one_out"
     assert revision.down_revision == "0009_shadow_difficulty"
@@ -138,6 +143,104 @@ def test_every_alembic_revision_id_fits_version_num_column():
     assert revisions
     assert len(script.get_heads()) == 1
     assert all(len(revision.revision) <= 32 for revision in revisions)
+
+
+def test_rls_migration_is_postgres_only_and_adds_no_policies():
+    """The RLS revision must be a no-op off PostgreSQL and must never create a
+    policy: a permissive policy would create a second authorization path that
+    conflicts with the app-layer gates in app/deps.py."""
+    script = ScriptDirectory(str(MIGRATIONS))
+    revision = script.get_revision("0015_rls_public_tables")
+    assert revision.down_revision == "0014_reminder_idempotency"
+    source = revision.module.__file__
+    text = pathlib.Path(source).read_text()
+    assert "CREATE POLICY" not in text.upper()
+    assert "FORCE ROW LEVEL SECURITY" not in text.upper()
+
+    engine = sa.create_engine("sqlite://")
+    try:
+        with engine.begin() as connection:
+            # SQLite has no RLS; upgrade() must skip rather than raise.
+            with Operations.context(MigrationContext.configure(connection)):
+                revision.module.upgrade()
+            with Operations.context(MigrationContext.configure(connection)):
+                revision.module.downgrade()
+    finally:
+        engine.dispose()
+
+
+def test_rls_migration_enables_every_public_table_on_postgres():
+    """Against real PostgreSQL, every application table must end up with RLS
+    on and zero policies, and the owner role must still read its own rows."""
+    pytest.importorskip("psycopg")
+    url = os.environ.get("RLS_MIGRATION_POSTGRES_URL")
+    if not url:
+        pytest.skip("Set RLS_MIGRATION_POSTGRES_URL to a disposable PostgreSQL database")
+    assert url.startswith("postgresql"), "RLS_MIGRATION_POSTGRES_URL must be a PostgreSQL URL"
+    engine = sa.create_engine(url, poolclass=sa.pool.NullPool)
+    try:
+        config = Config()
+        config.set_main_option("script_location", str(MIGRATIONS))
+        config.set_main_option("sqlalchemy.url", url.replace("%", "%%"))
+        command.upgrade(config, "head")
+        with engine.begin() as connection:
+            tables = [
+                row[0]
+                for row in connection.execute(
+                    sa.text(
+                        "SELECT tablename FROM pg_tables "
+                        "WHERE schemaname='public' AND tablename <> 'alembic_version'"
+                    )
+                )
+            ]
+            assert tables, "no application tables found"
+            unprotected = [
+                row[0]
+                for row in connection.execute(
+                    sa.text(
+                        "SELECT tablename FROM pg_tables "
+                        "WHERE schemaname='public' AND tablename <> 'alembic_version' "
+                        "AND NOT rowsecurity"
+                    )
+                )
+            ]
+            assert unprotected == [], f"tables without RLS: {unprotected}"
+            # No policies: a non-owner role must read nothing.
+            assert connection.execute(
+                sa.text("SELECT count(*) FROM pg_policies WHERE schemaname='public'")
+            ).scalar() == 0
+            # The owner path the API actually uses must keep working.
+            probe_phone = f"+919{uuid4().int % 10**8:08d}"
+            connection.execute(
+                sa.text(
+                    "INSERT INTO users (id, password_hash, phone, role, preferred_language) "
+                    "VALUES (gen_random_uuid(), 'test-only', :phone, 'patient', 'english')"
+                ),
+                {"phone": probe_phone},
+            )
+            assert connection.execute(
+                sa.text("SELECT count(*) FROM users WHERE phone = :phone"),
+                {"phone": probe_phone},
+            ).scalar() == 1
+            connection.execute(
+                sa.text("DELETE FROM users WHERE phone = :phone"), {"phone": probe_phone}
+            )
+        command.downgrade(config, "0014_reminder_idempotency")
+        with engine.connect() as connection:
+            disabled = [
+                row[0]
+                for row in connection.execute(
+                    sa.text(
+                        "SELECT tablename FROM pg_tables "
+                        "WHERE schemaname='public' AND tablename <> 'alembic_version' "
+                        "AND rowsecurity"
+                    )
+                )
+            ]
+            assert disabled == [], f"downgrade left RLS enabled on: {disabled}"
+        command.upgrade(config, "head")
+    finally:
+        engine.dispose()
 
 
 @pytest.mark.parametrize("existing", [False, True])

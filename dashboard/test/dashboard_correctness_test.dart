@@ -549,4 +549,28 @@ void main() {
       'https://api.example.test',
     );
   });
+
+  test('release configuration refuses http and non-public hosts', () {
+    // A served web build is loaded over HTTPS, so an http:// API URL is mixed
+    // content, and a loopback/private host can never resolve in a browser.
+    for (final url in <String>[
+      'http://api.example.test',
+      'https://localhost',
+      'https://127.0.0.1',
+      'https://10.0.2.2',
+      'https://192.168.1.20',
+      'https://172.16.0.5',
+    ]) {
+      expect(
+        () => resolveApiBaseUrl(release: true, configured: url),
+        throwsA(isA<StateError>()),
+        reason: '$url must be rejected in a release web build',
+      );
+    }
+    // The same values remain usable for local development.
+    expect(
+      resolveApiBaseUrl(release: false, configured: 'http://localhost:8000'),
+      'http://localhost:8000',
+    );
+  });
 }

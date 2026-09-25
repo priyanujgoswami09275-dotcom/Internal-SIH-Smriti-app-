@@ -154,6 +154,28 @@ the gitignored root `.env` (see `.env.example` for the pooler/session-mode
 shape) and export it for Alembic, which reads the process environment rather
 than the file.
 
+### Release builds (both clients)
+
+A release build must be told where the API lives, and it must be a real public
+HTTPS address:
+
+```sh
+# mobile
+cd mobile && flutter build apk --release --dart-define=API_BASE_URL=https://api.example.org
+# dashboard (web)
+cd dashboard && flutter build web --release --dart-define=API_BASE_URL=https://api.example.org
+```
+
+Both clients **refuse to compile** a release build when the URL is missing, uses
+`http://`, or points at loopback/a private address. Debug and `flutter run`
+keep their localhost defaults. A public tunnel (Cloudflare/ngrok) works for a
+demo because it is HTTPS, but its URL is temporary — pass it at build time for
+the session you need and never bake it into the source.
+
+Android release signing reads `mobile/android/key.properties` when present
+(gitignored). Without it the APK is signed with the Android debug key, which is
+fine for sideloading a demo but not for a store upload.
+
 ---
 
 ## Connectivity and durability
@@ -195,7 +217,15 @@ Reminder schedules use daily wall-clock grammar:
 `HH:MM AM|PM Daily` is accepted. Notification transport is not configured by
 default.
 
-## Access model
+## Database and access model
+
+The backend persists to PostgreSQL, in production a managed Supabase project
+reached over the pooler. The schema is built **only** by
+`alembic upgrade head`; there is no hand-applied DDL. The current head is
+`0015_rls_public_tables`, which enables row-level security on every application
+table and creates no policies — so a role that somehow obtained a table
+`GRANT` still reads zero rows. The API connects as the table owner and is the
+single authorization point.
 
 Clients use REST requests with JWT bearer tokens. There is no Supabase client,
 Firebase table SDK, client-side anon table credential, or service-role key in

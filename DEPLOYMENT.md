@@ -4,17 +4,82 @@
 - All 12 phases have implementation coverage; `CLAUDE.md` is the reconciled source of truth for current behavior and limitations.
 - Canonical backend verification (run from `backend/`): `python3 -m pytest app/tests tests -q`. Do not copy a historical pass count into the runbook; use the current command/CI output.
 - Standalone services: `python3 test_phase2_services.py`.
-- CI keeps the backend pytest/standalone gates, applies `alembic upgrade head` to a clean PostgreSQL 16 service, and runs `smoke_e2e.py` against that service. It also runs mobile dependency/codegen/analyze/unit-test gates and dashboard VM tests, Chrome-platform tests, and a release web build.
-- Production posture: app-layer JWT/RBAC/consent, production secret/CORS refusal, Redis-backed rate limiting with fallback, Fernet field encryption, and broad audit coverage. Audit rows are retained by application policy but database-level immutability is not enforced.
+- CI keeps the backend pytest/standalone gates, applies `alembic upgrade head` to a clean PostgreSQL 16 service, verifies the models match that migrated schema and that RLS is on every table, and runs `smoke_e2e.py` against it. It also runs mobile dependency/codegen/analyze/unit-test gates, dashboard VM tests, Chrome-platform tests, a release web build, and negative checks proving both clients **refuse** to produce a release build without an explicit public HTTPS API URL.
+- Production posture: app-layer JWT/RBAC/consent, production secret/CORS refusal, Redis-backed rate limiting with fallback, Fernet field encryption, row-level security on every table with zero policies, and broad audit coverage. Audit rows are retained by application policy but database-level immutability is not enforced.
+
+## Cloud database (Supabase) — current state
+
+The cloud project is the persistence target for the demo; a local PostgreSQL is
+the alternative. Facts as verified on 2026-09-25:
+
+- Schema revision: `0015_rls_public_tables` (single head).
+- 21 application tables, all with RLS **enabled** and **zero policies**. A
+  non-owner role therefore reads zero rows even holding a table GRANT; the API
+  connects as the table owner and is unaffected (owners bypass RLS because
+  `FORCE ROW LEVEL SECURITY` is not set). This is defense in depth — the
+  FastAPI app layer remains the single authorization point.
+- RLS is now created by migration `0015`, not by hand. A fresh
+  `alembic upgrade head` reproduces it. Do not re-enable RLS manually.
+- Server `TimeZone` is UTC and application timestamps are naive UTC; the
+  connection sets `options=-c timezone=UTC` so this holds on any host.
+- Data present: 4 users, 2 patients, 8 game sessions, 12 level-config rows, and
+  the associated consent/audit/screening rows. `medical_documents` is empty
+  (RAG was verified with throwaway documents that were then removed).
+
+**Temporary vs durable hosting.** A tunnel (Cloudflare/ngrok) is a *temporary*
+public URL: it rotates on every start and dies with the process. It is fine for
+a demo but must never be baked into a build. Durable hosting means deploying the
+backend to a real host (option B below) and serving the dashboard from a real
+web origin; both then use a stable HTTPS URL that release builds can be pinned
+to. See "Remote HTTPS access" below.
 
 ## Pre-deploy checklist (must complete before flip to production)
 1. Generate real SECRET_KEY (>=24 chars) and ENCRYPTION_KEY (>=16 chars).
 2. Set CORS_ORIGINS to real origins (not *); ENVIRONMENT=production.
 3. Add OPENROUTER_API_KEY / BHASHINI_API_KEY / ANTHROPIC_API_KEY (opt-in).
-4. Provision managed PostgreSQL, take/verify a backup, inspect the current revision, review the migration plan, and obtain approval before `alembic upgrade head`. The current single head is `0014_reminder_idempotency`.
+4. Provision managed PostgreSQL, take/verify a backup, inspect the current revision, review the migration plan, and obtain approval before `alembic upgrade head`. The current single head is `0015_rls_public_tables`.
 5. Set TLS 1.2+ in front (load balancer / reverse proxy).
 6. Configure real notification channel (SMS/FCM/APNs) beyond console.
-7. Clean build artifacts (mobile/build, .dart_tool; backend/.venv) and refresh graph (`graphify update .`).
+7. Supply a real release keystore as `mobile/android/key.properties` (gitignored). Without it the release APK is signed with the Android debug key, which is fine for sideloading a demo but **not** acceptable for a store upload. See "Release signing" below.
+8. Rotate any credential that has ever appeared in a transcript, log, or commit. Treat a key as compromised once printed.
+9. Clean build artifacts (mobile/build, .dart_tool; backend/.venv) and refresh graph (`graphify update .`).
+
+## Release configuration contract (both Flutter clients)
+
+Neither client will produce a release build without an explicit, public HTTPS
+API URL. This is enforced at **compile time**, so a bad binary cannot be
+produced at all:
+
+- `--dart-define=API_BASE_URL` unset → the release build fails.
+- `http://` → the release build fails (mobile and dashboard).
+- Loopback or private host (`localhost`, `127.0.0.1`, `10.0.0.0/8`,
+  `192.168.0.0/16`, `172.16-31`, `10.0.2.2`, `*.local`) → the release build
+  fails.
+- Debug/JIT builds keep the localhost and `10.0.2.2` defaults so
+  `flutter run` works with no flags.
+
+Verified: `flutter build web --release` without a define fails to compile;
+with `https://api.example.org` it succeeds. `flutter build apk --release`
+behaves the same way. CI asserts both the positive and the negative case.
+
+Never hardcode a tunnel URL in either client. Pass it at build time for the
+session it is needed, and treat it as temporary.
+
+### Release signing (Android)
+
+`mobile/android/app/build.gradle.kts` reads `mobile/android/key.properties`
+(gitignored, never committed):
+
+```properties
+storePassword=...
+keyPassword=...
+keyAlias=...
+storeFile=/absolute/path/to/upload-keystore.jks
+```
+
+When the file is absent the release build falls back to the Android debug key
+so a demo APK can be built and sideloaded with no secret in the repository.
+Supply a real keystore before any store upload.
 
 ## Remote HTTPS access (cloud DB + real phones) — 2026-09-24
 
@@ -57,9 +122,13 @@ Docker-capable host (Render/Railway/Fly/VPS). Required environment variables:
 - `SECRET_KEY`, `ENCRYPTION_KEY` — real values (≥24 / ≥16 chars)
 - `ENVIRONMENT=production` — enables rate limiting; refuses placeholder secrets
 - `CORS_ORIGINS` — comma-separated whitelist (required, `*` refused in production); native Flutter needs no CORS, Flutter **web** dashboard origin must be listed
-- `ADAPTIVE_SHADOW_MODEL=bootstrap.joblib` (keep shadow-only; rules stay authoritative)
-- Optional provider keys (OPENROUTER/BHASHINI/…) as needed
+- `ADAPTIVE_SHADOW_MODEL` — **leave empty unless you deliberately want shadow inference on.** Empty is the safe default: `evaluate_shadow` returns `shadow_reason="disabled"` before loading any model, and the rule-based difficulty authority is unaffected either way. Setting it to `bootstrap.joblib` requires scikit-learn to match `requirements.txt` (`1.6.1`); on a mismatched interpreter the loader refuses and reports `shadow_reason="artifact_incompatible"` rather than predicting from a corrupt model.
+- Optional provider keys (OPENROUTER/SARVAM/BHASHINI/…) as needed
 - Run `python -m alembic upgrade head` once with `DATABASE_URL` exported (process env, not .env)
+
+The image pins `scikit-learn==1.6.1` to match the shipped shadow artifact. If you
+override that pin, shadow inference degrades to `artifact_incompatible` (safe,
+but silent) — the difficulty rules are unaffected.
 
 UTC handling (`options=-c timezone=UTC`, naive-UTC writes) is env-independent
 and unchanged on any host.
@@ -67,8 +136,9 @@ and unchanged on any host.
 ## Run — September 30 demo (authoritative)
 
 The demo runs against the **populated Homebrew PostgreSQL cluster on the host**:
-`localhost:5432/eldercare`, system identifier `7681754862742343790`, holding the
-existing **13 patients and 10 documents**. Do **not** run
+`localhost:5432/eldercare`, system identifier `7681754862742343790`, holding
+**21 patients and 10 documents** as of 2026-09-25 (re-verify with the preflight;
+never assume a count). Do **not** run
 `docker compose up` for the demo — the compose Postgres (`192.168.23.25:5432`,
 system id `7682040204916105254`) is a separate, empty cluster. Do **not** reseed
 or reset the demo database.
@@ -116,7 +186,10 @@ print(f"OK: eldercare sysid={sysid} patients={patients} documents={docs}")
 PY
 ```
 
-Expected output: `OK: eldercare sysid=7681754862742343790 patients=13 documents=10`.
+Expected shape: `OK: eldercare sysid=7681754862742343790 patients=<N> documents=<N>`.
+The preflight asserts the *cluster identity*; treat the counts as informational
+and compare them against the last known-good note, not against a number typed
+into this file.
 If the system identifier differs, you are pointed at the wrong cluster — stop.
 
 ### Start the backend (demo baseline)
@@ -184,9 +257,32 @@ stay TLS-only. The `API_BASE_URL` flag is defined in
 notifications, visual walkthrough) is **not verified** — do not claim on-device
 validation.
 
+### Known migration state of each database (verified 2026-09-25)
+
+| Database | Revision | Action needed |
+|---|---|---|
+| Supabase cloud | `0015_rls_public_tables` (head) | none |
+| Fresh PostgreSQL | `0015_rls_public_tables` after `alembic upgrade head` | none |
+| Local demo `localhost:5432/eldercare` | **`0010_odd_one_out`** | 5 migrations pending — see below |
+
+The local demo database is **five revisions behind head** (`0011`–`0015`).
+`0011`–`0014` were applied to the cloud database and verified against populated
+data on a throwaway copy: the sync-queue backfill populated every existing row,
+existing game sessions/documents/consent were preserved, and `0015` enabled RLS
+on all 21 tables. So the pending chain is expected to apply cleanly to the demo
+database — but it has **not** been applied there, and the demo rules still
+require the preflight, a fresh backup, and explicit operator approval first.
+Until it is applied, the demo database cannot use the sync/game/reminder
+idempotency guarantees the code now relies on.
+
+`0014` adds `occurrence_key`/`dedup_key` as nullable with no backfill, so
+pre-existing reminder events keep a NULL key and are not deduped against new
+ones. That is intentional and safe: the uniqueness constraint only governs rows
+written after the upgrade. The generator populates the key for every new event.
+
 ### Migration safety for the populated demo database
 
-The source chain now has one head: `0014_reminder_idempotency`. The historical
+The source chain now has one head: `0015_rls_public_tables`. The historical
 `0009`-only gate below has been superseded; do not use old process IDs, schema
 stamps, or approval notes as current state.
 
@@ -215,7 +311,7 @@ service is not evidence that the populated demo database was migrated.
 The migration-recovery notes below are **historical record only**. They describe
 the earlier `0003` stamp, `0005` rename, and `0004` DDL recovery. They do not
 establish the demo database's current revision; inspect the live database. The
-source-of-truth chain currently ends at `0014_reminder_idempotency`, and
+source-of-truth chain currently ends at `0015_rls_public_tables`, and
 `CLAUDE.md` was reconciled on 2026-09-25.
 
 ## Upgrade regression checkpoint — 2026-09-23 (fix-it waves 1-6)

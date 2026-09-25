@@ -1,8 +1,7 @@
 // Wave 2C task 2.4-dashboard: RAG upload wired end-to-end.
 // TDD: Api.uploadDocument sends auth header + file part + fields;
 // widget surfaces success/failure with server detail; no curl dialog.
-import 'dart:typed_data';
-
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
@@ -102,6 +101,10 @@ void main() {
     expect(find.textContaining('clinical tier required'), findsWidgets);
   });
 
+  // This asserts the non-web fallback branch (kIsWeb == false and no pickFn),
+  // which is unreachable when the suite runs on Chrome. It is a deliberate
+  // VM-only test, not a web regression: on web the picker path is taken and is
+  // covered by the tests above via the injected pickFn seam.
   testWidgets('non-web without picker seam shows web-only notice',
       (tester) async {
     await tester.pumpWidget(const MaterialApp(
@@ -112,5 +115,5 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.textContaining('web dashboard only'), findsOneWidget);
-  });
+  }, skip: kIsWeb);
 }

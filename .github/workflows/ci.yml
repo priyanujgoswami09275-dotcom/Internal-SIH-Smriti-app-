@@ -46,6 +46,13 @@ jobs:
           python test_phase2_services.py
       - name: Apply migration on a clean Postgres
         run: alembic upgrade head
+      - name: Verify models match the migrated schema, and RLS is on every table
+        env:
+          SCHEMA_PARITY_POSTGRES_URL: postgresql+psycopg://postgres:postgres@localhost:5432/eldercare
+          RLS_MIGRATION_POSTGRES_URL: postgresql+psycopg://postgres:postgres@localhost:5432/eldercare
+        run: |
+          python -m pytest tests/test_model_schema_parity.py -q
+          python -m pytest tests/test_migrations.py -q
       - name: Live E2E smoke against Postgres
         run: |
           python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 &
@@ -90,6 +97,35 @@ jobs:
       - name: Dashboard — release web build
         working-directory: dashboard
         run: flutter build web --release --dart-define=API_BASE_URL=https://ci.invalid
+      - name: Dashboard — release build refuses a non-public API URL
+        working-directory: dashboard
+        # The release guard must fail the build, not just fail at runtime, so a
+        # shipped bundle can never point at localhost or cleartext http.
+        run: |
+          if flutter build web --release --dart-define=API_BASE_URL=http://127.0.0.1:8000; then
+            echo "::error::release build accepted a loopback http API_BASE_URL"
+            exit 1
+          fi
+          if flutter build web --release; then
+            echo "::error::release build succeeded without an explicit API_BASE_URL"
+            exit 1
+          fi
+      - name: Mobile — release build requires an explicit https API URL
+        working-directory: mobile
+        # The compile-time guard must reject an unset URL and a cleartext
+        # emulator URL, so an APK that cannot reach a real API is never built.
+        # `flutter build apk` needs a JDK on the runner (already present on
+        # ubuntu-latest images).
+        run: |
+          flutter build apk --release --dart-define=API_BASE_URL=https://ci.invalid
+          if flutter build apk --release; then
+            echo "::error::release APK built without an explicit API_BASE_URL"
+            exit 1
+          fi
+          if flutter build apk --release --dart-define=API_BASE_URL=http://10.0.2.2:8000; then
+            echo "::error::release APK accepted a cleartext emulator API_BASE_URL"
+            exit 1
+          fi
       - name: Secret scan (gitleaks)
         uses: gitleaks/gitleaks@v2
         with:
