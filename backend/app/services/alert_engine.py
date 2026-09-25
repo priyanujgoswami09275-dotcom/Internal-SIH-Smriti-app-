@@ -9,9 +9,8 @@ Rules (hourly job, per patient with recent activity):
 
 Dedup: one alert per (patient, trigger) per 24h — same guard as the reminder rule.
 
-ponytail: week-over-week accuracy is computed with two SUM() queries, not a
-rolling window table — fine at demo scale; upgrade to a materialized trend if
-patients exceed thousands.
+Week-over-week accuracy uses the same completed-session aggregation as the
+caregiver dashboard and weekly report.
 """
 from __future__ import annotations
 
@@ -20,7 +19,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List
 
-from sqlalchemy import distinct, func, select
+from sqlalchemy import distinct, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -34,6 +33,11 @@ from app.models.all_models import (
     ReminderSchedule,
     ReminderStatusEnum,
     ReminderTypeEnum,
+)
+from app.services.dashboard_service import (
+    accuracy_drop,
+    get_game_analytics,
+    naive_utc,
 )
 from app.services.notification_service import notify_escalation_results
 from app.services.reminder_service import (
@@ -93,20 +97,8 @@ class AlertEngine:
 
     @staticmethod
     async def _week_accuracy(db: AsyncSession, patient_id, start: datetime, end: datetime):
-        row = (
-            await db.execute(
-                select(
-                    func.coalesce(func.sum(GameSession.attempts), 0),
-                    func.coalesce(func.sum(GameSession.correct_count), 0),
-                ).where(
-                    GameSession.patient_id == patient_id,
-                    GameSession.started_at >= start,
-                    GameSession.started_at < end,
-                )
-            )
-        ).one()
-        attempts, correct = row[0], row[1]
-        return (correct / attempts * 100.0) if attempts else None
+        analytics = await get_game_analytics(db, patient_id, start, end)
+        return analytics["aggregate"]["accuracy_pct"]
 
     @staticmethod
     async def evaluate_patient(
@@ -121,27 +113,33 @@ class AlertEngine:
         for a in esc.get("alerts", []) or []:
             raised.append(a)  # already committed by evaluate_escalations
 
-        # --- Rule 2: cognitive drop >=20% week-over-week ---
         week2_start = now - timedelta(days=7)
         week1_start = now - timedelta(days=14)
-        earlier_acc = await AlertEngine._week_accuracy(db, patient_id, week1_start, week2_start)
-        later_acc = await AlertEngine._week_accuracy(db, patient_id, week2_start, now)
-        if earlier_acc and later_acc is not None and earlier_acc > 0:
-            drop_pct = round((earlier_acc - later_acc) / earlier_acc * 100.0, 1)
-            if drop_pct >= 20.0:
-                alert = await AlertEngine._raise_alert(
-                    db, patient_id,
-                    AlertTriggerTypeEnum.COGNITIVE_SCORE_DIP,
-                    AlertSeverityEnum.WARNING,
-                    f"Cognitive accuracy dropped {drop_pct}% over the last 2 weeks "
-                    f"({round(earlier_acc,1)}% -> {round(later_acc,1)}%).",
-                    {"earlier_accuracy_pct": round(earlier_acc, 1),
-                     "later_accuracy_pct": round(later_acc, 1),
-                     "drop_pct": drop_pct, "window_days": 14},
-                    now,
-                )
-                if alert is not None:
-                    raised.append(alert)
+        earlier_acc = await AlertEngine._week_accuracy(
+            db, patient_id, week1_start, week2_start
+        )
+        later_acc = await AlertEngine._week_accuracy(
+            db, patient_id, week2_start, now
+        )
+        drop_pct, drop_detected = accuracy_drop(earlier_acc, later_acc)
+        if drop_detected:
+            alert = await AlertEngine._raise_alert(
+                db,
+                patient_id,
+                AlertTriggerTypeEnum.COGNITIVE_SCORE_DIP,
+                AlertSeverityEnum.WARNING,
+                f"Cognitive accuracy dropped {drop_pct}% over the last 2 weeks "
+                f"({round(earlier_acc, 1)}% -> {round(later_acc, 1)}%).",
+                {
+                    "earlier_accuracy_pct": round(earlier_acc, 1),
+                    "later_accuracy_pct": round(later_acc, 1),
+                    "drop_pct": drop_pct,
+                    "window_days": 14,
+                },
+                now,
+            )
+            if alert is not None:
+                raised.append(alert)
 
         return {"patient_id": str(patient_id), "alerts_raised": raised}
 
@@ -153,17 +151,24 @@ class AlertEngine:
         (purpose limitation — the pass derives cognitive health signals)."""
         now = now or datetime.now(timezone.utc)
         since = now - timedelta(days=14)
+        since_utc = naive_utc(since)
+        now_utc = naive_utc(now)
 
         game_patients = (
             await db.execute(
                 select(distinct(GameSession.patient_id)).where(
-                    GameSession.started_at >= since)
+                    GameSession.completed_at.is_not(None),
+                    GameSession.started_at >= since_utc,
+                    GameSession.started_at < now_utc,
+                )
             )
         ).scalars().all()
         rem_patients = (
             await db.execute(
                 select(distinct(ReminderEvent.patient_id)).where(
-                    ReminderEvent.scheduled_at >= since)
+                    ReminderEvent.scheduled_at >= since_utc,
+                    ReminderEvent.scheduled_at < now_utc,
+                )
             )
         ).scalars().all()
         patient_ids = list(set(game_patients) | set(rem_patients))

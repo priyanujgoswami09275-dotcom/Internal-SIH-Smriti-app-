@@ -15,7 +15,7 @@ Endpoints:
    GET /games/odd-one-out/board — generate Odd-One-Out board (server-held answer)
 """
 from typing import Optional
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -35,6 +35,11 @@ from app.models.user import User
 from app.services import game_service, difficulty_engine, routine_service, content_packs
 from app.services import level_config_service, recall_service, odd_one_out_service
 from app.services.datetime_utils import iso_utc
+from app.services.dashboard_service import (
+    GAME_METRIC_SCOPE,
+    build_daily_trends,
+    get_game_analytics,
+)
 
 router = APIRouter(prefix="/games", tags=["games"])
 
@@ -516,13 +521,12 @@ async def get_patient_stats(
     current_user: User = Depends(require_staff),
     db: AsyncSession = Depends(get_db),
 ):
-    """Accuracy + response-time trends across both games (clinical-tier view).
+    """Completed-session accuracy and response-time trends (clinical view).
 
-    Aggregates completed sessions per day: overall accuracy, average response
-    time, sessions played. Audited read.
+    The legacy ``overall`` aggregate remains available and is explicitly
+    labeled as pooled across all completed game types. ``game_metrics`` and
+    each trend entry provide per-game detail without changing the old keys.
     """
-    from datetime import timedelta, datetime, timezone
-    from collections import defaultdict
     from app.services.compliance_service import ComplianceService
 
     pid = _parse_pid(patient_id)
@@ -531,56 +535,28 @@ async def get_patient_stats(
     await ComplianceService.log_read_access(db, current_user.id, "game_stats", pid)
 
     days = max(1, min(days, 90))
-    since = datetime.now(timezone.utc) - timedelta(days=days)
-    stmt = (
-        select(GameSession)
-        .where(GameSession.patient_id == pid, GameSession.started_at >= since)
-        .order_by(GameSession.started_at.asc())
+    now = datetime.now(timezone.utc)
+    since = now - timedelta(days=days)
+    analytics = await get_game_analytics(db, pid, since, now)
+    aggregate = analytics["aggregate"]
+    trend = build_daily_trends(
+        analytics["sessions"],
+        now,
+        days,
+        include_empty=False,
+        include_deltas=True,
     )
-    sessions = (await db.execute(stmt)).scalars().all()
 
-    by_day: dict = defaultdict(lambda: {"attempts": 0, "correct": 0, "times": [], "games": 0})
-    for s in sessions:
-        day = (s.started_at if s.started_at.tzinfo else s.started_at.replace(
-            tzinfo=timezone.utc)).astimezone(timezone.utc).date().isoformat()
-        d = by_day[day]
-        d["attempts"] += s.attempts or 0
-        d["correct"] += s.correct_count or 0
-        if s.avg_response_time_ms is not None:
-            d["times"].append(s.avg_response_time_ms)
-        d["games"] += 1
-
-    trend = []
-    prev_accuracy = None
-    for day in sorted(by_day):
-        d = by_day[day]
-        accuracy = round(d["correct"] / d["attempts"] * 100.0, 1) if d["attempts"] else None
-        entry = {
-            "date": day,
-            "games": d["games"],
-            "accuracy_pct": accuracy,
-            "avg_response_time_ms": round(sum(d["times"]) / len(d["times"]), 1)
-            if d["times"] else None,
-        }
-        if accuracy is not None and prev_accuracy is not None:
-            entry["accuracy_delta_pct"] = round(accuracy - prev_accuracy, 1)
-        if accuracy is not None:
-            prev_accuracy = accuracy
-        trend.append(entry)
-
-    total_attempts = sum(d["attempts"] for d in by_day.values())
-    total_correct = sum(d["correct"] for d in by_day.values())
-    all_times = [t for d in by_day.values() for t in d["times"]]
     return {
         "patient_id": str(pid),
         "window_days": days,
         "overall": {
-            "sessions": len(sessions),
-            "accuracy_pct": round(total_correct / total_attempts * 100.0, 1)
-            if total_attempts else None,
-            "avg_response_time_ms": round(sum(all_times) / len(all_times), 1)
-            if all_times else None,
+            "sessions": aggregate["games_played"],
+            "accuracy_pct": aggregate["accuracy_pct"],
+            "avg_response_time_ms": aggregate["avg_response_time_ms"],
+            "metric_scope": GAME_METRIC_SCOPE,
         },
+        "game_metrics": analytics["by_game"],
         "trend": trend,
     }
 
