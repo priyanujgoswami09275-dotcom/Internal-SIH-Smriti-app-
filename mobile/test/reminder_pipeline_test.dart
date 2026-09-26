@@ -550,8 +550,14 @@ void main() {
       expect(queued.single.resourceType, 'reminder_event');
 
       final recreated = MobileReminderService(apiService: api, sync: sync);
+      // `now` is injected so the assertion means "acknowledged on the fixture's
+      // own day" instead of depending on when the suite happens to run. Without
+      // it this test silently started failing the day after the fixture date.
       expect(
-        await recreated.getLocalAcknowledgedScheduleIds('patient-1'),
+        await recreated.getLocalAcknowledgedScheduleIds(
+          'patient-1',
+          now: DateTime.utc(2026, 9, 25, 12),
+        ),
         contains('schedule-1'),
       );
     });
